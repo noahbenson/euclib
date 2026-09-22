@@ -1,21 +1,26 @@
+[build-system]
+requires = ["setuptools >= 68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "euclib"
 version = "0.1.0.dev1"
+description = "A library for tracking data associated with 2D/3D Euclidean space"
 readme = "README.md"
-authors = [{name="Noah C. Benson", email="nben@uw.edu"}]
-license = {"text"="MIT"}
-readme = "README.md"
-requires-python = ">=3.8"
+authors = [{name = "Noah C. Benson", email = "nben@uw.edu"}]
+license = "MIT"
+requires-python = ">=3.10"
 keywords = ["persistent", "immutable", "functional", "scientific", "geometry"]
 classifiers = [
     'Intended Audience :: Science/Research',
     'Intended Audience :: Developers',
     'License :: OSI Approved :: MIT License',
     'Programming Language :: Python :: 3',
-    'Programming Language :: Python :: 3.8',
-    'Programming Language :: Python :: 3.9',
     'Programming Language :: Python :: 3.10',
     'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
+    'Programming Language :: Python :: 3.14',
     'Topic :: Software Development',
     'Topic :: Software Development :: Libraries',
     'Topic :: Software Development :: Libraries :: Python Modules',
@@ -26,13 +31,28 @@ classifiers = [
     'Operating System :: Unix',
     'Operating System :: MacOS']
 dependencies = [
-     'immlib >= 0.1.0']
+    'immlib >= 1.0',
+    'pcollections >= 1.0',
+    'docshare >= 1.0',
+    'numpy',
+    'joblib']
 
 [project.optional-dependencies]
-dev = ["torch >= 2.2.0", "pyyaml"]
-test = ["torch >= 2.2.0", "pyyaml"]
+torch = ["torch >= 2.2"]
+quant = ["pint >= 0.24,<0.27"]
+test = ["torch >= 2.2", "pint >= 0.24,<0.27"]
+dev = ["euclib[test]", "ruff", "build"]
 
 [project.urls]
 homepage = "https://github.com/noahbenson/euclib"
-documentation = "https://github.com/noahbenson/euclib"
+documentation = "https://noahbenson.github.io/euclib/"
 repository = "https://github.com/noahbenson/euclib"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+euclib = ["py.typed"]

@@ -1,0 +1,94 @@
+# Byte-compiled files and interpreter caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging, builds, and installed metadata
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+sdist/
+wheels/
+
+# Compiled extensions and object files
+# euclib._c is an optional extension, so its build artifacts appear whenever a
+# compiler is available and must not be committed.
+*.so
+*.pyd
+*.dylib
+*.o
+*.a
+*.lo
+*.la
+*.lib
+*.obj
+*.exp
+*.ilk
+*.pdb
+
+# Generated sources (e.g. Cython output or SWIG wrappers)
+*.c
+*.cpp
+!src/euclib/_c/*.c
+
+# Test, coverage, and linter caches
+.pytest_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+.cache/
+nosetests.xml
+coverage.xml
+
+# Type checker and formatter caches
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.ruff_cache/
+.pyre/
+
+# Virtual environments and local interpreter configuration
+.venv/
+venv/
+ENV/
+env/
+.python-version
+.python-version.local
+
+# Build and packaging tooling
+.pip/
+*.log
+pip-log.txt
+
+# Documentation builds
+docs/_build/
+site/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.spyderproject
+.spyproject
+
+# Operating system files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
