@@ -28,8 +28,9 @@ The metadata and its normalization rules are:
     ``'quantitative'`` (interpolable) or ``'qualitative'`` (categorical),
     inferred from the value's dtype when unspecified.
 ``interp``
-    The interpolation order, 0 (nearest) through 3 (cubic). Qualitative data
-    may only use order 0.
+    How to fit a field through the values of the components around a position:
+    a ``(method, order)`` pair such as ``('polynomial', 1)``. Qualitative data
+    may only use ``('nearest', 0)``.
 ``extrap``
     ``None`` for "missing outside the object", or 0 for "the value at the
     nearest point on the object".
@@ -56,7 +57,8 @@ from numpy import (
 
 from immlib import to_array, to_tensor, is_quant, quant
 
-from .._init import default_float_interp_order, checktorch
+from .._init import (
+    checktorch, default_quantitative_interp)
 from ._core import (
     planobject, calc, normalize_backend, planobject_eq, planobject_hash)
 
@@ -71,12 +73,27 @@ QUANTITATIVE = 'quantitative'
 QUALITATIVE = 'qualitative'
 VARTYPES = (QUANTITATIVE, QUALITATIVE)
 
-#: The names and orders of the interpolation schemes. Order 0 is
-#: nearest-neighbor; higher orders are only valid for quantitative data.
-INTERP_NAMES = {
-    None: 0, 'none': 0, 'nearest': 0,
-    'linear': 1, 'quadratic': 2, 'cubic': 3}
+#: The interpolation methods that ``euclib`` defines. A method names a scheme
+#: for fitting a field through a simplex's values; not all of them are
+#: implemented yet, which is what ``INTERP_SUPPORTED`` records.
+INTERP_METHODS = (
+    'nearest', 'polynomial', 'clough-tocher', 'powell-sabin', 'catmull-rom',
+    'bezier')
+
+#: The interpolation orders that ``euclib`` defines, from 0 (nearest) to 3
+#: (cubic).
 INTERP_ORDERS = (0, 1, 2, 3)
+
+#: The interpolation that a qualitative property uses, and the only one it may
+#: use.
+INTERP_QUALITATIVE = ('nearest', 0)
+
+#: The interpolation combinations that are implemented today. A combination
+#: outside this set is recognized --- so the caller is told what is missing
+#: rather than that they misspelled something --- but raises
+#: ``NotImplementedError``. As each remaining method is built, its combinations
+#: are added here and begin to work.
+INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1))
 
 #: The valid extrapolation orders. Only 0 (nearest point on the object) is
 #: supported; ``None`` means "no extrapolation".
@@ -131,46 +148,105 @@ def normalize_vartype(vartype, value, /):
     return QUANTITATIVE if dt is not None and dt.kind in 'fc' else QUALITATIVE
 
 
-def normalize_interp(interp, vartype, /):
-    '''Normalizes an ``interp`` metadata value to an interpolation order.
+def default_interp(vartype, /):
+    '''Returns the interpolation that a property uses when none is specified.
 
     Parameters
     ----------
-    interp : int, str, None, or Ellipsis
-        The interpolation order or its name. ``None`` means nearest-neighbor
-        (order 0), and ``Ellipsis`` means the default for the data's type: 0
-        for qualitative data, otherwise
-        ``euclib._init.default_float_interp_order``.
     vartype : str
-        The property's ``vartype``. Qualitative data may only use order 0.
+        The property's ``vartype``.
 
     Returns
     -------
-    int
-        The interpolation order, 0 through 3.
+    tuple of (str, int)
+        The default interpolation method and order.
     '''
-    if interp is UNSET:
-        order = 0 if vartype == QUALITATIVE else default_float_interp_order
-    elif isinstance(interp, int) and interp in INTERP_ORDERS:
-        order = interp
-    elif _is_interp_name(interp):
-        order = INTERP_NAMES[interp]
+    if vartype == QUALITATIVE:
+        return INTERP_QUALITATIVE
+    return default_quantitative_interp
+
+
+def normalize_interp(interp, vartype, /):
+    '''Normalizes an ``interp`` metadata value to a method and an order.
+
+    An interpolation is a pair: the *method* names the scheme that fits a field
+    through a simplex's values, and the *order* says how much of that field to
+    use. The two are not independent --- ``'nearest'`` is only meaningful at
+    order 0 --- so they are stored and validated together.
+
+    A value may be given in any of four forms: the pair itself; a method name,
+    which takes the order from the default for the data's type; an order, which
+    takes the method from the default; or ``Ellipsis`` (or ``None``) for the
+    whole default.
+
+    Parameters
+    ----------
+    interp : str, int, tuple, None, or Ellipsis
+        The interpolation.
+    vartype : str
+        The property's ``vartype``. A qualitative property may only use
+        ``('nearest', 0)``, because a category has no meaning between the
+        values it takes.
+
+    Returns
+    -------
+    tuple of (str, int)
+        The interpolation method and order.
+
+    Raises
+    ------
+    ValueError
+        If the method is not one that ``euclib`` defines, if the order is not
+        0 through 3, or if a qualitative property asks for anything but
+        ``('nearest', 0)``.
+    NotImplementedError
+        If the method and order are recognized but not yet implemented.
+    '''
+    default = default_interp(vartype)
+    if interp is UNSET or interp is None or interp is Ellipsis:
+        res = default
+    elif isinstance(interp, str):
+        # A method name takes the order from the default, except that the only
+        # order 'nearest' has is 0.
+        res = (interp, 0 if interp == 'nearest' else default[1])
+    elif isinstance(interp, int) and not isinstance(interp, bool):
+        res = (default[0], interp)
+    elif isinstance(interp, tuple) and len(interp) == 2:
+        res = (interp[0], interp[1])
     else:
         raise ValueError(
-            f"invalid interp: {interp!r}; expected one of"
-            f" {tuple(INTERP_NAMES)} or {INTERP_ORDERS}")
-    if vartype == QUALITATIVE and order > 0:
+            f"invalid interp: {interp!r}; expected a method name, an order, a"
+            f" (method, order) pair, or Ellipsis")
+    (method, order) = res
+    if method == 'nearest' and order != 0:
         raise ValueError(
-            f"qualitative properties cannot use interpolation order {order}")
-    return order
-
-
-def _is_interp_name(interp, /):
-    '''Determines whether ``interp`` is a recognized interpolation name.'''
-    try:
-        return interp in INTERP_NAMES
-    except TypeError:
-        return False
+            f"'nearest' is only meaningful at order 0; found ('nearest',"
+            f" {order})")
+    if order == 0:
+        # A fit of degree zero is the value itself, so every method's order 0
+        # is nearest-neighbour. Canonicalizing keeps 'nearest' the one spelling
+        # of "no interpolation", so that `interp=0` means what it says however
+        # the property's other metadata reads.
+        method = 'nearest'
+    res = (method, order)
+    if method not in INTERP_METHODS:
+        raise ValueError(
+            f"unknown interpolation method: {method!r}; expected one of"
+            f" {INTERP_METHODS}")
+    if not isinstance(order, int) or isinstance(order, bool) \
+            or order not in INTERP_ORDERS:
+        raise ValueError(
+            f"invalid interpolation order: {order!r}; expected one of"
+            f" {INTERP_ORDERS}")
+    if vartype == QUALITATIVE and res != INTERP_QUALITATIVE:
+        raise ValueError(
+            f"qualitative properties can only use {INTERP_QUALITATIVE}; found"
+            f" {res}")
+    if res not in INTERP_SUPPORTED:
+        raise NotImplementedError(
+            f"the interpolation {res} is not implemented yet; supported today:"
+            f" {INTERP_SUPPORTED}")
+    return res
 
 
 def normalize_extrap(extrap, /):
@@ -371,12 +447,12 @@ class Property(planobject):
         ``'quantitative'`` or ``'qualitative'``. The default, ``None``, infers
         it from the value's dtype: floating-point and complex data are
         quantitative and everything else is qualitative.
-    interp : int, str, None, or Ellipsis, optional
-        The interpolation order or name. ``None`` is nearest-neighbor,
-        ``Ellipsis`` (the default) selects 0 for qualitative data and
-        ``default_float_interp_order`` otherwise, and ``'nearest'``,
-        ``'linear'``, ``'quadratic'``, and ``'cubic'`` stand for orders 0
-        through 3.
+    interp : str, int, tuple, None, or Ellipsis, optional
+        The interpolation, as a ``(method, order)`` pair. A bare method name
+        takes the order from the default for the data's type, a bare order
+        takes the method from the default, and ``Ellipsis`` (the default, and
+        the same as ``None``) takes both from the default: ``('nearest', 0)``
+        for qualitative data and ``('polynomial', 1)`` for quantitative data.
     extrap : None or 0, optional
         How to handle points outside the object. ``None`` (the default) yields
         the null value; ``0`` yields the value at the nearest point on the
@@ -469,19 +545,51 @@ class Property(planobject):
         '''
         return normalize_vartype(vartype, value)
 
-    @calc('interp', lazy=False)
+    @calc('interp', 'interp_specified', lazy=False)
     def proc_interp(interp, vartype):
-        '''Normalizes the property's interpolation order.
+        '''Normalizes the property's interpolation to a method and an order.
 
         ``vartype`` arrives already inferred, because the plan orders a filter
-        ahead of every calc that consumes the value it filters.
+        ahead of every calc that consumes the value it filters. A filter's own
+        parameter, by contrast, is the raw value the caller supplied, which is
+        how ``interp_specified`` can tell an interpolation that was asked for
+        from one that was merely defaulted to.
 
         Returns
         -------
-        interp : int
-            The interpolation order, 0 through 3.
+        interp : tuple of (str, int)
+            The interpolation method and order. A calculation with a single
+            output may return either its value or a one-tuple holding it, so a
+            tuple *value* must be wrapped to keep it from being read as a
+            sequence of outputs; the dictionary form below says the same thing
+            more plainly.
+        interp_specified : bool
+            Whether the caller supplied an interpolation.
         '''
-        return normalize_interp(interp, vartype)
+        return {'interp': normalize_interp(interp, vartype),
+                'interp_specified': interp is not UNSET}
+
+    @calc('interp_method')
+    def proc_interp_method(interp):
+        '''The property's interpolation method.
+
+        Returns
+        -------
+        interp_method : str
+            The method.
+        '''
+        return interp[0]
+
+    @calc('interp_order')
+    def proc_interp_order(interp):
+        '''The property's interpolation order.
+
+        Returns
+        -------
+        interp_order : int
+            The order, 0 through 3.
+        '''
+        return interp[1]
 
     @calc('extrap', lazy=False)
     def proc_extrap(extrap):

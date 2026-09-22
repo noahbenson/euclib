@@ -193,21 +193,21 @@ class TestProperties(TestCase):
         self.assertNotIn('a', c.dropprop('a').properties)
 
     def test_propinfo_returns_the_property_object(self):
-        c = self.cloud.withprop('a', zeros(4), interp='linear')
+        c = self.cloud.withprop('a', zeros(4), interp='nearest')
         info = c.propinfo('a')
         self.assertIsInstance(info, Property)
-        self.assertEqual(info.interp, 1)
+        self.assertEqual(info.interp, ('nearest', 0))
         # ...while a lookup returns just the values.
         self.assertEqual(c['a'].tolist(), [0., 0., 0., 0.])
 
     def test_withmeta_updates_metadata_only(self):
-        c = self.cloud.withprop('a', zeros(4), interp=1)
-        d = c.withprop('a', interp=2)
-        self.assertEqual(d.propinfo('a').interp, 2)
+        c = self.cloud.withprop('a', zeros(4))
+        d = c.withprop('a', extrap=0)
+        self.assertEqual(d.propinfo('a').extrap, 0)
         self.assertEqual(d['a'].tolist(), c['a'].tolist())
         # Metadata cannot be set for a property that does not exist.
         with self.assertRaises(KeyError):
-            self.cloud.withprop('nope', interp=1)
+            self.cloud.withprop('nope', extrap=0)
 
     def test_immutability(self):
         with self.assertRaises(TypeError):
@@ -227,9 +227,12 @@ class TestProperties(TestCase):
         c = self.cloud.withprop('a', array([1., 2., 3., 4.]))
         self.assertEqual(c.prop('a').tolist(), [1., 2., 3., 4.])
         self.assertEqual(c.prop('a', at=[1, 2]).tolist(), [2., 3.])
-        # Interpolation is not implemented yet, and says so.
-        with self.assertRaises(NotImplementedError):
-            c.prop('a', at=zeros((2, 2)))
+
+    def test_prop_refuses_a_simplex_property(self):
+        # prop reads coordinate properties; a simplex property is read with
+        # geom[order, name].
+        with self.assertRaises(ValueError):
+            self.cloud.prop((0, 'a'))
 
 
 class TestSimplexProperties(TestCase):

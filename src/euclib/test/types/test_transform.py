@@ -60,6 +60,12 @@ class TestAffine(TestCase):
         t = affine_translation([1., 1.])
         self.assertTrue(allclose(t.apply([[0.], [0.]]), [[1.], [1.]]))
 
+    def test_apply_accepts_a_bare_vector_as_one_position(self):
+        # A 1-D vector is one position; without reshaping, the translation
+        # would broadcast it into a (D, D) matrix.
+        t = affine_translation([1., 2.])
+        self.assertTrue(allclose(t.apply(array([0., 0.])), [[1.], [2.]]))
+
     def test_inverse_undoes_the_transform(self):
         t = affine_translation([3., -2.]) @ affine_scaling([2., 4.])
         coords = array([[1., -1., 0.5], [2., 0.25, -3.]])

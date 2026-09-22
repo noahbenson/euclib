@@ -24,9 +24,12 @@ from ._transform import *
 __all__ = (
     # from euclib.types._topo
     'VertexLoc', 'SegLoc', 'TriLoc', 'TetLoc',
+    'PrismLoc',
+    'GridLoc1', 'GridLoc2', 'GridLoc3', 'GRID_LOCS',
     'VertexTopology', 'SegTopology', 'TriTopology', 'TetTopology',
+    'PrismTopology', 'GridTopology',
     # from euclib.types._geom
-    'VertexSet', 'SegPath', 'TriMesh', 'TetMesh',
+    'VertexSet', 'SegPath', 'TriMesh', 'TetMesh', 'PrismMesh', 'Grid',
     # from euclib.types._transform
     'Transform', 'Affine',
     'affine_identity', 'affine_translation', 'affine_scaling')

@@ -25,6 +25,7 @@ from ._core import (
     nearest_vertices,
     project_onto_face,
     closest_simplex,
+    closest_prism,
     barycentric_coords)
 from ._hash import content_hash, values_equal
 
@@ -36,5 +37,5 @@ __all__ = (
     'is_pointdata', 'unique_columns', 'unique_coords',
     'simplex_measures',
     'nearest_vertices', 'project_onto_face', 'closest_simplex',
-    'barycentric_coords',
+    'closest_prism', 'barycentric_coords',
     'content_hash', 'values_equal')

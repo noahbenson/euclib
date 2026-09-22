@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+from .test_cross import *
 from .test_distance import *
 
 
 # Exports ####################################################################
 
-__all__ = ('TestDistance', 'TestNearest', 'TestSeparation')
+__all__ = ('TestPositions', 'TestTransfer',
+           'TestDistance', 'TestNearest', 'TestSeparation')

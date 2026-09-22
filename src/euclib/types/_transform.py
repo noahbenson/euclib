@@ -350,6 +350,10 @@ class Affine(Transform):
             The transformed positions.
         '''
         coords = coords if hasattr(coords, 'shape') else asarray(coords)
+        if len(coords.shape) == 1:
+            # A bare vector is one position, not a matrix of them; without this
+            # the translation would broadcast it into a (D, D) matrix.
+            coords = coords.reshape(-1, 1)
         if int(coords.shape[0]) != self.dim:
             raise ValueError(
                 f"this transform acts on {self.dim}-dimensional positions, but"

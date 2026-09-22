@@ -37,7 +37,15 @@ __all__ = (
     'TestVertexSet', 'TestSegPath', 'TestTriMesh', 'TestTetMesh',
     'TestMeasures', 'TestLocalRoundTrip', 'TestTorchBackend',
     'TestAffine', 'TestTransformed', 'TestBBox',
+    'TestPrismTopology', 'TestPrismMesh',
+    'TestGridTopology', 'TestGrid',
+    'TestLinearInterpolation', 'TestNearestInterpolation',
+    'TestLocalCoordinates', 'TestCoordinateNames', 'TestExtrapolation',
+    'TestMasks',
+    'TestGridInterpolation', 'TestUnimplementedOrders',
+    'TestPointCloudInterpolation',
     # from euclib.test.ops
+    'TestPositions', 'TestTransfer',
     'TestDistance', 'TestNearest', 'TestSeparation',
     # from euclib.test.utils
     'TestIsPointdata', 'TestUniqueColumns', 'TestUniqueCoords',

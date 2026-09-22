@@ -27,12 +27,19 @@ as a simplex property under the name ``'length'``, ``'surface_area'``, or
 
 from __future__ import annotations
 
-from numpy import asarray
+from collections.abc import Mapping
+
+from numpy import arange, asarray, concatenate, meshgrid, stack
+from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, llist
 
 from ..abc import (
-    Property, SimplexGeometry, as_query, calc, check_coordinfo)
-from ..utils import closest_simplex, nearest_vertices
+    Geometry, Property, SimplexGeometry, UNSET, as_query, calc,
+    check_coordinfo, split_property_name)
+from ..utils import (
+    closest_prism, closest_simplex, nearest_vertices, simplex_measures)
+from ._topo import GridTopology, PrismTopology, TetTopology, TriTopology
+from ._transform import Affine
 
 
 # Helpers ####################################################################
@@ -60,6 +67,34 @@ def _corner_coords(coords, indices, index, /):
         simplices.
     '''
     return coords[:, indices[:, asarray(index)]]
+
+
+def _to_like(like, values, /):
+    '''Returns values in the backend of a reference array or tensor.'''
+    if type(like).__module__.split('.')[0] == 'torch':
+        import torch
+        return torch.as_tensor(values, dtype=like.dtype, device=like.device)
+    return asarray(values)
+
+
+def _stack_parts(parts, /):
+    '''Stacks the components of a local coordinate into a single matrix.
+
+    Parameters
+    ----------
+    parts : sequence
+        The components, one per spatial axis.
+
+    Returns
+    -------
+    array-like
+        A ``(D, Q)`` matrix.
+    '''
+    parts = list(parts)
+    if type(parts[0]).__module__.split('.')[0] == 'torch':
+        import torch
+        return torch.stack(parts, dim=0)
+    return asarray(parts)
 
 
 def _auto_measure_property(measures, topo, order, name, /):
@@ -414,6 +449,547 @@ class TetMesh(SimplexGeometry):
                 + corners[:, 3] * last)
 
 
+class PrismMesh(SimplexGeometry):
+    '''A prism mesh: a pair of triangle sheets joined corner to corner.
+
+    A prism is two triangles whose corners are connected, enclosing a volume.
+    Both surfaces share one triangle topology, so a prism mesh stores a *pair*
+    of coordinate matrices --- its ``coords`` is a ``(2, D, N)`` array whose
+    first plane holds one surface and whose second holds the other --- and a
+    position within it is named by a triangle, the barycentric weights within
+    that triangle, and an *elevation* between the two surfaces.
+
+    This is the shape that makes prisms useful for sheets: the two surfaces of
+    a thin object can share one tesselation while differing in position, so a
+    prism mesh describes a layered structure without duplicating its
+    connectivity.
+
+    A prism property may carry an elevation dimension --- a temperature that
+    varies through the thickness of a sheet is a ``(E, N)`` matrix, one value
+    per elevation and per position --- and the elevations themselves may be
+    given alongside the values as a ``(elevs, values)`` pair.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(2, D, N)`` array of coordinates, where the first plane is one
+        surface's coordinates and the second is the other's.
+    topo : PrismTopology
+        The prism mesh's topology, shared by both surfaces.
+    properties : mapping or None, optional
+        Properties, each of whose last dimension is the number of positions.
+    backend : str or None, optional
+        The numeric backend.
+    simplex_properties : sequence or None, optional
+        Properties of the simplices, one mapping per simplex order.
+    elevations : mapping or None, optional
+        The elevation axis of each property that has one, keyed by property
+        name. A vector applies to every position; a matrix must match the
+        property's values.
+
+    Attributes
+    ----------
+    coords0, coords1 : array-like
+        The two surfaces, each a ``(D, N)`` coordinate matrix.
+    tetrahedra : numpy.ndarray
+        The tetrahedra that each prism decomposes into.
+    '''
+
+    def __init__(self, coords, topo, properties=None, backend=None,
+                 simplex_properties=None, elevations=None):
+        self.coords = coords
+        self.topo = topo
+        self.properties = properties
+        self.backend = backend
+        self.simplex_properties = simplex_properties
+        self.elevations = elevations
+
+    @calc('coords', lazy=False)
+    def proc_coords(coords, backend, topo):
+        '''Validates the pair of coordinate matrices.
+
+        Returns
+        -------
+        coords : array-like
+            A ``(2, D, N)`` array of coordinates.
+        '''
+        if not isinstance(topo, PrismTopology):
+            raise ValueError(
+                f"a prism mesh's topo must be a PrismTopology; found"
+                f" {type(topo)}")
+        if backend == 'torch':
+            res = to_tensor(coords)
+        elif backend == 'numpy' or not hasattr(coords, 'shape'):
+            res = to_array(coords)
+        else:
+            res = coords
+        sh = tuple(res.shape)
+        if len(sh) != 3 or sh[0] != 2:
+            raise ValueError(
+                f"a prism mesh's coords must be a (2, D, N) array, one plane"
+                f" per surface; found {sh}")
+        return res
+
+    @calc('dim', 'coord_count', lazy=False)
+    def proc_coordinfo(coords, topo):
+        '''Determines the dimension and coordinate count of the pair.
+
+        Returns
+        -------
+        dim : int
+            The number of rows of each surface, which must be 3: a prism
+            encloses a volume and so occupies three-dimensional space.
+        coord_count : int
+            The number of columns of each surface.
+        '''
+        (planes, dim, count) = (int(s) for s in coords.shape)
+        if dim != 3:
+            raise ValueError(
+                f"a prism mesh must occupy 3-dimensional space; found {dim}"
+                f" dimensions")
+        if count != topo.coord_count:
+            raise ValueError(
+                f"coords has {count} positions, but the topology declares"
+                f" {topo.coord_count}")
+        return (dim, count)
+
+    @calc('coords0')
+    def proc_coords0(coords):
+        '''The first surface's coordinates.
+
+        Returns
+        -------
+        coords0 : array-like
+            A ``(D, N)`` matrix.
+        '''
+        return coords[0]
+
+    @calc('coords1')
+    def proc_coords1(coords):
+        '''The second surface's coordinates.
+
+        Returns
+        -------
+        coords1 : array-like
+            A ``(D, N)`` matrix.
+        '''
+        return coords[1]
+
+    @calc('tetrahedra')
+    def proc_tetrahedra(topo):
+        '''The tetrahedra that each prism decomposes into.
+
+        Returns
+        -------
+        tetrahedra : numpy.ndarray
+            A ``(4, 3M)`` integer matrix indexing this mesh's coordinates, with
+            the second surface's positions following the first's.
+        '''
+        return topo.tetrahedra
+
+    @calc('measures')
+    def proc_measures(coords, topo):
+        '''The volume of each prism.
+
+        A prism is not a simplex, so its measure is not the measure of one: the
+        volume is found by decomposing each prism into tetrahedra and adding
+        theirs.
+
+        Returns
+        -------
+        measures : array-like
+            A length-``M`` vector of volumes, one per prism.
+        '''
+        merged = concatenate([coords[0], coords[1]], axis=1)
+        tets = topo.tetrahedra
+        volumes = simplex_measures(merged, tets)
+        # The three tetrahedra of each prism are consecutive columns.
+        return imath.sum(volumes.reshape(-1, 3), axis=1)
+
+    @calc('elevations', lazy=False)
+    def proc_elevations(elevations, coord_count):
+        '''Normalizes the elevation axis of each property that has one.
+
+        Returns
+        -------
+        elevations : pcollections.ldict
+            The elevation axis of each property, keyed by name.
+        '''
+        if elevations is None:
+            return ldict()
+        if not isinstance(elevations, Mapping):
+            raise ValueError(
+                f"elevations must be a mapping or None; found"
+                f" {type(elevations)}")
+        res = {}
+        for (name, elevs) in elevations.items():
+            arr = asarray(elevs)
+            if arr.ndim not in (1, 2):
+                raise ValueError(
+                    f"the elevations of {name!r} must be a vector or a matrix;"
+                    f" found shape {arr.shape}")
+            if arr.ndim == 2 and arr.shape[-1] != coord_count:
+                raise ValueError(
+                    f"the elevations of {name!r} have {arr.shape[-1]} columns,"
+                    f" but there are {coord_count} positions")
+            res[name] = arr
+        return ldict(res)
+
+    def to_global(self, locs, /):
+        '''Expresses local coordinates as positions in space.
+
+        A position within a prism is the position within its triangle on each
+        surface, blended by the elevation: at an elevation of 0 it lies on the
+        first surface and at 1 on the second.
+
+        Parameters
+        ----------
+        locs : PrismLoc, mapping, or sequence
+            The local coordinates.
+
+        Returns
+        -------
+        array-like
+            A ``(D, Q)`` matrix of positions.
+        '''
+        loc = self.topo.check_loc(locs)
+        corners = _corner_coords(self.coords0, self.topo.indices, loc.index)
+        weight = loc.weight
+        last = 1.0 - weight.sum(axis=0)
+        lower = (corners[:, 0] * weight[0] + corners[:, 1] * weight[1]
+                 + corners[:, 2] * last)
+        corners = _corner_coords(self.coords1, self.topo.indices, loc.index)
+        upper = (corners[:, 0] * weight[0] + corners[:, 1] * weight[1]
+                 + corners[:, 2] * last)
+        height = loc.height[0]
+        return lower * (1.0 - height) + upper * height
+
+    def to_local(self, coords, /):
+        '''Locates positions within the prism mesh.
+
+        A position within a prism is a nonlinear function of its coordinates
+        whenever the two surfaces are not parallel: expanding the blend of the
+        surfaces shows ``u * e`` and ``v * e`` terms, so the linear machinery
+        that inverts a simplex cannot invert a prism. The search therefore uses
+        the tetrahedral decomposition to find the prism and to estimate the
+        local coordinates --- which is already exact when the surfaces are
+        parallel --- and then refines that estimate until it reproduces the
+        position.
+
+        Parameters
+        ----------
+        coords : array-like
+            A ``(3, Q)`` matrix of positions.
+
+        Returns
+        -------
+        PrismLoc
+            The prism containing or nearest each position, the position within
+            its triangle, and the elevation between the two surfaces.
+        '''
+        (index, weight, height) = closest_prism(
+            self.coords0, self.coords1, self.topo.indices, self.tetrahedra,
+            as_query(coords))
+        return self.topo.Loc(index, weight, height)
+
+
+    def elevation(self, height, /):
+        '''Returns the triangle mesh at a given elevation.
+
+        At an elevation of 0 the mesh is the first surface and at 1 the second;
+        in between it is the linear blend of the two.
+
+        Parameters
+        ----------
+        height : float
+            The elevation, between 0 and 1.
+
+        Returns
+        -------
+        TriMesh
+            The triangle mesh through the prisms at that elevation, sharing
+            this mesh's triangle topology.
+        '''
+        e = float(height)
+        topo = TriTopology(self.topo.indices, coord_count=self.coord_count,
+                           backend=self.backend)
+        return TriMesh(self.coords0 * (1.0 - e) + self.coords1 * e, topo,
+                       backend=self.backend)
+
+    def to_tetmesh(self):
+        '''Returns the tetrahedral mesh that decomposes this prism mesh.
+
+        Returns
+        -------
+        TetMesh
+            A tetrahedral mesh whose tetrahedra are the three-per-prism
+            decomposition of this mesh's prisms.
+        '''
+        coords = concatenate([self.coords0, self.coords1], axis=1)
+        topo = TetTopology(self.topo.tetrahedra,
+                           coord_count=2 * self.coord_count,
+                           backend=self.backend)
+        return TetMesh(coords, topo, backend=self.backend)
+
+    def withprop(self, name, values=UNSET, /, **meta):
+        '''Returns a copy of the mesh with a property added or altered.
+
+        This behaves as ``Geometry.withprop`` does, except that a prism
+        property may be given its elevations along with its values, as a
+        ``(elevs, values)`` pair.
+
+        Parameters
+        ----------
+        name : hashable or tuple
+            The property's name, optionally as a ``(order, name)`` pair.
+        values : array-like, tuple, or Ellipsis, optional
+            The property's values, or an ``(elevs, values)`` pair.
+        **meta
+            Metadata for the property.
+
+        Returns
+        -------
+        PrismMesh
+            A copy of the mesh with the property set.
+        '''
+        elevs = None
+        if (values is not UNSET and isinstance(values, tuple)
+                and len(values) == 2):
+            (elevs, values) = values
+        (order, pname) = split_property_name(name)
+        res = super().withprop((order, pname) if order is not None else pname,
+                               values, **meta)
+        if elevs is None:
+            return res
+        kept = dict(res.elevations)
+        kept[pname] = asarray(elevs)
+        return res.copy(elevations=ldict(kept))
+
+
+class Grid(Geometry):
+    '''A grid image: pixels or voxels laid out on a regular grid.
+
+    A grid is not made of simplices, and it does not store its coordinates. It
+    stores the *affine transformation* that maps its index space --- the
+    integer positions of its cells --- into global coordinates, together with
+    the extent of that index space. Its ``coords`` payload is therefore an
+    affine matrix rather than a coordinate matrix, which is what makes a grid
+    cheap to make and to move: a grid of a million voxels describes itself with
+    four numbers per axis.
+
+    A grid's local coordinate is a position in index space, with one fractional
+    axis per dimension: ``GridLoc2(sx, sy)`` for pixels, ``GridLoc3(sx, sy,
+    sz)`` for voxels.
+
+    Parameters
+    ----------
+    coords : array-like
+        The ``(D+1, D+1)`` affine matrix that maps index space to global
+        coordinates, where ``D`` is the grid's number of dimensions. Its final
+        row must be ``[0, ..., 0, 1]``.
+    topo : GridTopology
+        The grid's topology, which carries its extent.
+    properties : mapping or None, optional
+        Properties, each of whose spatial dimensions equal the grid's extent.
+    backend : str or None, optional
+        The numeric backend.
+
+    Attributes
+    ----------
+    affine : Affine
+        The transform from index space to global coordinates.
+    shape : tuple of int
+        The grid's extent, from its topology.
+    origin : array-like
+        The global position of the index-space origin.
+    spacing : array-like
+        The length of one index step along each axis.
+    '''
+
+    def __init__(self, coords, topo, properties=None, backend=None):
+        self.coords = coords
+        self.topo = topo
+        self.properties = properties
+        self.backend = backend
+
+    @calc('coords', lazy=False)
+    def proc_coords(coords, backend, topo):
+        '''Validates the grid's affine matrix.
+
+        Returns
+        -------
+        coords : array-like
+            The ``(D+1, D+1)`` affine matrix.
+        '''
+        if backend == 'torch':
+            res = to_tensor(coords)
+        elif backend == 'numpy' or not hasattr(coords, 'shape'):
+            res = to_array(coords)
+        else:
+            res = coords
+        d = len(topo.shape)
+        if tuple(res.shape) != (d + 1, d + 1):
+            raise ValueError(
+                f"a {d}-dimensional grid needs a {(d+1, d+1)} affine matrix;"
+                f" found {tuple(res.shape)}")
+        # Constructing an Affine validates that the final row is [0, ..., 0, 1].
+        Affine(res)
+        return res
+
+    @calc('dim', 'coord_count', lazy=False)
+    def proc_coordinfo(coords, topo):
+        '''The grid's dimension and number of cells.
+
+        Returns
+        -------
+        dim : int
+            The number of axes.
+        coord_count : int
+            The number of cells.
+        '''
+        if not isinstance(topo, GridTopology):
+            raise ValueError(
+                f"a grid's topo must be a GridTopology; found {type(topo)}")
+        count = 1
+        for s in topo.shape:
+            count *= s
+        return (len(topo.shape), count)
+
+    @calc('shape', lazy=False)
+    def proc_shape(topo):
+        '''The grid's extent.
+
+        Returns
+        -------
+        shape : tuple of int
+            The number of cells along each axis.
+        '''
+        return {'shape': tuple(topo.shape)}
+
+    @calc('property_shape', lazy=False)
+    def proc_property_shape(topo):
+        '''The spatial shape a grid property must have.
+
+        A grid property has the grid's extent: a property of a grid of voxels
+        is itself an image.
+
+        Returns
+        -------
+        property_shape : tuple of int
+            The grid's extent.
+        '''
+        return {'property_shape': tuple(topo.shape)}
+
+    @calc('affine')
+    def proc_affine(coords):
+        '''The transform from index space to global coordinates.
+
+        Returns
+        -------
+        affine : Affine
+            The grid's affine.
+        '''
+        return Affine(coords)
+
+    @calc('affine_inverse')
+    def proc_affine_inverse(coords):
+        '''The transform from global coordinates to index space.
+
+        Returns
+        -------
+        affine_inverse : Affine
+            The inverse of the grid's affine.
+        '''
+        return Affine(coords).inverse
+
+    @calc('origin')
+    def proc_origin(coords):
+        '''The global position of the index-space origin.
+
+        Returns
+        -------
+        origin : array-like
+            A length-``D`` vector.
+        '''
+        return coords[:-1, -1]
+
+    @calc('spacing')
+    def proc_spacing(coords):
+        '''The length of one index step along each axis.
+
+        Returns
+        -------
+        spacing : array-like
+            A length-``D`` vector of the lengths of the affine matrix's
+            columns.
+        '''
+        matrix = coords[:-1, :-1]
+        return imath.sqrt(imath.sum(matrix * matrix, axis=0))
+
+    @calc('bbox')
+    def proc_bbox(coords, topo):
+        '''The bounding box of the grid in global coordinates.
+
+        Returns
+        -------
+        bbox : array-like
+            A ``(D, 2)`` matrix of the minimum and maximum of each coordinate
+            dimension.
+        '''
+        d = len(topo.shape)
+        # The 2**D corners of the index space, each axis running from 0 to one
+        # less than its extent.
+        axes = [arange(2) * (s - 1) for s in topo.shape]
+        mesh = meshgrid(*axes, indexing='ij')
+        pts = _to_like(coords, stack([m.reshape(-1) for m in mesh], axis=0))
+        world = Affine(coords).apply(pts)
+        return concatenate([imath.amin(world, axis=1)[:, None],
+                            imath.amax(world, axis=1)[:, None]], axis=1)
+
+    def _transformed_coords(self, transform, /):
+        '''Returns the grid's affine matrix with a transform composed onto it.
+
+        Transforming a grid transforms the positions it describes, so the
+        transform is composed with the affine rather than applied to a matrix
+        of coordinates: the grid keeps its extent and gains a new placement.
+        '''
+        return transform.matrix @ self.coords
+
+    def to_local(self, coords, /):
+        '''Expresses global positions as positions in index space.
+
+        Parameters
+        ----------
+        coords : array-like
+            A ``(D, Q)`` matrix of positions.
+
+        Returns
+        -------
+        LocMixin
+            The index-space positions, one fractional axis each.
+        '''
+        idx = self.affine_inverse.apply(as_query(coords))
+        return self.topo.Loc(*[idx[i] for i in range(idx.shape[0])])
+
+    def to_global(self, locs, /):
+        '''Expresses index-space positions as global coordinates.
+
+        Parameters
+        ----------
+        locs : LocMixin, mapping, or sequence
+            The index-space positions.
+
+        Returns
+        -------
+        array-like
+            A ``(D, Q)`` matrix of positions.
+        '''
+        loc = self.topo.check_loc(locs)
+        pts = _stack_parts([getattr(loc, f) for f in loc._fields])
+        return self.affine.apply(pts)
+
+
 # Exports ####################################################################
 
-__all__ = ('VertexSet', 'SegPath', 'TriMesh', 'TetMesh')
+__all__ = ('VertexSet', 'SegPath', 'TriMesh', 'TetMesh', 'PrismMesh',
+           'Grid')

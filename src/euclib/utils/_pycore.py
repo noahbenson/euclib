@@ -17,9 +17,10 @@ in any environment.
 
 from __future__ import annotations
 
+import numpy as np
 from numpy import (
-    arange, asarray, clip, concatenate, full, inf, linalg, ones, sort,
-    unique, where, zeros)
+    arange, asarray, clip, concatenate, full, inf, isfinite, linalg, ones,
+    sort, unique, where, zeros)
 
 from itertools import combinations
 
@@ -343,6 +344,110 @@ def closest_simplex(coords, indices, query):
     best = best_d2.argmin(axis=0)
     cols = arange(q)
     return (best, best_w[:, best, cols][:-1])
+
+
+# Prisms #####################################################################
+
+def closest_prism(coords0, coords1, indices, tetrahedra, query,
+                  per_prism=3):
+    '''Locates positions within a set of prisms.
+
+    A position within a prism is the position within its triangle on each
+    surface, blended by an elevation: ``(1 - e) * X0(u, v) + e * X1(u, v)``.
+    Expanding that shows it carries ``u * e`` and ``v * e`` terms, so the local
+    coordinates are a *nonlinear* function of the position whenever the two
+    surfaces are not parallel --- the linear machinery that inverts a simplex
+    cannot invert a prism.
+
+    .. note:: The Newton loop below is the only optimization loop in the
+        library. Before the 1.0 release, its performance must be measured
+        against realistic prism meshes and, if it is not acceptable, replaced
+        --- by a closed-form solve on the tetrahedron rather than a global
+        Newton iteration, by a smaller iteration budget, or by the C kernel
+        that ``euclib._c`` will provide.
+
+    The search therefore has two stages. The prism's tetrahedral decomposition
+    says which prism contains the position and, because a tetrahedron's corners
+    are prism corners, gives a first estimate of the local coordinates; that
+    estimate is already exact when the surfaces are parallel. Newton's method
+    then refines the estimate until it reproduces the position, which converges
+    in one step for a parallel-sided prism and in a handful for a skewed one.
+
+    Parameters
+    ----------
+    coords0, coords1 : numpy.ndarray
+        The two surfaces, each a ``(D, N)`` matrix of coordinates.
+    indices : array-like
+        The ``(3, M)`` integer matrix of triangle corners.
+    tetrahedra : array-like
+        The ``(4, 3*M)`` integer matrix of the tetrahedra that the prisms
+        decompose into, as produced by ``PrismTopology.tetrahedra``: the
+        tetrahedra of each prism occupy ``per_prism`` consecutive columns, and
+        index the surfaces laid end to end.
+    query : numpy.ndarray
+        A ``(D, Q)`` matrix of query positions.
+    per_prism : int, optional
+        The number of tetrahedra each prism decomposes into. The default is 3.
+
+    Returns
+    -------
+    index : numpy.ndarray
+        A length-``Q`` vector of the prism containing or nearest each query.
+    weight : numpy.ndarray
+        A ``(2, Q)`` matrix of the first two barycentric weights within each
+        prism's triangle; the third is their complement.
+    height : numpy.ndarray
+        A ``(1, Q)`` matrix of elevations, from 0 at the first surface to 1 at
+        the second.
+    '''
+    coords0 = _as_numpy(coords0)
+    coords1 = _as_numpy(coords1)
+    indices = asarray(indices)
+    tetrahedra = asarray(tetrahedra)
+    query = _as_numpy(query)
+    (d, n) = coords0.shape
+    q = query.shape[1]
+    merged = concatenate([coords0, coords1], axis=1)
+    # (1) The tetrahedron containing or nearest each query position.
+    (tet, w) = closest_simplex(merged, tetrahedra, query)
+    prism = tet // int(per_prism)
+    # (2) The first estimate: each tetrahedron corner is a prism corner, and the
+    # prism corners have known local coordinates --- (0,0,at the first surface)
+    # for the first, (1,0,...) for the second, and (0,1,...) for the third.
+    (a, b, c) = (indices[0][prism], indices[1][prism], indices[2][prism])
+    corners = tetrahedra[:, tet]                        # (4, Q)
+    side = (corners >= n).astype(float)
+    within = corners % n
+    # Each local coordinate stores the weights of the triangle's first two
+    # corners; the third is their complement, as it is for a triangle mesh. A
+    # tetrahedron's corners are prism corners, whose weights are known: the
+    # first is 1 where the second and third are 0, and so on.
+    w0 = (within == a[None, :]) * 1.0
+    w1 = (within == b[None, :]) * 1.0
+    full = concatenate([w, (1.0 - w.sum(axis=0))[None, :]], axis=0)  # (4, Q)
+    x = (np.stack([w0, w1, side], axis=-1) * full[:, :, None]).sum(axis=0)
+    # (3) Newton's method on p(w0, w1, e) - query = 0, where the position within
+    # the triangle is written relative to the *third* corner so that the two
+    # weights are the ones the local coordinate stores.
+    (a0, b0, c0) = (coords0[:, a], coords0[:, b], coords0[:, c])
+    (a1, b1, c1) = (coords1[:, a], coords1[:, b], coords1[:, c])
+    e0 = a0 - c0
+    e1 = b0 - c0
+    f0 = (a1 - c1) - e0
+    f1 = (b1 - c1) - e1
+    dc = c1 - c0
+    for _ in range(40):
+        (u, v, e) = (x[:, 0], x[:, 1], x[:, 2])
+        drift = dc + u * f0 + v * f1
+        res = (c0 + u * e0 + v * e1 + e * drift) - query
+        jac = np.stack([e0 + e * f0, e1 + e * f1, drift], axis=1)
+        # The right-hand side is given a trailing axis so that solve reads it as
+        # one column per query rather than as a matrix of batches.
+        step = linalg.solve(jac.transpose(2, 0, 1), (-res).T[:, :, None])[:, :, 0]
+        x = x + step
+        if not isfinite(step).all() or np.abs(step).max() < _TOLERANCE:
+            break
+    return (prism, x[:, :2].T, x[:, 2][None, :])
 
 
 # Simplices ##################################################################

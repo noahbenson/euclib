@@ -38,7 +38,8 @@ from pcollections import ldict, llist
 
 from ._core import calc, normalize_backend, planobject, plantypeABC
 from ..utils import content_hash, values_equal, simplex_measures
-from ._property import Property, UNSET, is_property
+from ._property import (
+    INTERP_QUALITATIVE, INTERP_SUPPORTED, Property, UNSET, is_property)
 from ._topo import Topology, SimplexTopology
 
 
@@ -77,6 +78,63 @@ def normalize_properties(properties, form_shape, /):
                 f" but must have {tuple(form_shape)}")
         res[name] = prop
     return ldict(res)
+
+
+def supported_interp(topo, /):
+    '''The interpolations that a geometry with a given topology can honour.
+
+    A point cloud is the special case: its points have no interior, so there is
+    no position *within* the cloud at which a value could be interpolated, and
+    the only thing its local coordinate can say is which point is nearest.
+
+    Parameters
+    ----------
+    topo : Topology
+        The geometry's topology.
+
+    Returns
+    -------
+    tuple of (str, int)
+        The interpolation method and order pairs that are valid.
+    '''
+    if getattr(topo, 'order', None) == 0:
+        return (INTERP_QUALITATIVE,)
+    return INTERP_SUPPORTED
+
+
+def check_property_interp(prop, topo, /):
+    '''Checks that a geometry can honour a property's interpolation.
+
+    The check happens when the property is attached to the geometry, so that a
+    property the geometry cannot read fails where it was written rather than
+    when it is first read. Only an interpolation the caller *asked* for is
+    checked: a property that merely took the default is the geometry's business,
+    and a geometry that cannot interpolate at all ignores it.
+
+    Parameters
+    ----------
+    prop : Property
+        The property being attached.
+    topo : Topology
+        The geometry's topology.
+
+    Raises
+    ------
+    ValueError
+        If the property asks for an interpolation the geometry cannot honour.
+    '''
+    if not prop.interp_specified:
+        return
+    supported = supported_interp(topo)
+    if tuple(prop.interp) not in supported:
+        order = getattr(topo, 'order', None)
+        why = ("a point cloud has no interior, so it can only report the"
+               " nearest point's value" if order == 0
+               else f"its topology has order {order}")
+        raise ValueError(
+            f"this geometry does not support the interpolation"
+            f" {tuple(prop.interp)}; it supports"
+            f" {' and '.join(map(str, supported))} because {why}")
 
 
 def as_query(coords, /):
@@ -284,9 +342,9 @@ class Geometry(planobject, metaclass=plantypeABC):
         property_shape : tuple of int
             ``(coord_count,)``.
         '''
-        # A single-output calc returns its value directly; returning a tuple
-        # would be read as a sequence of outputs, so the value is wrapped in a
-        # dictionary keyed by the output's name.
+        # A single-output calc may return its value or a one-tuple holding it,
+        # so a tuple *value* needs either that wrapping or the dictionary form;
+        # a bare tuple would be read as a sequence of outputs.
         return {'property_shape': (coord_count,)}
 
     @calc('_auto_properties')
@@ -305,11 +363,14 @@ class Geometry(planobject, metaclass=plantypeABC):
         return ldict()
 
     @calc('properties', lazy=False)
-    def proc_properties(properties, property_shape, _auto_properties):
+    def proc_properties(properties, property_shape, topo, _auto_properties):
         '''Normalizes the object's coordinate properties.
 
         Computed properties are merged in first, so that a property the user
-        supplied under the same name takes precedence.
+        supplied under the same name takes precedence. Each property's
+        interpolation is checked against what this geometry can honour, so that
+        a property this object cannot read fails here rather than when it is
+        first read.
 
         Returns
         -------
@@ -318,6 +379,8 @@ class Geometry(planobject, metaclass=plantypeABC):
         '''
         merged = dict(_auto_properties)
         merged.update(normalize_properties(properties, property_shape))
+        for prop in merged.values():
+            check_property_interp(prop, topo)
         return ldict(merged)
 
     @abstractmethod
@@ -472,22 +535,24 @@ class Geometry(planobject, metaclass=plantypeABC):
 
         With no ``at`` argument, this returns the property's values as they are
         stored. Given a boolean mask or a sequence of integer indices, it
-        returns the values at those positions, still in their usual shape.
+        returns the values at those components. Given a matrix of global
+        positions, or local coordinates supplied as a ``Loc`` or a mapping, it
+        interpolates the property at those positions according to the
+        property's metadata.
 
-        Interpolating at arbitrary coordinates --- the ``at`` argument given as
-        global or local coordinates --- is not yet implemented; it arrives with
-        the interpolation engine. Until then, an unsupported ``at`` raises
-        ``NotImplementedError`` rather than returning a wrong answer.
+        Only coordinate properties can be interpolated; a property attached to
+        simplices is read with ``self[order, name]``.
 
         Parameters
         ----------
-        property : hashable or tuple
-            The property's name, optionally as a ``(order, name)`` pair.
+        property : hashable
+            The property's name.
         at : Ellipsis, array-like, or None, optional
             Where to extract the property. The default, ``Ellipsis``, returns
             the whole property.
         **kw
-            Metadata that overrides the property's own.
+            Metadata that overrides the property's own: ``order``, ``extrap``,
+            ``null``, and ``mask``.
 
         Returns
         -------
@@ -496,18 +561,23 @@ class Geometry(planobject, metaclass=plantypeABC):
         '''
         if at is UNSET:
             at = Ellipsis
-        if kw:
-            raise NotImplementedError(
-                "per-call property metadata overrides are not yet implemented")
+        (order, pname) = split_property_name(property)
+        if order is not None:
+            raise ValueError(
+                f"prop reads coordinate properties; the simplex property"
+                f" ({order}, {pname!r}) is read with geom[{order}, {pname!r}]")
         if at is Ellipsis or at is None:
-            return self[property]
+            return self[pname]
         if isinstance(at, bool) or _is_boolean_mask(at):
-            return self[property, at]
+            return self[pname, at]
         if isinstance(at, (list, tuple)) and all(
                 isinstance(a, (int, integer)) for a in at):
-            return self[property, list(at)]
-        raise NotImplementedError(
-            "interpolating a property at coordinates is not yet implemented")
+            return self[pname, list(at)]
+        # Imported here rather than at module scope: the interpolation engine
+        # is a concrete-type concern, and euclib.abc must not import
+        # euclib.types.
+        from ..types._interp import interpolate
+        return interpolate(self, self._prop_for(pname, None), at, **kw)
 
     # Updating ##############################################################
 
@@ -852,6 +922,8 @@ class SimplexGeometry(Geometry):
         for k in range(n):
             merged = dict(_auto_simplex_properties[k])
             merged.update(normalize_properties(seq[k], (topo.simplex_count[k],)))
+            for prop in merged.values():
+                check_property_interp(prop, topo)
             res.append(ldict(merged))
         return llist(res)
 

@@ -13,9 +13,11 @@ operation can be extended to a new pair of types without changing either type.
 
 from __future__ import annotations
 
+from ._cross import positions_of, sample, transfer
 from ._distance import distance, nearest, separation
 
 
 # Exports ####################################################################
 
-__all__ = ('distance', 'nearest', 'separation')
+__all__ = ('distance', 'nearest', 'separation',
+           'positions_of', 'sample', 'transfer')

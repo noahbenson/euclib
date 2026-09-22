@@ -51,25 +51,64 @@ class TestNormalizers(TestCase):
             normalize_vartype('categorical', zeros(3))
 
     def test_normalize_interp(self):
-        self.assertEqual(normalize_interp(None, QUANTITATIVE), 0)
-        self.assertEqual(normalize_interp('nearest', QUANTITATIVE), 0)
-        self.assertEqual(normalize_interp('linear', QUANTITATIVE), 1)
-        self.assertEqual(normalize_interp('quadratic', QUANTITATIVE), 2)
-        self.assertEqual(normalize_interp('cubic', QUANTITATIVE), 3)
-        self.assertEqual(normalize_interp(2, QUANTITATIVE), 2)
+        from euclib._init import default_quantitative_interp
         # Ellipsis selects the type-appropriate default.
-        self.assertEqual(normalize_interp(Ellipsis, QUALITATIVE), 0)
-        self.assertEqual(normalize_interp(Ellipsis, QUANTITATIVE), 3)
-        with self.assertRaises(ValueError):
-            normalize_interp(4, QUANTITATIVE)
+        self.assertEqual(normalize_interp(Ellipsis, QUALITATIVE),
+                         ('nearest', 0))
+        self.assertEqual(normalize_interp(Ellipsis, QUANTITATIVE),
+                         default_quantitative_interp)
+        # A method name takes the order from the default...
+        self.assertEqual(normalize_interp('nearest', QUALITATIVE),
+                         ('nearest', 0))
+        # ...an order takes the method from the default...
+        self.assertEqual(normalize_interp(1, QUANTITATIVE),
+                         ('polynomial', 1))
+        # ...and a pair is taken as given.
+        self.assertEqual(normalize_interp(('nearest', 0), QUANTITATIVE),
+                         ('nearest', 0))
+
+    def test_normalize_interp_rejects_bad_values(self):
+        # A method euclib does not define.
         with self.assertRaises(ValueError):
             normalize_interp('spline', QUANTITATIVE)
+        # An order outside 0 through 3.
+        with self.assertRaises(ValueError):
+            normalize_interp(4, QUANTITATIVE)
+        # A value that is neither.
+        with self.assertRaises(ValueError):
+            normalize_interp([1], QUANTITATIVE)
 
-    def test_normalize_interp_rejects_higher_order_qualitative(self):
+    def test_normalize_interp_rejects_unsupported_combinations(self):
+        # A method that euclib defines but has not built yet.
+        with self.assertRaises(NotImplementedError):
+            normalize_interp(('bezier', 2), QUANTITATIVE)
+        with self.assertRaises(NotImplementedError):
+            normalize_interp(('clough-tocher', 3), QUANTITATIVE)
+        # 'nearest' is only meaningful at order 0.
         with self.assertRaises(ValueError):
-            normalize_interp(1, QUALITATIVE)
-        with self.assertRaises(ValueError):
-            normalize_interp('cubic', QUALITATIVE)
+            normalize_interp(('nearest', 1), QUANTITATIVE)
+
+    def test_normalize_interp_canonicalizes_order_zero(self):
+        # A fit of degree zero is the value itself, so order 0 is nearest
+        # whichever method it was asked for under.
+        self.assertEqual(normalize_interp(0, QUANTITATIVE), ('nearest', 0))
+        self.assertEqual(normalize_interp(('polynomial', 0), QUANTITATIVE),
+                         ('nearest', 0))
+        self.assertEqual(normalize_interp(('bezier', 0), QUANTITATIVE),
+                         ('nearest', 0))
+        # ...and a bare 'nearest' takes order 0 rather than the default order.
+        self.assertEqual(normalize_interp('nearest', QUANTITATIVE),
+                         ('nearest', 0))
+
+    def test_normalize_interp_rejects_non_nearest_qualitative(self):
+        # A category has no meaning between its values, so anything that would
+        # blend them is refused.
+        for bad in (1, 2, ('polynomial', 1), ('bezier', 2), ('nearest', 1)):
+            with self.assertRaises((ValueError, NotImplementedError)):
+                normalize_interp(bad, QUALITATIVE)
+        # ...though order 0 under any name is nearest, and so is allowed.
+        self.assertEqual(normalize_interp('polynomial', QUALITATIVE),
+                         ('nearest', 0))
 
     def test_normalize_extrap(self):
         self.assertIsNone(normalize_extrap(None))
@@ -122,7 +161,7 @@ class TestProperty(TestCase):
         p = Property(ones(5, dtype='bool'), (5,))
         self.assertEqual(p.vartype, QUALITATIVE)
         self.assertFalse(p.is_quantitative)
-        self.assertEqual(p.interp, 0)
+        self.assertEqual(p.interp, ('nearest', 0))
 
     def test_shape_is_validated_eagerly(self):
         # The shape check is an eager calculation, so immlib reports its
@@ -134,12 +173,12 @@ class TestProperty(TestCase):
             Property(zeros((3,)), (5,))
 
     def test_metadata_is_normalized_on_construction(self):
-        p = Property(zeros(5), (5,), interp='linear', extrap=0)
-        self.assertEqual(p.interp, 1)
+        p = Property(zeros(5), (5,), interp='polynomial', extrap=0)
+        self.assertEqual(p.interp, ('polynomial', 1))
         self.assertEqual(p.extrap, 0)
         # Qualitative data with a non-zero order is an error.
         with self.assertRaises(PlanError):
-            Property(ones(5, dtype='i4'), (5,), interp='cubic')
+            Property(ones(5, dtype='i4'), (5,), interp=('polynomial', 1))
 
     def test_dtype_is_applied(self):
         p = Property(zeros(5), (5,), dtype='f4')
@@ -169,9 +208,9 @@ class TestProperty(TestCase):
 
     def test_withmeta(self):
         p = Property(zeros(5), (5,), interp=1)
-        q = p.withmeta(interp=2)
-        self.assertEqual(p.interp, 1)
-        self.assertEqual(q.interp, 2)
+        q = p.withmeta(interp=0)
+        self.assertEqual(p.interp, ('polynomial', 1))
+        self.assertEqual(q.interp, ('nearest', 0))
         # Changing nothing returns the same object.
         self.assertIs(p.withmeta(), p)
         # The value is never changed by withmeta.
@@ -182,7 +221,7 @@ class TestProperty(TestCase):
     def test_copy_revalidates_metadata(self):
         '''Filters run whenever an input changes, so copy() validates too.'''
         p = Property(zeros(5), (5,), interp=1)
-        self.assertEqual(p.copy(interp=3).interp, 3)
+        self.assertEqual(p.copy(interp=0).interp, ('nearest', 0))
         with self.assertRaises(PlanError):
             p.copy(interp=7)
         with self.assertRaises(PlanError):
@@ -192,7 +231,7 @@ class TestProperty(TestCase):
         p = Property(zeros((2, 5)), (5,), interp=1)
         q = p.subprop((5,))
         self.assertEqual(q.form_shape, (5,))
-        self.assertEqual(q.interp, 1)
+        self.assertEqual(q.interp, ('polynomial', 1))
 
     def test_getitem_returns_raw_values(self):
         v = array([[1., 2., 3.], [4., 5., 6.]])
@@ -204,7 +243,7 @@ class TestProperty(TestCase):
         a = Property(array([1., 2., 3.]), (3,), interp=1)
         b = Property(array([1., 2., 3.]), (3,), interp=1)
         c = Property(array([1., 2., 4.]), (3,), interp=1)
-        d = Property(array([1., 2., 3.]), (3,), interp=2)
+        d = Property(array([1., 2., 3.]), (3,), interp=0)
         self.assertEqual(a, b)
         self.assertNotEqual(a, c)
         self.assertNotEqual(a, d)

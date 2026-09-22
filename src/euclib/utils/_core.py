@@ -66,4 +66,4 @@ if _is_true(environ.get('EUCLIB_REQUIRE_C')) and not using_c_extension:
 from ._pycore import (  # noqa: E402
     is_pointdata, unique_columns, unique_coords, simplex_measures,
     nearest_vertices, project_onto_face, closest_simplex,
-    barycentric_coords)
+    closest_prism, barycentric_coords)

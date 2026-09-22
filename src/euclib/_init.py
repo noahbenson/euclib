@@ -34,9 +34,16 @@ if default_backend is not None and default_backend not in backend_names:
         f"invalid EUCLIB_DEFAULT_BACKEND: {default_backend!r}; expected one of"
         f" {backend_names} or None")
 
-#: Whether a float property's default interpolation order is cubic (3) rather
-#: than linear (1) when the property's metadata does not specify one.
-default_float_interp_order = 3
+#: The interpolation that a quantitative property uses when its metadata leaves
+#: it unspecified. The design calls for ``('bezier', 2)``, a quadratic scheme
+#: that suits smooth real-valued data on a simplex; ``('polynomial', 1)`` is
+#: what is implemented, and this returns to the design's default once the
+#: higher orders are built (see ``euclib.types._interp``).
+default_quantitative_interp = ('polynomial', 1)
+
+#: The interpolation that a qualitative property uses, and the only one it may
+#: use: a category has no meaning between the values it takes.
+default_qualitative_interp = ('nearest', 0)
 
 
 # Optional torch #############################################################
