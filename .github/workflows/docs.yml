@@ -1,0 +1,60 @@
+################################################################################
+# docs.yml
+#
+# GitHub Actions workflow for building and publishing the euclib
+# documentation. This is adapted from immlib's docs workflow, which is itself a
+# modified version of the Jupyter Book template:
+# https://jupyterbook.org/en/stable/publish/gh-pages.html
+#
+# by Noah C. Benson
+
+name: Build and Deploy Documentation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/**
+      - src/**
+      - README.md
+      - pyproject.toml
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+jobs:
+  deploy-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment: github-pages
+    steps:
+      - uses: actions/checkout@v7
+      # Install dependencies.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip # Implicitly uses requirements.txt for cache key
+      - name: Install euclib and Dependencies
+        run: pip install -e .[docs]
+      # Build the book. The API-reference pages are generated from the
+      # docstrings first, then the Jupyter Book 2 (mystmd) site is built from
+      # within the project directory (which is where its myst.yml lives). The
+      # example pages are executed, so their figures are generated during the
+      # build.
+      - name: Build Documentation
+        run: |
+          python docs/generate_api.py
+          cd docs/euclib
+          jupyter-book build --html --execute
+      # Upload the book's HTML as an artifact.
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: "docs/euclib/_build/html"
+      # Deploy the book's HTML to GitHub Pages.
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
