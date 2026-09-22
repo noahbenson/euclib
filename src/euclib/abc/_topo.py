@@ -432,7 +432,9 @@ class SimplexTopology(Topology):
         coord_count : int
             The coordinate count, defaulting to one more than the largest index.
         '''
-        needed = int(indices.max()) + 1
+        # An index matrix with no columns describes no simplices at
+        # all, so there is no largest index to take.
+        needed = int(indices.max()) + 1 if indices.shape[1] else 0
         if coord_count is None:
             return needed
         count = int(coord_count)

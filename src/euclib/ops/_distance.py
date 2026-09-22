@@ -23,6 +23,7 @@ from numpy import asarray
 from immlib import math as imath
 
 from ..abc import Geometry, SimplexGeometry, as_query
+from ._cross import positions_of
 
 
 # Helpers ####################################################################
@@ -30,11 +31,16 @@ from ..abc import Geometry, SimplexGeometry, as_query
 def _points_of(b, /):
     '''Returns the positions to measure from ``b``.
 
+    A geometry's data does not always live at its ``coords``: a grid's coords
+    is an affine matrix and its data lives at its cells, and a prism mesh's
+    lives at both of its surfaces. ``positions_of`` is the one place that
+    knows where each kind of geometry's data is, so distances are measured
+    from what it names rather than from ``coords`` directly.
+
     Parameters
     ----------
     b : Geometry or array-like
-        A geometry, whose coordinates are used, or a ``(D, Q)`` matrix of
-        positions.
+        A geometry, or a ``(D, Q)`` matrix of positions.
 
     Returns
     -------
@@ -42,13 +48,25 @@ def _points_of(b, /):
         A ``(D, Q)`` matrix of positions.
     '''
     if isinstance(b, Geometry):
-        coords = b.coords
-        if not hasattr(coords, 'shape') or len(coords.shape) != 2:
-            raise ValueError(
-                f"cannot take distances from a {type(b).__name__}, whose"
-                " coords is not a coordinate matrix")
-        return coords
+        return positions_of(b)
     return as_query(b)
+
+
+def _check_source(a, /):
+    '''Checks that a geometry may be measured to.
+
+    Parameters
+    ----------
+    a : object
+        The geometry to measure to.
+
+    Raises
+    ------
+    TypeError
+        If it is not a geometry.
+    '''
+    if not hasattr(a, 'to_local'):
+        raise TypeError(f"expected a Geometry; found {type(a)}")
 
 
 def _check_dim(geom, points, /):
@@ -95,8 +113,7 @@ def distance(a, b, /):
     >>> distance(mesh, np.array([[0.25], [0.25]])).tolist()
     [0.0]
     '''
-    if not hasattr(a, 'to_local'):
-        raise TypeError(f"expected a Geometry; found {type(a)}")
+    _check_source(a)
     points = _points_of(b)
     _check_dim(a, points)
     near = a.to_global(a.to_local(points))
@@ -118,8 +135,7 @@ def nearest(a, b, /):
     array-like
         A ``(D, Q)`` matrix of the nearest positions on ``a``.
     '''
-    if not hasattr(a, 'to_local'):
-        raise TypeError(f"expected a Geometry; found {type(a)}")
+    _check_source(a)
     points = _points_of(b)
     _check_dim(a, points)
     return a.to_global(a.to_local(points))

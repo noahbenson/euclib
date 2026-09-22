@@ -36,8 +36,10 @@ from numpy import asarray, concatenate, integer
 from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, llist
 
+from .. import _init
 from ._core import calc, normalize_backend, planobject, plantypeABC
-from ..utils import content_hash, values_equal, simplex_measures
+from ..utils import (
+    SpatialTree, content_hash, simplex_boxes, values_equal, simplex_measures)
 from ._property import (
     INTERP_QUALITATIVE, INTERP_SUPPORTED, Property, UNSET, is_property)
 from ._topo import Topology, SimplexTopology
@@ -847,6 +849,29 @@ class SimplexGeometry(Geometry):
             The simplex counts, indexed by order.
         '''
         return topo.simplex_count
+
+    @calc('spatial_index')
+    def proc_spatial_index(coords, topo):
+        '''A spatial index over this geometry's simplices, where one would pay.
+
+        The searches that locate a position examine the simplices near it.
+        Below a few hundred simplices there are few enough that examining them
+        all, vectorized, is faster than the bookkeeping a subdivided search
+        needs; above that the index divides the work by a factor that grows
+        with the mesh. The threshold is
+        ``euclib._init.spatial_index_min_items``.
+
+        Returns
+        -------
+        spatial_index : SpatialTree or None
+            An index over the simplices, or ``None`` when the geometry is too
+            small for one to help.
+        '''
+        count = topo.simplex_count[topo.order]
+        if count < _init.spatial_index_min_items:
+            return None
+        (centers, radii) = simplex_boxes(coords, topo.indices)
+        return SpatialTree(centers, radii)
 
     @calc('bbox')
     def proc_bbox(coords, vertex_mask):

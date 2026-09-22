@@ -19,10 +19,14 @@ from __future__ import annotations
 
 import numpy as np
 from numpy import (
-    arange, asarray, clip, concatenate, full, inf, isfinite, linalg, ones,
-    sort, unique, where, zeros)
+    arange, asarray, clip, concatenate, full, inf, isfinite, linalg, maximum,
+    around, arange, isfinite, nan, ones, sort, sqrt, stack, unique, where,
+    zeros)
 
 from itertools import combinations
+
+from scipy.spatial import Delaunay
+from scipy.spatial.qhull import QhullError
 
 from immlib import is_numeric, math as imath
 
@@ -156,7 +160,7 @@ def _determinant3(u, v, w, /):
 
 # Point Location #############################################################
 
-def nearest_vertices(coords, query):
+def nearest_vertices(coords, query, tree=None):
     '''Finds the nearest coordinate to each query position.
 
     Parameters
@@ -165,12 +169,19 @@ def nearest_vertices(coords, query):
         A ``(D, N)`` matrix of coordinates.
     query : numpy.ndarray
         A ``(D, Q)`` matrix of query positions.
+    tree : SpatialTree or None, optional
+        A spatial index over the coordinates. When one is given, the nearest
+        coordinate is found through it; the answer is the same either way. The
+        default, ``None``, compares every coordinate.
 
     Returns
     -------
     index : numpy.ndarray
         A length-``Q`` vector of the column of ``coords`` nearest each query.
     '''
+    if tree is not None:
+        (index, _) = tree.nearest(_as_numpy(query), k=1)
+        return index[0]
     coords = _as_numpy(coords)
     query = _as_numpy(query)
     if coords.ndim != 2 or query.ndim != 2:
@@ -287,7 +298,88 @@ def barycentric_coords(coords, indices, query):
     return weight
 
 
-def closest_simplex(coords, indices, query):
+def simplex_points(coords, indices, index, weight):
+    '''Returns the position within each named simplex at the given weights.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(D, N)`` matrix of coordinates.
+    indices : array-like
+        A ``(K+1, M)`` integer matrix of simplex corners.
+    index : array-like
+        A length-``Q`` vector of simplex indices.
+    weight : numpy.ndarray
+        A ``(K, Q)`` matrix of the first ``K`` barycentric weights; the last
+        corner's weight is their complement.
+
+    Returns
+    -------
+    numpy.ndarray
+        A ``(D, Q)`` matrix of positions.
+    '''
+    coords = _as_numpy(coords)
+    corners = coords[:, asarray(indices)[:, asarray(index)]]   # (D, K+1, Q)
+    count = weight.shape[0]
+    if count == 0:
+        return corners[:, 0]
+    last = 1.0 - weight.sum(axis=0)
+    res = corners[:, 0] * weight[0]
+    for j in range(1, count):
+        res = res + corners[:, j] * weight[j]
+    return res + corners[:, count] * last
+
+
+def _closest_simplex_indexed(coords, indices, query, tree):
+    '''The nearest simplex to each query, by way of a spatial index.
+
+    The index answers with the simplices whose bounding spheres come within a
+    radius of a position, which is conservative in the safe direction: the
+    simplex that is truly nearest is among them whenever the radius reaches it.
+    So each position is searched with a radius that grows until the answer
+    found is nearer than the radius, at which point no unexamined simplex could
+    be nearer and the answer is the true one.
+    '''
+    coords = _as_numpy(coords)
+    indices = asarray(indices)
+    query = _as_numpy(query)
+    count = indices.shape[0] - 1
+    total = query.shape[1]
+    out_index = zeros(total, dtype=int)
+    out_weight = zeros((count, total))
+    for i in range(total):
+        point = query[:, i:i + 1]
+        # The nearest sphere is a lower bound on the nearest position, so it
+        # makes a good radius to start from.
+        radius = max(float(tree.nearest(point, k=1)[1][0, 0]), _TOLERANCE)
+        selected = None
+        for _ in range(40):
+            nearby = tree.candidates(point, radius)[0]
+            if nearby.size == 0:
+                radius *= 2.0
+                continue
+            (idx, weight) = _closest_simplex_brute(coords, indices[:, nearby],
+                                                   point)
+            found = simplex_points(coords, indices[:, nearby], idx, weight)
+            away = float(sqrt(((point[:, 0] - found[:, 0]) ** 2).sum()))
+            selected = (nearby, idx, weight)
+            if away <= radius:
+                break
+            radius = max(away, radius * 2.0)
+        if selected is None:
+            # The index found nothing at any radius, which can only happen for
+            # a degenerate geometry; the whole search answers it.
+            (idx, weight) = _closest_simplex_brute(coords, indices, point)
+            out_index[i] = idx[0]
+            out_weight[:, i] = weight[:, 0]
+        else:
+            (nearby, idx, weight) = selected
+            out_index[i] = nearby[idx[0]]
+            out_weight[:, i] = weight[:, 0]
+    return (out_index, out_weight)
+
+
+def closest_simplex(coords, indices, query, tree=None):
     '''Finds the nearest simplex to each query position, and the position
     within it.
 
@@ -307,6 +399,11 @@ def closest_simplex(coords, indices, query):
         A ``(K+1, M)`` integer matrix of simplex corners.
     query : numpy.ndarray
         A ``(D, Q)`` matrix of query positions.
+    tree : SpatialTree or None, optional
+        A spatial index over the simplices. When one is given, the search
+        examines only the simplices the index reports as near, which is what
+        makes it pay for a mesh of any size; the answer is the same either way.
+        The default, ``None``, examines every simplex.
 
     Returns
     -------
@@ -316,6 +413,13 @@ def closest_simplex(coords, indices, query):
         A ``(K, Q)`` matrix of the first ``K`` barycentric weights within the
         chosen simplex; the final weight is their complement.
     '''
+    if tree is not None:
+        return _closest_simplex_indexed(coords, indices, query, tree)
+    return _closest_simplex_brute(coords, indices, query)
+
+
+def _closest_simplex_brute(coords, indices, query):
+    '''The nearest simplex to each query, by examining every simplex.'''
     coords = _as_numpy(coords)
     query = _as_numpy(query)
     indices = asarray(indices)
@@ -344,6 +448,398 @@ def closest_simplex(coords, indices, query):
     best = best_d2.argmin(axis=0)
     cols = arange(q)
     return (best, best_w[:, best, cols][:-1])
+
+
+# Intersections ##############################################################
+
+#: The relative size below which a quantity counts as zero.
+_EPSILON = 1e-12
+
+
+def cross3(a, b, /):
+    '''Returns the cross product of two sets of three-dimensional vectors.
+
+    Parameters
+    ----------
+    a, b : numpy.ndarray
+        ``(3, M)`` matrices of vectors.
+
+    Returns
+    -------
+    numpy.ndarray
+        A ``(3, M)`` matrix of cross products.
+    '''
+    return concatenate([
+        (a[1] * b[2] - a[2] * b[1])[None, :],
+        (a[2] * b[0] - a[0] * b[2])[None, :],
+        (a[0] * b[1] - a[1] * b[0])[None, :]], axis=0)
+
+
+def closest_segment_params(a0, a1, b0, b1):
+    '''Returns the parameters of the closest points of two sets of segments.
+
+    Each segment pair is answered with the position along each segment of the
+    pair of points, one on each, that are nearest one another. Two segments
+    that cross have a distance of zero, and the parameters say where they
+    cross; two that do not have the parameters of their closest approach.
+
+    Parameters
+    ----------
+    a0, a1 : numpy.ndarray
+        The endpoints of the first segments, each ``(D, Q)``.
+    b0, b1 : numpy.ndarray
+        The endpoints of the second segments, each ``(D, Q)``.
+
+    Returns
+    -------
+    s : numpy.ndarray
+        A length-``Q`` vector of positions along the first segments, from 0 at
+        ``a0`` to 1 at ``a1``.
+    t : numpy.ndarray
+        A length-``Q`` vector of positions along the second segments.
+    '''
+    a0 = _as_numpy(a0)
+    a1 = _as_numpy(a1)
+    b0 = _as_numpy(b0)
+    b1 = _as_numpy(b1)
+    u = a1 - a0
+    v = b1 - b0
+    w = a0 - b0
+    aa = (u * u).sum(axis=0)
+    bb = (u * v).sum(axis=0)
+    cc = (v * v).sum(axis=0)
+    dd = (u * w).sum(axis=0)
+    ee = (v * w).sum(axis=0)
+    denom = aa * cc - bb * bb
+    # Parallel segments leave the system singular; any position on the first
+    # segment will do, and the clamp below settles the second.
+    parallel = denom <= _EPSILON * maximum(aa * cc, _EPSILON)
+    safe = where(parallel, 1.0, denom)
+    s = clip(where(parallel, 0.0, (bb * ee - cc * dd) / safe), 0.0, 1.0)
+    # The position along the second segment that suits that point, clamped; and
+    # where the clamp bit, the position along the first must be retaken.
+    degenerate = cc <= _EPSILON
+    t = where(degenerate, 0.0, (bb * s + ee) / where(degenerate, 1.0, cc))
+    low = t <= 0.0
+    high = t >= 1.0
+    t = clip(t, 0.0, 1.0)
+    on_a = where(aa <= _EPSILON, 1.0, aa)
+    s = where(low, clip(-dd / on_a, 0.0, 1.0),
+              where(high, clip((bb - dd) / on_a, 0.0, 1.0), s))
+    return (s, t)
+
+
+def segments_intersect(a0, a1, b0, b1, tolerance=0.0):
+    '''Finds where each pair of segments meets.
+
+    Parameters
+    ----------
+    a0, a1 : numpy.ndarray
+        The endpoints of the first segments, each ``(D, Q)``.
+    b0, b1 : numpy.ndarray
+        The endpoints of the second segments, each ``(D, Q)``.
+    tolerance : float, optional
+        How near the two segments must come to count as meeting. The default,
+        ``0``, requires an exact crossing, which is rarely true of floating
+        point arithmetic; callers usually pass a fraction of the geometry's
+        size.
+
+    Returns
+    -------
+    hit : numpy.ndarray
+        A length-``Q`` boolean vector.
+    point : numpy.ndarray
+        A ``(D, Q)`` matrix of meeting points, meaningful where ``hit``.
+    s, t : numpy.ndarray
+        The positions along each segment, as ``closest_segment_params`` gives.
+    '''
+    (s, t) = closest_segment_params(a0, a1, b0, b1)
+    near = a0 + (a1 - a0) * s
+    far = b0 + (b1 - b0) * t
+    gap = near - far
+    apart = sqrt((gap * gap).sum(axis=0))
+    return (apart <= tolerance, (near + far) / 2.0, s, t)
+
+
+def barycentric_in_triangle(point, a, b, c):
+    '''Returns the barycentric coordinates of positions within a triangle.
+
+    The positions are projected onto the triangle's plane, so the coordinates
+    describe where the projection lands; they are all non-negative when the
+    projection is inside the triangle.
+
+    Parameters
+    ----------
+    point : numpy.ndarray
+        A ``(D, Q)`` matrix of positions.
+    a, b, c : numpy.ndarray
+        The triangle's corners, each ``(D, Q)``.
+
+    Returns
+    -------
+    weights : numpy.ndarray
+        A ``(3, Q)`` matrix of barycentric weights, summing to one.
+    '''
+    v0 = b - a
+    v1 = c - a
+    v2 = point - a
+    d00 = (v0 * v0).sum(axis=0)
+    d01 = (v0 * v1).sum(axis=0)
+    d11 = (v1 * v1).sum(axis=0)
+    d20 = (v2 * v0).sum(axis=0)
+    d21 = (v2 * v1).sum(axis=0)
+    denom = d00 * d11 - d01 * d01
+    flat = denom <= _EPSILON * maximum(d00 * d11, _EPSILON)
+    safe = where(flat, 1.0, denom)
+    # A degenerate triangle has no plane to speak of; its first corner answers.
+    weight_b = where(flat, 0.0, (d11 * d20 - d01 * d21) / safe)
+    weight_c = where(flat, 0.0, (d00 * d21 - d01 * d20) / safe)
+    return stack([1.0 - weight_b - weight_c, weight_b, weight_c], axis=0)
+
+
+def segments_triangles_intersect(p0, p1, v0, v1, v2, tolerance=0.0):
+    '''Finds where each segment crosses each triangle.
+
+    The segment is followed to the plane the triangle lies in, and the crossing
+    is kept only if it falls within the segment and within the triangle. A
+    segment parallel to the triangle's plane does not cross it.
+
+    Parameters
+    ----------
+    p0, p1 : numpy.ndarray
+        The endpoints of the segments, each ``(3, Q)``.
+    v0, v1, v2 : numpy.ndarray
+        The triangles' corners, each ``(3, Q)``.
+    tolerance : float, optional
+        How far outside the triangle a crossing may fall and still count, for
+        the same reason ``segments_intersect`` takes one. The default is ``0``.
+
+    Returns
+    -------
+    hit : numpy.ndarray
+        A length-``Q`` boolean vector.
+    point : numpy.ndarray
+        A ``(3, Q)`` matrix of crossing points, meaningful where ``hit``.
+    weight : numpy.ndarray
+        A ``(3, Q)`` matrix of the barycentric weights of each crossing within
+        its triangle.
+    '''
+    p0 = _as_numpy(p0)
+    p1 = _as_numpy(p1)
+    direction = p1 - p0
+    normal = cross3(v1 - v0, v2 - v0)
+    denom = (normal * direction).sum(axis=0)
+    # Parallel segments do not cross the plane at a point.
+    parallel = abs(denom) <= _EPSILON * maximum(
+        sqrt((normal * normal).sum(axis=0)) * sqrt((direction * direction).sum(axis=0)),
+        _EPSILON)
+    reach = (normal * (v0 - p0)).sum(axis=0) / where(parallel, 1.0, denom)
+    point = p0 + direction * reach
+    weight = barycentric_in_triangle(point, v0, v1, v2)
+    within = ((weight >= -tolerance).all(axis=0)
+              & (reach >= -tolerance) & (reach <= 1.0 + tolerance)
+              & ~parallel)
+    return (within, point, weight)
+
+
+def triangles_segments_intersect(v0, v1, v2, w0, w1, w2, tolerance=0.0):
+    '''Finds the segment where each pair of triangles meets.
+
+    Two triangles that meet meet along a segment, not over an area: each lies
+    in its own plane, and the two planes meet in a line. The segment's ends are
+    therefore points where an edge of one triangle crosses the other, so the
+    six edge crossings --- three from each triangle --- contain the ends, and
+    the pair of them that are furthest apart *is* the segment.
+
+    This is what makes the computation cheap: it is six applications of the
+    segment-against-triangle test, which already knows how to find a crossing
+    and whether it lands inside, and a comparison among the results.
+
+    Two triangles in the same plane are not handled: they meet over an area
+    rather than along a segment, and no edge of either crosses the other.
+
+    Parameters
+    ----------
+    v0, v1, v2 : numpy.ndarray
+        The corners of the first triangles, each ``(3, Q)``.
+    w0, w1, w2 : numpy.ndarray
+        The corners of the second triangles, each ``(3, Q)``.
+    tolerance : float, optional
+        How near an edge must come to the other triangle to count as crossing
+        it. The default is ``0``.
+
+    Returns
+    -------
+    hit : numpy.ndarray
+        A length-``Q`` boolean vector.
+    start : numpy.ndarray
+        A ``(3, Q)`` matrix of one end of each segment, meaningful where
+        ``hit``.
+    stop : numpy.ndarray
+        A ``(3, Q)`` matrix of the other end. It is equal to ``start`` when
+        the triangles meet at a single point.
+    '''
+    corners = [_as_numpy(x) for x in (v0, v1, v2, w0, w1, w2)]
+    (v0, v1, v2, w0, w1, w2) = corners
+    crossings = []
+    for (p, q) in ((v0, v1), (v1, v2), (v2, v0)):
+        (found, point, _) = segments_triangles_intersect(
+            p, q, w0, w1, w2, tolerance=tolerance)
+        crossings.append(where(found[None, :], point, nan))
+    for (p, q) in ((w0, w1), (w1, w2), (w2, w0)):
+        (found, point, _) = segments_triangles_intersect(
+            p, q, v0, v1, v2, tolerance=tolerance)
+        crossings.append(where(found[None, :], point, nan))
+    points = stack(crossings, axis=1)               # (3, 6, Q)
+    count = points.shape[1]
+    spread = ((points[:, :, None, :] - points[:, None, :, :]) ** 2).sum(axis=0)
+    # A crossing that never happened is not a candidate, and neither is a pair
+    # of them; marking those as ``-1`` leaves the furthest real pair to win.
+    spread = where(isfinite(spread), spread, -1.0)
+    best = spread.reshape(count * count, points.shape[2]).argmax(axis=0)
+    columns = arange(points.shape[2])
+    (first, second) = (best // count, best % count)
+    start = points[:, first, columns]
+    stop = points[:, second, columns]
+    hit = isfinite(start).all(axis=0)
+    return (hit, start, stop)
+
+
+# Tetrahedron and box ########################################################
+
+def _half_spaces(tet, bounds):
+    '''The half-spaces that a tetrahedron and a box occupy.
+
+    Each is returned as a normal and an offset, with the interior on the side
+    where ``normal . x <= offset``. The tetrahedron contributes the four planes
+    of its faces, each oriented so that the opposite corner is inside; the box
+    contributes the six planes of its sides.
+
+    Parameters
+    ----------
+    tet : numpy.ndarray
+        A ``(3, 4)`` matrix of the tetrahedron's corners.
+    bounds : numpy.ndarray
+        A ``(3, 2)`` box.
+
+    Returns
+    -------
+    normals : numpy.ndarray
+        A ``(3, 10)`` matrix of plane normals.
+    offsets : numpy.ndarray
+        A length-10 vector of plane offsets.
+    '''
+    normals = []
+    offsets = []
+    for i in range(4):
+        others = [tet[:, j] for j in range(4) if j != i]
+        # cross3 takes matrices of vectors, so the corners are given columns;
+        # the result is taken back to a plain vector, because an offset is the
+        # inner product of two vectors and not the sum of their outer one.
+        normal = cross3((others[1] - others[0])[:, None],
+                        (others[2] - others[0])[:, None])[:, 0]
+        # Orient the plane so that the corner it omits is on the inside.
+        if float((normal * (tet[:, i] - others[0])).sum()) > 0:
+            normal = -normal
+        normals.append(normal)
+        offsets.append(float((normal * others[0]).sum()))
+    for axis in range(3):
+        unit = zeros(3)
+        unit[axis] = 1.0
+        normals.append(unit)
+        offsets.append(bounds[axis, 1])
+        normals.append(-unit)
+        offsets.append(-bounds[axis, 0])
+    return (stack(normals, axis=1), asarray(offsets))
+
+
+def tetrahedron_box_vertices(tet, bounds, tolerance=0.0):
+    '''Finds the corners of the region a tetrahedron and a box share.
+
+    The region is the part of space that lies inside both, so its corners are
+    the points where three of the ten bounding planes meet and no plane
+    excludes them. That makes the search a matter of trying every triple, which
+    is bounded and small: at most 120 points to test, of which the real corners
+    are the ones that survive every constraint.
+
+    Parameters
+    ----------
+    tet : numpy.ndarray
+        A ``(3, 4)`` matrix of the tetrahedron's corners.
+    bounds : numpy.ndarray
+        A ``(3, 2)`` box, such as one voxel of a grid.
+    tolerance : float, optional
+        How far outside a plane a corner may lie and still be counted, for the
+        same reason every other test here takes one. The default is ``0``.
+
+    Returns
+    -------
+    numpy.ndarray
+        A ``(3, V)`` matrix of the region's corners, in no particular order.
+        It is empty when the two do not meet.
+    '''
+    tet = _as_numpy(tet)
+    bounds = _as_numpy(bounds)
+    (normals, offsets) = _half_spaces(tet, bounds)
+    found = []
+    for (i, j, k) in combinations(range(normals.shape[1]), 3):
+        matrix = stack([normals[:, i], normals[:, j], normals[:, k]])
+        if abs(linalg.det(matrix)) <= _EPSILON:
+            continue
+        point = linalg.solve(matrix, offsets[[i, j, k]])
+        if ((normals * point[:, None]).sum(axis=0)
+                <= offsets + tolerance).all():
+            found.append(point)
+    if not found:
+        return zeros((3, 0))
+    # Every feasible triple yields its own copy of a corner, and the copies
+    # differ in the last bits of their coordinates; exact equality would keep
+    # them all, leaving a set so nearly degenerate that the hull of it cannot
+    # be taken. Rounding to a tolerance before deduplicating collects them,
+    # while keeping the first copy's own coordinates.
+    points = asarray(found)                 # (V, 3): one row per candidate
+    scale = max(float(abs(points).max()), 1.0)
+    step = max(float(tolerance), 1e-9 * scale)
+    (_, first) = unique(around(points / step), axis=0, return_index=True)
+    return points[first].T                  # (3, V)
+
+
+def tetrahedron_box_intersection(tet, bounds, tolerance=0.0):
+    '''Decomposes the region a tetrahedron and a box share into tetrahedra.
+
+    Parameters
+    ----------
+    tet : numpy.ndarray
+        A ``(3, 4)`` matrix of the tetrahedron's corners.
+    bounds : numpy.ndarray
+        A ``(3, 2)`` box, such as one voxel of a grid.
+    tolerance : float, optional
+        How far outside a plane a corner may lie and still be counted. The
+        default is ``0``.
+
+    Returns
+    -------
+    vertices : numpy.ndarray
+        A ``(3, V)`` matrix of the region's corners.
+    tetrahedra : numpy.ndarray
+        A ``(4, T)`` integer matrix of the tetrahedra that fill the region,
+        indexing ``vertices``.
+    '''
+    vertices = tetrahedron_box_vertices(tet, bounds, tolerance)
+    if vertices.shape[1] < 4:
+        # Three corners make a triangle and two make a segment; neither has a
+        # volume to fill.
+        return (vertices, zeros((4, 0), dtype=int))
+    try:
+        # Delaunay rather than ConvexHull: the hull describes the region by its
+        # surface, whose facets are triangles, where what is wanted here is a
+        # filling of it by tetrahedra.
+        filled = Delaunay(vertices.T)
+    except QhullError:
+        # A degenerate region --- every corner in one plane, say --- has no
+        # volume to fill either.
+        return (vertices, zeros((4, 0), dtype=int))
+    return (vertices, asarray(filled.simplices).T)
 
 
 # Prisms #####################################################################
@@ -411,6 +907,15 @@ def closest_prism(coords0, coords1, indices, tetrahedra, query,
     # (1) The tetrahedron containing or nearest each query position.
     (tet, w) = closest_simplex(merged, tetrahedra, query)
     prism = tet // int(per_prism)
+    # The tetrahedra fill the prisms, and ``closest_simplex`` clamps to the
+    # simplices it is given, so the position it answers with is the nearest
+    # position *on* the prisms --- the query itself when the query is inside
+    # one, and the nearest position on the boundary when it is not. Solving the
+    # parameterization for that position rather than for the query is what
+    # keeps a position outside a prism from being answered with its own
+    # extrapolation: the parameterization can be inverted just as well for a
+    # position beyond the prism as for one within it.
+    wanted = simplex_points(merged, tetrahedra, tet, w)
     # (2) The first estimate: each tetrahedron corner is a prism corner, and the
     # prism corners have known local coordinates --- (0,0,at the first surface)
     # for the first, (1,0,...) for the second, and (0,1,...) for the third.
@@ -439,7 +944,7 @@ def closest_prism(coords0, coords1, indices, tetrahedra, query,
     for _ in range(40):
         (u, v, e) = (x[:, 0], x[:, 1], x[:, 2])
         drift = dc + u * f0 + v * f1
-        res = (c0 + u * e0 + v * e1 + e * drift) - query
+        res = (c0 + u * e0 + v * e1 + e * drift) - wanted
         jac = np.stack([e0 + e * f0, e1 + e * f1, drift], axis=1)
         # The right-hand side is given a trailing axis so that solve reads it as
         # one column per query rather than as a matrix of batches.
@@ -448,6 +953,145 @@ def closest_prism(coords0, coords1, indices, tetrahedra, query,
         if not isfinite(step).all() or np.abs(step).max() < _TOLERANCE:
             break
     return (prism, x[:, :2].T, x[:, 2][None, :])
+
+
+# Spatial Subdivision ########################################################
+
+def bounds_of(coords, indices=None):
+    '''Returns the bounding box of a set of points or of a set of simplices.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(D, N)`` matrix of coordinates.
+    indices : array-like or None, optional
+        Simplex corners, as a ``(K+1, M)`` integer matrix. The default,
+        ``None``, takes the box of every coordinate.
+
+    Returns
+    -------
+    bounds : numpy.ndarray
+        A ``(D, 2)`` matrix whose first column is the minimum along each axis
+        and whose second column is the maximum.
+    '''
+    coords = _as_numpy(coords)
+    pts = coords if indices is None else coords[:, asarray(indices)].reshape(
+        coords.shape[0], -1)
+    return concatenate([pts.min(axis=1)[:, None], pts.max(axis=1)[:, None]],
+                       axis=1)
+
+
+def simplex_boxes(coords, indices):
+    '''Returns a center and a radius for each simplex.
+
+    The center is the middle of the simplex's bounding box and the radius is
+    the distance from that center to a corner of the box, so every point of the
+    simplex lies within ``radius`` of the center. The box is a cheap thing for
+    a spatial index to store, where the simplex itself would be expensive.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(D, N)`` matrix of coordinates.
+    indices : array-like
+        A ``(K+1, M)`` integer matrix of simplex corners.
+
+    Returns
+    -------
+    centers : numpy.ndarray
+        A ``(D, M)`` matrix of box centers.
+    radii : numpy.ndarray
+        A length-``M`` vector of box radii.
+    '''
+    coords = _as_numpy(coords)
+    corners = coords[:, asarray(indices)]          # (D, K+1, M)
+    low = corners.min(axis=1)
+    high = corners.max(axis=1)
+    half = (high - low) / 2.0
+    return ((low + high) / 2.0, sqrt((half * half).sum(axis=0)))
+
+
+def split_cells(centers, bounds):
+    '''Places points in the sub-cells of a box's bisection.
+
+    The box is halved along each axis, which makes ``2**D`` sub-cells --- four
+    quadrants in two dimensions and eight octants in three --- and each point is
+    placed in the one that contains it. This is the single step that a
+    quadtree or an octree repeats as it descends, and the reason it is a kernel
+    of its own: it is the whole of the work that a C implementation would
+    accelerate.
+
+    Parameters
+    ----------
+    centers : numpy.ndarray
+        A ``(D, M)`` matrix of points.
+    bounds : numpy.ndarray
+        The ``(D, 2)`` box being subdivided.
+
+    Returns
+    -------
+    cells : numpy.ndarray
+        A length-``M`` vector of sub-cell indices, from 0 to ``2**D - 1``. The
+        cell whose index has bit *d* set is the upper half along axis *d*.
+    '''
+    centers = _as_numpy(centers)
+    bounds = _as_numpy(bounds)
+    if centers.shape[0] != bounds.shape[0]:
+        raise ValueError(
+            f"the points have dimension {centers.shape[0]}, but the box has"
+            f" dimension {bounds.shape[0]}")
+    middle = (bounds[:, 0] + bounds[:, 1]) / 2.0
+    upper = centers > middle[:, None]
+    powers = (1 << arange(centers.shape[0]))[:, None]
+    return (upper * powers).sum(axis=0)
+
+
+def octree_split(centers, bounds):
+    '''Places points in the octants of a box's bisection.
+
+    Equivalent to ``split_cells``, with a name that says which of the two
+    subdivision structures it belongs to and a check that the space really is
+    three-dimensional.
+
+    Parameters
+    ----------
+    centers : numpy.ndarray
+        A ``(3, M)`` matrix of points.
+    bounds : numpy.ndarray
+        The ``(3, 2)`` box being subdivided.
+
+    Returns
+    -------
+    cells : numpy.ndarray
+        A length-``M`` vector of octant indices, 0 through 7.
+    '''
+    if _as_numpy(centers).shape[0] != 3:
+        raise ValueError("an octree subdivides three-dimensional space")
+    return split_cells(centers, bounds)
+
+
+def quadtree_split(centers, bounds):
+    '''Places points in the quadrants of a box's bisection.
+
+    Equivalent to ``split_cells``, with a name that says which of the two
+    subdivision structures it belongs to and a check that the space really is
+    two-dimensional.
+
+    Parameters
+    ----------
+    centers : numpy.ndarray
+        A ``(2, M)`` matrix of points.
+    bounds : numpy.ndarray
+        The ``(2, 2)`` box being subdivided.
+
+    Returns
+    -------
+    cells : numpy.ndarray
+        A length-``M`` vector of quadrant indices, 0 through 3.
+    '''
+    if _as_numpy(centers).shape[0] != 2:
+        raise ValueError("a quadtree subdivides two-dimensional space")
+    return split_cells(centers, bounds)
 
 
 # Simplices ##################################################################

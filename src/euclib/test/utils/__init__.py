@@ -9,9 +9,13 @@ from __future__ import annotations
 
 from .test_pycore import *
 from .test_hash import *
+from .test_spatial import *
+from .test_intersect import *
 
 
 # Exports ####################################################################
 
 __all__ = ('TestIsPointdata', 'TestUniqueColumns', 'TestUniqueCoords',
-           'TestContentHash')
+           'TestContentHash', 'TestSubdivision', 'TestSpatialTree',
+           'TestSegments', 'TestSegmentsAndTriangles', 'TestBarycentric',
+           'TestTetrahedronAndBox', 'TestTriangles')

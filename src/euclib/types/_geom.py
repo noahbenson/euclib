@@ -171,8 +171,8 @@ class VertexSet(SimplexGeometry):
         VertexLoc
             The index of the nearest point for each position.
         '''
-        return self.topo.Loc(nearest_vertices(self.coords,
-                                              as_query(coords)))
+        return self.topo.Loc(nearest_vertices(self.coords, as_query(coords),
+                                              self.spatial_index))
 
     def to_global(self, locs, /):
         '''Expresses local coordinates as positions in space.
@@ -245,7 +245,8 @@ class SegPath(SimplexGeometry):
             position's first barycentric coordinate within it.
         '''
         (index, weight) = closest_simplex(self.coords, self.topo.indices,
-                                          as_query(coords))
+                                          as_query(coords),
+                                          self.spatial_index)
         return self.topo.Loc(index, weight)
 
     def to_global(self, locs, /):
@@ -322,7 +323,8 @@ class TriMesh(SimplexGeometry):
             position's first two barycentric weights within it.
         '''
         (index, weight) = closest_simplex(self.coords, self.topo.indices,
-                                          as_query(coords))
+                                          as_query(coords),
+                                          self.spatial_index)
         return self.topo.Loc(index, weight)
 
     def to_global(self, locs, /):
@@ -423,7 +425,8 @@ class TetMesh(SimplexGeometry):
             position's first three barycentric weights within it.
         '''
         (index, weight) = closest_simplex(self.coords, self.topo.indices,
-                                          as_query(coords))
+                                          as_query(coords),
+                                          self.spatial_index)
         return self.topo.Loc(index, weight)
 
     def to_global(self, locs, /):
@@ -675,6 +678,13 @@ class PrismMesh(SimplexGeometry):
         local coordinates --- which is already exact when the surfaces are
         parallel --- and then refines that estimate until it reproduces the
         position.
+
+        A position *outside* every prism is answered with the nearest position
+        on one of them, as it is for the simplex geometries. That is the
+        position the tetrahedra give --- they fill the prisms and the search
+        clamps to them --- and it is *that* position the refinement solves for,
+        rather than the query, since a prism's parameterization can be inverted
+        for a position beyond the prism just as well as for one within it.
 
         Parameters
         ----------

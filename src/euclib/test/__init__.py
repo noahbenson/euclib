@@ -31,7 +31,7 @@ __all__ = (
     'TestLoc', 'TestTopologyAbstractness', 'TestSimplexTopology',
     'TestTopologyMetadata',
     'TestGeometryBasics', 'TestProperties', 'TestSimplexProperties',
-    'TestEquality', 'TestNameSplitting',
+    'TestEquality', 'TestNameSplitting', 'TestSpatialIndex',
     # from euclib.test.types
     'TestConcreteTopologies', 'TestConcreteLocs',
     'TestVertexSet', 'TestSegPath', 'TestTriMesh', 'TestTetMesh',
@@ -47,6 +47,13 @@ __all__ = (
     # from euclib.test.ops
     'TestPositions', 'TestTransfer',
     'TestDistance', 'TestNearest', 'TestSeparation',
+    'TestGeometriesThatAreNotCoordinateMatrices',
+    'TestAlongAPath', 'TestAlongASurface', 'TestEdgesOfTheDefinition',
+    'TestAgainstAnIndependentSearch',
+    'TestTolerance', 'TestPathCrossings', 'TestPathIntersections',
+    'TestContains', 'TestVoxelIntersections', 'TestMeshIntersections',
     # from euclib.test.utils
     'TestIsPointdata', 'TestUniqueColumns', 'TestUniqueCoords',
-    'TestContentHash')
+    'TestContentHash', 'TestSubdivision', 'TestSpatialTree',
+    'TestSegments', 'TestSegmentsAndTriangles', 'TestBarycentric',
+    'TestTetrahedronAndBox', 'TestTriangles')

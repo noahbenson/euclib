@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from unittest import TestCase
 
-from numpy import allclose, array, sqrt
+from numpy import allclose, array, sqrt, stack, zeros
 
-from euclib.ops import distance, nearest, separation
+from euclib.ops import distance, nearest, positions_of, separation
 from euclib.types import (
-    SegPath, TriMesh, SegTopology, TriTopology, VertexSet, VertexTopology)
+    Grid, GridTopology, PrismMesh, PrismTopology, SegPath, SegTopology, TriMesh,
+    TriTopology, VertexSet, VertexTopology)
 
 
 # Fixtures ###################################################################
@@ -111,6 +112,89 @@ class TestNearest(TestCase):
         offset = query - nearest(mesh, query)
         self.assertTrue(allclose(gap, (offset * offset).sum(axis=0) ** 0.5,
                                  atol=1e-12))
+
+
+class TestGeometriesThatAreNotCoordinateMatrices(TestCase):
+    '''Distances involving a geometry whose data is not at its coords.
+
+    A grid's coords is an affine matrix, and a prism mesh's data lies on both
+    of its surfaces, so a distance must be measured from what `positions_of`
+    names rather than from `coords` directly.
+    '''
+
+    def _mesh(self):
+        '''A square in the z = 0 plane, spanning the unit square.'''
+        return TriMesh(array([[0., 1., 0., 1.], [0., 0., 1., 1.],
+                              [0., 0., 0., 0.]]),
+                       TriTopology([[0, 0], [1, 3], [3, 2]]))
+
+    def _grid(self, lift=0.):
+        '''A grid of unit cells, optionally lifted off the plane.'''
+        return Grid(array([[1., 0., 0., 0.], [0., 1., 0., 0.],
+                           [0., 0., 1., lift], [0., 0., 0., 1.]]),
+                    GridTopology((3, 3, 3)))
+
+    def test_distance_from_a_grids_cells(self):
+        # One distance per cell, not one per entry of the affine matrix.
+        found = distance(self._mesh(), self._grid())
+        self.assertEqual(array(found).shape, (27,))
+        self.assertTrue(allclose(found,
+                                 distance(self._mesh(),
+                                          positions_of(self._grid()))))
+
+    def test_the_distance_from_a_lifted_grid(self):
+        # The mesh is in the plane z = 0 and the grid five units above it. The
+        # cells directly over the square are five, six, and seven units away;
+        # a cell offset along x or y is further, because its nearest point on
+        # the square is an edge rather than the point below it.
+        found = array(distance(self._mesh(), self._grid(5.)))
+        self.assertTrue(allclose(found[:3], [5., 6., 7.]))
+        # A cell two units along x is one unit past the square's edge.
+        self.assertAlmostEqual(float(found[18]), sqrt(1. + 25.))
+
+    def test_distance_to_a_grid(self):
+        # The mesh's corners all lie in the grid's first plane.
+        self.assertTrue(allclose(distance(self._grid(), self._mesh()),
+                                 zeros(4)))
+
+    def test_separation_from_a_grid(self):
+        self.assertAlmostEqual(float(separation(self._mesh(), self._grid())),
+                               0.)
+        self.assertAlmostEqual(
+            float(separation(self._mesh(), self._grid(5.))), 5.)
+
+    def test_measuring_from_a_prism_meshs_surfaces(self):
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(stack([lower, lower + array([[0.], [0.], [2.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        # A prism's data lies on both surfaces, so there are two positions per
+        # prism corner.
+        self.assertEqual(array(distance(self._grid(), prism)).shape, (6,))
+
+    def test_measuring_to_a_prism(self):
+        # The prism spans z from 0 to 2; the grid five units up has its cells
+        # at z = 5, so the nearest position on the prism is three units away,
+        # on its upper surface.
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(stack([lower, lower + array([[0.], [0.], [2.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        found = array(distance(prism, self._grid(5.)))
+        self.assertEqual(found.shape, (27,))
+        # A cell directly over the prism's first corner is three units above
+        # the upper surface; one past the prism's edge is further.
+        self.assertAlmostEqual(float(found[0]), 3.)
+        self.assertGreater(float(found[18]), 3.)
+
+    def test_measuring_to_a_prism_from_inside_and_below(self):
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(stack([lower, lower + array([[0.], [0.], [2.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        # A position inside the prism has no distance to it.
+        self.assertAlmostEqual(
+            float(distance(prism, array([[0.2], [0.2], [1.]]))[0]), 0.)
+        # A position below it is measured to the lower surface.
+        self.assertAlmostEqual(
+            float(distance(prism, array([[0.2], [0.2], [-3.]]))[0]), 3.)
 
 
 class TestSeparation(TestCase):

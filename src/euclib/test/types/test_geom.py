@@ -244,6 +244,81 @@ class TestLocalRoundTrip(TestCase):
                                          atol=1e-12))
 
 
+class TestSpatialIndex(TestCase):
+    '''The spatial index that makes the searches pay on large geometries.'''
+
+    def setUp(self):
+        import euclib._init as init
+        self.init = init
+        self.was = init.spatial_index_min_items
+        self.addCleanup(setattr, init, 'spatial_index_min_items', self.was)
+
+    def _mesh(self, n):
+        '''A triangulated n by n grid: small, well-shaped triangles.'''
+        from numpy import linspace, meshgrid, stack
+        (xs, ys) = meshgrid(linspace(0, 1, n), linspace(0, 1, n))
+        coords = stack([xs.reshape(-1), ys.reshape(-1)])
+        triangles = []
+        for i in range(n - 1):
+            for j in range(n - 1):
+                a = i * n + j
+                b = a + 1
+                c = a + n
+                d = c + 1
+                triangles.append([a, b, d])
+                triangles.append([a, d, c])
+        return TriMesh(coords, TriTopology(array(triangles).T))
+
+    def test_a_small_geometry_builds_no_index(self):
+        self.init.spatial_index_min_items = 10 ** 9
+        self.assertIsNone(self._mesh(4).spatial_index)
+
+    def test_a_large_geometry_builds_one(self):
+        self.init.spatial_index_min_items = 10
+        self.assertIsNotNone(self._mesh(6).spatial_index)
+
+    def test_the_index_is_a_tree_of_the_right_dimension(self):
+        from euclib.utils import SpatialTree
+        self.init.spatial_index_min_items = 10
+        mesh = self._mesh(6)
+        self.assertIsInstance(mesh.spatial_index, SpatialTree)
+        self.assertEqual(mesh.spatial_index.dim, 2)
+
+    def test_the_index_gives_the_same_answers_as_no_index(self):
+        # The point of the index is to skip simplices without skipping the
+        # answer, so the two paths must agree exactly.
+        from numpy import allclose
+        query = array([[0.13, 0.62, 0.87, -0.2, 1.1],
+                       [0.29, 0.07, 0.41, 0.5, 1.4]])
+        self.init.spatial_index_min_items = 10 ** 9
+        plain = self._mesh(12).to_local(query)
+        self.init.spatial_index_min_items = 10
+        indexed = self._mesh(12).to_local(query)
+        self.assertTrue(allclose(indexed.index, plain.index))
+        self.assertTrue(allclose(indexed.weight, plain.weight, atol=1e-12))
+
+    def test_the_index_answers_a_position_outside_the_geometry(self):
+        # A position outside every element has no home cell; the search grows
+        # its radius until it reaches the nearest one.
+        from numpy import allclose
+        self.init.spatial_index_min_items = 10
+        mesh = self._mesh(12)
+        loc = mesh.to_local(array([[5.], [5.]]))
+        self.assertTrue(allclose(mesh.to_global(loc), [[1.], [1.]], atol=1e-12))
+
+    def test_a_point_cloud_is_indexed_too(self):
+        from numpy import linspace, stack
+        from euclib.utils import SpatialTree
+        from euclib.types import VertexSet, VertexTopology
+        self.init.spatial_index_min_items = 10
+        cloud = VertexSet(stack([linspace(0, 1, 30), linspace(0, 1, 30)]),
+                          VertexTopology([list(range(30))]))
+        self.assertIsInstance(cloud.spatial_index, SpatialTree)
+        # A position near the tenth point is answered with it.
+        loc = cloud.to_local(array([[0.3], [0.3]]))
+        self.assertEqual(int(loc.index[0]), 9)
+
+
 class TestTorchBackend(TestCase):
     '''The Torch backend, including the gradients ``euclib`` must preserve.'''
 

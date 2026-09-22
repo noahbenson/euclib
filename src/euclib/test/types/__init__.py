@@ -28,4 +28,4 @@ __all__ = (
     'TestLocalCoordinates', 'TestCoordinateNames', 'TestExtrapolation',
     'TestMasks',
     'TestGridInterpolation', 'TestUnimplementedOrders',
-    'TestPointCloudInterpolation')
+    'TestPointCloudInterpolation', 'TestSpatialIndex')

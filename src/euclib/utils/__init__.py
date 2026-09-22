@@ -22,12 +22,21 @@ from ._core import (
     unique_columns,
     unique_coords,
     simplex_measures,
+    bounds_of, simplex_boxes, split_cells, octree_split, quadtree_split,
     nearest_vertices,
     project_onto_face,
     closest_simplex,
     closest_prism,
-    barycentric_coords)
+    barycentric_coords,
+    cross3,
+    closest_segment_params,
+    segments_intersect,
+    barycentric_in_triangle,
+    segments_triangles_intersect,
+    triangles_segments_intersect,
+    tetrahedron_box_intersection)
 from ._hash import content_hash, values_equal
+from ._spatial import SpatialTree
 
 
 # Exports ####################################################################
@@ -36,6 +45,13 @@ __all__ = (
     'using_c_extension', 'backend_error',
     'is_pointdata', 'unique_columns', 'unique_coords',
     'simplex_measures',
+    'bounds_of', 'simplex_boxes', 'split_cells',
+    'octree_split', 'quadtree_split',
     'nearest_vertices', 'project_onto_face', 'closest_simplex',
     'closest_prism', 'barycentric_coords',
-    'content_hash', 'values_equal')
+    'cross3', 'closest_segment_params', 'segments_intersect',
+    'barycentric_in_triangle', 'segments_triangles_intersect',
+    'triangles_segments_intersect',
+    'tetrahedron_box_intersection',
+    'content_hash', 'values_equal',
+    'SpatialTree')

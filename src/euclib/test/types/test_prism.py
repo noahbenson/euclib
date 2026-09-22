@@ -216,14 +216,15 @@ class TestPrismMesh(TestCase):
         self.assertTrue(allclose(back.weight, stack([u, v]), atol=1e-9))
         self.assertTrue(allclose(back.height[0], e, atol=1e-9))
 
-    def test_the_elevation_of_a_position_off_the_sheet_is_extrapolated(self):
-        # A position far above the sheet is answered by the nearest prism, whose
-        # elevation lies outside [0, 1]; the caller's extrapolation rule decides
-        # what to do about that.
-        loc = _prism().to_local(array([[0.5], [0.5], [10.0]]))
-        self.assertEqual(int(loc.index[0]), 0)
-        # The sheet spans z from 0 to 2, so z = 10 is five times its thickness.
-        self.assertAlmostEqual(float(loc.height[0, 0]), 5.0)
-        # A position below the first surface has a negative elevation.
-        loc = _prism().to_local(array([[0.5], [0.5], [-3.0]]))
-        self.assertAlmostEqual(float(loc.height[0, 0]), -1.5)
+    def test_a_position_off_the_sheet_is_answered_by_its_nearest_surface(self):
+        # A prism's parameterization can be inverted for a position beyond its
+        # surfaces as readily as for one between them, so the lookup must clamp
+        # to the object rather than extrapolate --- as it does for every other
+        # geometry. The sheet spans z from 0 to 2.
+        pm = _prism()
+        above = pm.to_local(array([[0.2], [0.4], [10.0]]))
+        self.assertAlmostEqual(float(above.height[0, 0]), 1.0)
+        self.assertAlmostEqual(float(pm.to_global(above)[2, 0]), 2.0)
+        below = pm.to_local(array([[0.2], [0.4], [-3.0]]))
+        self.assertAlmostEqual(float(below.height[0, 0]), 0.0)
+        self.assertAlmostEqual(float(pm.to_global(below)[2, 0]), 0.0)

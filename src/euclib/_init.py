@@ -41,6 +41,20 @@ if default_backend is not None and default_backend not in backend_names:
 #: higher orders are built (see ``euclib.types._interp``).
 default_quantitative_interp = ('polynomial', 1)
 
+#: The number of simplices a geometry must have before it builds a spatial
+#: index for its point-location searches. Below this, examining every simplex
+#: --- one vectorized call over the whole mesh --- is faster than the
+#: bookkeeping a subdivided search needs, which is paid per query.
+#:
+#: Measured on a triangulated grid mesh with 200 queries: the two are roughly
+#: level between 1,500 and 2,500 triangles, and the index's advantage grows
+#: from there --- 3.6 times at 7,000 triangles, 7.4 at 12,500, and 10.5 at
+#: 19,600. Below the crossover it loses by up to a factor of two. The number is
+#: a rough knob rather than a constant: it depends on how many positions are
+#: asked about and on the shape of the elements, so it is worth revisiting
+#: alongside the rest of the performance work before the 1.0 release.
+spatial_index_min_items = 2048
+
 #: The interpolation that a qualitative property uses, and the only one it may
 #: use: a category has no meaning between the values it takes.
 default_qualitative_interp = ('nearest', 0)
