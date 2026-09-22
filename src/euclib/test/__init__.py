@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from .abc import *
 from .utils import *
+from .types import *
+from .ops import *
 
 
 # Exports ####################################################################
@@ -30,6 +32,13 @@ __all__ = (
     'TestTopologyMetadata',
     'TestGeometryBasics', 'TestProperties', 'TestSimplexProperties',
     'TestEquality', 'TestNameSplitting',
+    # from euclib.test.types
+    'TestConcreteTopologies', 'TestConcreteLocs',
+    'TestVertexSet', 'TestSegPath', 'TestTriMesh', 'TestTetMesh',
+    'TestMeasures', 'TestLocalRoundTrip', 'TestTorchBackend',
+    'TestAffine', 'TestTransformed', 'TestBBox',
+    # from euclib.test.ops
+    'TestDistance', 'TestNearest', 'TestSeparation',
     # from euclib.test.utils
     'TestIsPointdata', 'TestUniqueColumns', 'TestUniqueCoords',
     'TestContentHash')

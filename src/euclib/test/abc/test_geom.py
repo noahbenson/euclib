@@ -13,30 +13,32 @@ from numpy import array, ones, zeros
 
 from euclib.abc import (
     SimplexTopology, SimplexGeometry, Geometry,
-    Property, split_property_name,
+    Property, split_property_name, make_loc, check_simplex_loc,
     is_geometry, is_simplex_geometry)
 
 
 # Concrete types for testing #################################################
 
+PointLoc = make_loc('PointLoc', ('index',))
+TriLoc = make_loc('TriLoc', ('index', 'weight'))
+
+
 class CloudTopology(SimplexTopology):
     '''A point-cloud topology: simplices of order 0.'''
 
-    def to_local(self, coords, /):
-        return None
+    Loc = PointLoc
 
-    def from_local(self, locs, /):
-        return None
+    def check_loc(self, locs, /):
+        return check_simplex_loc(self.Loc, self.local_dim, locs)
 
 
 class MeshTopology(SimplexTopology):
     '''A triangle-mesh topology.'''
 
-    def to_local(self, coords, /):
-        return None
+    Loc = TriLoc
 
-    def from_local(self, locs, /):
-        return None
+    def check_loc(self, locs, /):
+        return check_simplex_loc(self.Loc, self.local_dim, locs)
 
 
 class Cloud(SimplexGeometry):

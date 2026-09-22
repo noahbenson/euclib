@@ -20,7 +20,12 @@ from ._core import (
     backend_error,
     is_pointdata,
     unique_columns,
-    unique_coords)
+    unique_coords,
+    simplex_measures,
+    nearest_vertices,
+    project_onto_face,
+    closest_simplex,
+    barycentric_coords)
 from ._hash import content_hash, values_equal
 
 
@@ -29,4 +34,7 @@ from ._hash import content_hash, values_equal
 __all__ = (
     'using_c_extension', 'backend_error',
     'is_pointdata', 'unique_columns', 'unique_coords',
+    'simplex_measures',
+    'nearest_vertices', 'project_onto_face', 'closest_simplex',
+    'barycentric_coords',
     'content_hash', 'values_equal')

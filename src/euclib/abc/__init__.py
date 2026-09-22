@@ -24,13 +24,13 @@ from ._core import (
     plan_inputs, planobject_eq, planobject_hash)
 from ._topo import (
     Topology, SimplexTopology,
-    LocMixin, make_loc, is_loc,
+    LocMixin, make_loc, is_loc, check_simplex_loc, normalize_indices,
     is_topology, is_simplex_topology,
     normalize_metadata)
 from ._geom import (
     Geometry, SimplexGeometry,
     is_geometry, is_simplex_geometry,
-    normalize_properties, split_property_name)
+    normalize_properties, split_property_name, as_query, check_coordinfo)
 from ._property import (
     Property,
     is_property,
@@ -53,8 +53,11 @@ __all__ = (
     'normalize_extrap', 'normalize_dtype', 'normalize_null', 'normalize_mask',
     'normalize_unit', 'convert_value',
     'Topology', 'SimplexTopology',
-    'LocMixin', 'make_loc', 'is_loc', 'is_topology', 'is_simplex_topology',
+    'LocMixin', 'make_loc', 'is_loc', 'check_simplex_loc',
+    'normalize_indices',
+    'is_topology', 'is_simplex_topology',
     'normalize_backend', 'normalize_metadata',
     'Geometry', 'SimplexGeometry',
     'is_geometry', 'is_simplex_geometry',
-    'normalize_properties', 'split_property_name')
+    'normalize_properties', 'split_property_name',
+    'as_query', 'check_coordinfo')

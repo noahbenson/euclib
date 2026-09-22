@@ -170,6 +170,59 @@ def normalize_metadata(metadata, /):
     return pdict(metadata)
 
 
+def check_simplex_loc(loc_type, local_dim, locs, /):
+    '''Coerces and validates a simplex local coordinate.
+
+    A simplex local coordinate names a simplex and gives the barycentric
+    weights of a position within it: ``Loc(index, weight)``, where ``index`` is
+    a length-``N`` vector of simplex indices and ``weight`` is an
+    ``(order, N)`` matrix holding the first ``order`` barycentric coordinates.
+    The final barycentric coordinate is implied, because the weights of a
+    simplex sum to one --- which is also what keeps a simplex local coordinate
+    unambiguous for a path, whose ``weight`` is ``(1, N)``.
+
+    Concrete simplex topologies implement ``check_loc`` by delegating to this
+    function, so that the rule lives in one place without making
+    ``SimplexTopology`` itself instantiable.
+
+    Parameters
+    ----------
+    loc_type : type
+        The topology's ``Loc`` type.
+    local_dim : int
+        The number of barycentric weights the coordinate must supply.
+    locs : LocMixin, mapping, or sequence
+        The local coordinate.
+
+    Returns
+    -------
+    LocMixin
+        The local coordinate.
+
+    Raises
+    ------
+    ValueError
+        If the coordinate's index and weight arrays are not correctly shaped
+        or do not describe the same number of positions.
+    '''
+    loc = loc_type.from_value(locs)
+    index = asarray(loc.index)
+    weight = asarray(loc.weight)
+    if index.ndim != 1:
+        raise ValueError(
+            f"a local coordinate's index must be a vector; found shape"
+            f" {index.shape}")
+    if weight.ndim != 2 or weight.shape[0] != local_dim:
+        raise ValueError(
+            f"a local coordinate's weight must have shape ({local_dim}, N);"
+            f" found {weight.shape}")
+    if weight.shape[1] != index.shape[0]:
+        raise ValueError(
+            f"a local coordinate's index and weight disagree:"
+            f" {index.shape[0]} indices but {weight.shape[1]} weights")
+    return loc
+
+
 # Topology ###################################################################
 
 class Topology(planobject, metaclass=plantypeABC):
@@ -234,36 +287,47 @@ class Topology(planobject, metaclass=plantypeABC):
         '''
         return normalize_metadata(metadata)
 
-    @abstractmethod
-    def to_local(self, coords, /):
-        '''Expresses global coordinates in this topology's local coordinates.
-
-        Parameters
-        ----------
-        coords : array-like
-            Global coordinates, with the same shape as the geometry's
-            ``coords``.
-
-        Returns
-        -------
-        LocMixin
-            The local coordinates of the given positions.
-        '''
+    #: The type of this topology's local coordinates. Every concrete topology
+    #: sets this to a type built with ``make_loc``.
+    Loc = None
 
     @abstractmethod
-    def from_local(self, locs, /):
-        '''Expresses local coordinates as positions in this topology's space.
+    def check_loc(self, locs, /):
+        '''Coerces and validates a local coordinate.
+
+        A topology has no coordinates of its own --- the same topology can be
+        realized by any number of coordinate matrices --- so the work it can do
+        with local coordinates is to say what a well-formed one looks like.
+        Geometries convert whole coordinate matrices to and from local
+        coordinates; this method handles a single local coordinate, or a
+        collection of them.
 
         Parameters
         ----------
         locs : LocMixin, mapping, or sequence
-            Local coordinates, or a value that ``Loc``'s ``from_value`` accepts.
+            A local coordinate, or a value that the topology's ``Loc`` accepts
+            through its ``from_value`` constructor.
 
         Returns
         -------
-        array-like
-            The local positions, in the topology's own layout.
+        LocMixin
+            The local coordinate, canonicalized.
         '''
+
+    def local_shape(self, count, /):
+        '''The shape of a local coordinate array for ``count`` positions.
+
+        Parameters
+        ----------
+        count : int
+            The number of positions.
+
+        Returns
+        -------
+        tuple of int
+            ``(local_dim, count)``.
+        '''
+        return (self.local_dim, int(count))
 
     #: Names of plan inputs that identify a topology but do not take part in
     #: equality. Subclasses may extend this.

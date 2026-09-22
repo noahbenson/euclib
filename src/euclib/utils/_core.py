@@ -64,4 +64,6 @@ if _is_true(environ.get('EUCLIB_REQUIRE_C')) and not using_c_extension:
 # rest of the library imports its kernels from one place and never has to know
 # which backend is active.
 from ._pycore import (  # noqa: E402
-    is_pointdata, unique_columns, unique_coords)
+    is_pointdata, unique_columns, unique_coords, simplex_measures,
+    nearest_vertices, project_onto_face, closest_simplex,
+    barycentric_coords)

@@ -13,7 +13,7 @@ from numpy import array
 
 from euclib.abc import (
     Topology, SimplexTopology, make_loc, is_loc, is_topology,
-    is_simplex_topology, normalize_metadata)
+    is_simplex_topology, normalize_metadata, check_simplex_loc)
 
 
 # A concrete topology for testing ############################################
@@ -24,12 +24,10 @@ TriLoc = make_loc('TriLoc', ('index', 'weight'))
 class ExampleTopology(SimplexTopology):
     '''A minimal concrete simplex topology used to exercise the base types.'''
 
-    def to_local(self, coords, /):
-        return TriLoc(0, coords)
+    Loc = TriLoc
 
-    def from_local(self, locs, /):
-        loc = TriLoc.from_value(locs)
-        return loc.weight
+    def check_loc(self, locs, /):
+        return check_simplex_loc(self.Loc, self.local_dim, locs)
 
 
 # Tests ######################################################################

@@ -32,12 +32,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from abc import abstractmethod
 
-from numpy import integer
-from immlib import to_array, to_tensor
+from numpy import asarray, concatenate, integer
+from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, llist
 
 from ._core import calc, normalize_backend, planobject, plantypeABC
-from ..utils import content_hash, values_equal
+from ..utils import content_hash, values_equal, simplex_measures
 from ._property import Property, UNSET, is_property
 from ._topo import Topology, SimplexTopology
 
@@ -77,6 +77,64 @@ def normalize_properties(properties, form_shape, /):
                 f" but must have {tuple(form_shape)}")
         res[name] = prop
     return ldict(res)
+
+
+def as_query(coords, /):
+    '''Returns coordinates as an array-like suitable for point location.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(D, Q)`` matrix of positions, or anything convertible to one.
+
+    Returns
+    -------
+    array-like
+        The positions, as a NumPy array unless they were already array-like.
+    '''
+    return coords if hasattr(coords, 'shape') else asarray(coords)
+
+
+def check_coordinfo(coords, topo, /, dims=(2, 3)):
+    '''Validates a simplex geometry's coordinate matrix against its topology.
+
+    Parameters
+    ----------
+    coords : array-like
+        A validated ``(D, N)`` coordinate matrix.
+    topo : SimplexTopology
+        The geometry's topology.
+    dims : sequence of int, optional
+        The permitted numbers of spatial dimensions. The default is ``(2, 3)``.
+
+    Returns
+    -------
+    dim : int
+        The number of rows of ``coords``.
+    coord_count : int
+        The number of columns of ``coords``.
+
+    Raises
+    ------
+    ValueError
+        If the topology is not a simplex topology, if the coordinate matrix has
+        a forbidden number of rows, or if its number of columns disagrees with
+        the number of coordinates the topology declares.
+    '''
+    if not isinstance(topo, SimplexTopology):
+        raise ValueError(
+            f"topo must be a SimplexTopology; found {type(topo)}")
+    (dim, count) = (int(coords.shape[0]), int(coords.shape[1]))
+    if dim not in tuple(dims):
+        raise ValueError(
+            f"coords must have {len(tuple(dims))} rows chosen from {tuple(dims)}"
+            f" (one per spatial dimension); found {dim}")
+    if count != topo.coord_count:
+        raise ValueError(
+            f"coords has {count} coordinates, but the topology declares"
+            f" {topo.coord_count}; pass a topo whose coord_count matches the"
+            " matrix (extra coordinates require the topology to declare them)")
+    return (dim, count)
 
 
 def split_property_name(name, /):
@@ -291,6 +349,37 @@ class Geometry(planobject, metaclass=plantypeABC):
         array-like
             The global coordinates of the given positions.
         '''
+
+    # Transforming ##########################################################
+
+    def _transformed_coords(self, transform, /):
+        '''Returns this geometry's coordinate payload transformed.
+
+        The base implementation transforms a ``(D, N)`` coordinate matrix. A
+        geometry whose payload has another form --- a grid, whose payload is an
+        affine matrix --- overrides this.
+        '''
+        return transform.apply(self.coords)
+
+    def transformed(self, transform, /):
+        '''Returns a copy of the object with its coordinates transformed.
+
+        Parameters
+        ----------
+        transform : Transform
+            The transformation to apply to the object's coordinates.
+
+        Returns
+        -------
+        Geometry
+            A copy of the object located by the transformed coordinates. Its
+            properties are carried over unchanged, because they are attached to
+            the object's components rather than to positions in space.
+        '''
+        if not hasattr(transform, 'apply'):
+            raise TypeError(
+                f"expected a Transform; found {type(transform)}")
+        return self.copy(coords=self._transformed_coords(transform))
 
     # Properties #############################################################
 
@@ -639,17 +728,7 @@ class SimplexGeometry(Geometry):
         coord_count : int
             The number of columns of ``coords``.
         '''
-        if not isinstance(topo, SimplexTopology):
-            raise ValueError(
-                f"topo must be a SimplexTopology; found {type(topo)}")
-        (dim, count) = (int(coords.shape[0]), int(coords.shape[1]))
-        if count != topo.coord_count:
-            raise ValueError(
-                f"coords has {count} coordinates, but the topology declares"
-                f" {topo.coord_count}; pass a topo whose coord_count matches"
-                " the matrix (extra coordinates require the topology to"
-                " declare them)")
-        return (dim, count)
+        return check_coordinfo(coords, topo)
 
     @calc('order', lazy=False)
     def proc_order(topo):
@@ -699,9 +778,63 @@ class SimplexGeometry(Geometry):
         '''
         return topo.simplex_count
 
+    @calc('bbox')
+    def proc_bbox(coords, vertex_mask):
+        '''The bounding box of the coordinates the topology uses.
+
+        Coordinates that the topology does not reference are left out, so that
+        a bounding box describes the object rather than the matrix that happens
+        to hold it.
+
+        Returns
+        -------
+        bbox : array-like
+            A ``(D, 2)`` matrix whose first column is the minimum of each
+            coordinate dimension and whose second column is the maximum.
+        '''
+        used = coords if vertex_mask is None else coords[(Ellipsis, vertex_mask)]
+        # amin/amax are the plain reductions; imath.min/imath.max return the
+        # value together with its index, as torch's do.
+        return concatenate([imath.amin(used, axis=1)[:, None],
+                            imath.amax(used, axis=1)[:, None]], axis=1)
+
+    @calc('measures')
+    def proc_measures(coords, topo):
+        '''The extent of each primary simplex.
+
+        A simplex's measure is its 0-dimensional extent: the length of a
+        segment, the area of a triangle, or the volume of a tetrahedron.
+        Vertices have no extent, so a point cloud's measures are all zero.
+
+        Returns
+        -------
+        measures : array-like
+            A length-``M`` vector of measures.
+        '''
+        return simplex_measures(coords, topo.indices)
+
+    @calc('_auto_simplex_properties')
+    def proc_auto_simplex_properties(measures, order):
+        '''Properties that the geometry computes about its own simplices.
+
+        This is the hook through which derived per-simplex quantities --- a
+        mesh's surface areas, for example --- reach ``simplex_properties``.
+        The base geometry computes none.
+
+        Returns
+        -------
+        _auto_simplex_properties : pcollections.llist
+            One lazy dictionary of computed properties per simplex order.
+        '''
+        return llist(ldict() for _ in range(order + 1))
+
     @calc('simplex_properties', lazy=False)
-    def proc_simplex_properties(simplex_properties, order, topo):
+    def proc_simplex_properties(simplex_properties, order, topo,
+                                _auto_simplex_properties):
         '''Normalizes the properties of each simplex order.
+
+        Computed properties are merged in first, so that a property the user
+        supplied under the same name takes precedence.
 
         Returns
         -------
@@ -709,16 +842,17 @@ class SimplexGeometry(Geometry):
             One lazy dictionary of properties per simplex order.
         '''
         n = order + 1
-        if simplex_properties is None:
-            return llist(ldict() for _ in range(n))
-        seq = list(simplex_properties)
+        seq = [None] * n if simplex_properties is None else list(
+            simplex_properties)
         if len(seq) != n:
             raise ValueError(
                 f"simplex_properties must have {n} entries (one per simplex"
                 f" order, 0 through {order}); found {len(seq)}")
         res = []
-        for (k, props) in enumerate(seq):
-            res.append(normalize_properties(props, (topo.simplex_count[k],)))
+        for k in range(n):
+            merged = dict(_auto_simplex_properties[k])
+            merged.update(normalize_properties(seq[k], (topo.simplex_count[k],)))
+            res.append(ldict(merged))
         return llist(res)
 
     def _prop_for(self, name, order, /):

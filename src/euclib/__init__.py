@@ -29,10 +29,12 @@ from ._version import version as __version__
 from . import _init  # noqa: F401
 from . import utils
 from . import abc
+from . import types
+from . import ops
 
 #: The ``euclib`` submodules, in the order in which they are loaded. This is
 #: the order in which they must be reloaded.
-submodules = ('euclib._init', 'euclib.utils', 'euclib.abc')
+submodules = ('euclib._init', 'euclib.utils', 'euclib.abc', 'euclib.types', 'euclib.ops')
 
 
 # Backend introspection ######################################################
@@ -70,6 +72,6 @@ def reload_euclib():
 
 __all__ = (
     '__version__',
-    'utils', 'abc',
+    'utils', 'abc', 'types', 'ops',
     'submodules', 'reload_euclib',
     'using_c_extension', 'backend_error')
