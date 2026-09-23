@@ -110,8 +110,13 @@ def distance(a, b, /):
     >>> from euclib.types import TriMesh, TriTopology
     >>> mesh = TriMesh(np.array([[0., 1., 0.], [0., 0., 1.]]),
     ...                TriTopology([[0], [1], [2]]))
-    >>> distance(mesh, np.array([[0.25], [0.25]])).tolist()
-    [0.0]
+    >>> # The triangle spans the axes, so (0.25, 0.25) is on it and
+    >>> # (0.75, 0.75) is off its hypotenuse x + y = 1, by sqrt(2) / 4.
+    >>> distances = distance(mesh, np.array([[0.25, 0.75], [0.25, 0.75]]))
+    >>> float(distances[0])
+    0.0
+    >>> round(float(distances[1]), 6)
+    0.353553
     '''
     _check_source(a)
     points = _points_of(b)

@@ -30,33 +30,55 @@ from ..abc import (
 
 # Local coordinate types #####################################################
 
-#: The local coordinate of a point cloud: the index of the point.
-VertexLoc = make_loc('VertexLoc', ('index',))
+VertexLoc = make_loc(
+    'VertexLoc', ('index',),
+    "The local coordinate of a point cloud: the index of the point.")
 
-#: The local coordinate of a path: a segment index and one barycentric weight.
-SegLoc = make_loc('SegLoc', ('index', 'weight'))
+SegLoc = make_loc(
+    'SegLoc', ('index', 'weight'),
+    "The local coordinate of a path: the index of the segment and the weight"
+    " of its first corner. The weight is 1 at the segment's first corner and 0"
+    " at its second, so a position part way along the segment takes a value"
+    " between the two.")
 
-#: The local coordinate of a triangle mesh: a triangle index and two weights.
-TriLoc = make_loc('TriLoc', ('index', 'weight'))
+TriLoc = make_loc(
+    'TriLoc', ('index', 'weight'),
+    "The local coordinate of a triangle mesh: the index of the triangle and"
+    " the first two of its three barycentric weights. The third is whatever"
+    " makes them sum to one.")
 
-#: The local coordinate of a tetrahedral mesh: a tetrahedron index and three
-#: barycentric weights.
-TetLoc = make_loc('TetLoc', ('index', 'weight'))
+TetLoc = make_loc(
+    'TetLoc', ('index', 'weight'),
+    "The local coordinate of a tetrahedral mesh: the index of the tetrahedron"
+    " and the first three of its four barycentric weights. The fourth is"
+    " whatever makes them sum to one.")
 
 
-#: The local coordinate of a prism: a triangle index, two barycentric weights
-#: within that triangle, and an elevation between the prism's two sides. A
-#: prism's two sides share one triangle topology, so naming a position needs
-#: the elevation as well as the position within the triangle.
-PrismLoc = make_loc('PrismLoc', ('index', 'weight', 'height'))
+PrismLoc = make_loc(
+    'PrismLoc', ('index', 'weight', 'height'),
+    "The local coordinate of a prism: the index of the triangle, the first two"
+    " of its three barycentric weights within that triangle, and the elevation"
+    " between the prism's two sides. A prism's two sides share one triangle"
+    " topology, so naming a position in it needs the elevation as well as the"
+    " position within the triangle.")
 
-#: The local coordinate of a grid, whose components are scaled --- that is,
-#: fractional --- index coordinates, one per axis of the grid. The fields are
-#: named after the axes, so a grid's local coordinate reads as a position in
-#: index space.
-GridLoc1 = make_loc('GridLoc1', ('sx',))
-GridLoc2 = make_loc('GridLoc2', ('sx', 'sy'))
-GridLoc3 = make_loc('GridLoc3', ('sx', 'sy', 'sz'))
+#: A grid's components are scaled --- that is, fractional --- index
+#: coordinates, one per axis of the grid. The fields are named after the
+#: axes, so a grid's local coordinate reads as a position in index space.
+GridLoc1 = make_loc(
+    'GridLoc1', ('sx',),
+    "The local coordinate of a one-dimensional grid: the fractional index"
+    " along its single axis.")
+
+GridLoc2 = make_loc(
+    'GridLoc2', ('sx', 'sy'),
+    "The local coordinate of a two-dimensional grid: the fractional indices"
+    " along its two axes, `sx` and `sy`.")
+
+GridLoc3 = make_loc(
+    'GridLoc3', ('sx', 'sy', 'sz'),
+    "The local coordinate of a three-dimensional grid: the fractional indices"
+    " along its three axes, `sx`, `sy`, and `sz`.")
 
 #: The grid local coordinate type for each supported number of dimensions.
 GRID_LOCS = {1: GridLoc1, 2: GridLoc2, 3: GridLoc3}

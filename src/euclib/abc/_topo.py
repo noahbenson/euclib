@@ -78,8 +78,14 @@ class LocMixin:
         return cls(value)
 
 
-def make_loc(name, fields, /):
+def make_loc(name, fields, doc=None, /):
     '''Creates a local-coordinate namedtuple type with the given fields.
+
+    A ``Loc`` type is part of the public surface --- it is what ``to_local``
+    returns and what ``to_global`` accepts --- so it is given a docstring here.
+    One written by hand says what the components mean for the geometry that
+    uses it; the default names the components themselves, so that a type
+    created without one is still documented rather than silently bare.
 
     Parameters
     ----------
@@ -87,14 +93,21 @@ def make_loc(name, fields, /):
         The name of the resulting type.
     fields : sequence of str
         The names of the coordinate's components.
+    doc : str or None, optional
+        The type's docstring. The default, ``None``, describes the components
+        by name.
 
     Returns
     -------
     type
         A ``namedtuple`` subclass of ``LocMixin``.
     '''
+    if doc is None:
+        doc = ("A local coordinate with the components"
+               f" {', '.join(repr(f) for f in tuple(fields))}.")
     nt = namedtuple(name, tuple(fields))
-    return type(name, (nt, LocMixin), {'__slots__': (), '__module__': __name__})
+    return type(name, (nt, LocMixin),
+                {'__slots__': (), '__module__': __name__, '__doc__': doc})
 
 
 def is_loc(x, /):
