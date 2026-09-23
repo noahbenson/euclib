@@ -165,7 +165,10 @@ def _outside(geom, query, loc, /):
         parts = [_flat(getattr(loc, f)) for f in loc._fields]
         bad = zeros(parts[0].shape, dtype=bool)
         for (p, s) in zip(parts, geom.shape):
-            bad |= (p < -GRID_TOLERANCE) | (p > (s - 1) + GRID_TOLERANCE)
+            # An index names a cell's centre, so the grid's region runs from
+            # half a step before the first centre to half a step past the last.
+            bad |= (p < -0.5 - GRID_TOLERANCE) | (
+                p > (s - 0.5) + GRID_TOLERANCE)
         return bad
     back = asarray(geom.to_global(loc))
     diff = asarray(query) - back

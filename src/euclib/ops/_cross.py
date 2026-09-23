@@ -33,6 +33,13 @@ from ..types import Grid, PrismMesh
 def positions_of(geom, /):
     '''Returns the positions at which a geometry's own data lives.
 
+    These are the positions one geometry's data is read at to be carried onto
+    another, so which they are decides what a transfer means. A simplex
+    geometry's data lives at its coordinates. A grid's lives at the centre of
+    each cell, which is the position its affine carries the cell's index to ---
+    not the cell's corner, and not an anchor anywhere else in the cell. A prism
+    mesh's lives at both of its surfaces, one value per surface per coordinate.
+
     Parameters
     ----------
     geom : Geometry
@@ -42,7 +49,7 @@ def positions_of(geom, /):
     -------
     array-like
         A ``(D, Q)`` matrix of positions: a simplex geometry's coordinates, a
-        grid's cell positions, or a prism mesh's two surfaces.
+        grid's cell centres, or a prism mesh's two surfaces.
 
     Raises
     ------
@@ -53,7 +60,7 @@ def positions_of(geom, /):
         raise TypeError(f"expected a Geometry; found {type(geom)}")
     if isinstance(geom, Grid):
         # A grid has no coordinates of its own; its cells are where its data
-        # lives, at the positions the affine takes the integer indices to.
+        # lives, at the centres the affine takes the integer indices to.
         shape = tuple(geom.shape)
         axes = [a.reshape(-1)
                 for a in meshgrid(*(arange(s) for s in shape), indexing='ij')]

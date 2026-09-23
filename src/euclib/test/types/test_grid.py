@@ -20,7 +20,11 @@ from euclib.types import (
 # Fixtures ###################################################################
 
 def _grid(shape=(4, 3)):
-    '''A grid whose affine places the origin at (0, 0) and flips the y axis.'''
+    '''A grid whose affine places the first cell's centre at (0, 0).
+
+    The y axis is flipped, so the grid runs upward in index space and downward
+    in global coordinates.
+    '''
     affine = array([[1., 0., 0.],
                     [0., -1., 3.],
                     [0., 0., 1.]])
@@ -82,8 +86,25 @@ class TestGrid(TestCase):
 
     def test_origin_and_spacing(self):
         g = _grid()
-        self.assertTrue(allclose(g.origin, [0., 3.]))
+        # The affine carries an index to a cell's *centre*, so the grid's
+        # corner --- half a step back along each index axis --- is a half step
+        # away from the first centre. The y axis points down, so the corner is
+        # above the first centre rather than below it.
+        self.assertTrue(allclose(g.origin, [-0.5, 3.5]))
         self.assertTrue(allclose(g.spacing, [1., 1.]))
+
+    def test_an_index_names_a_cell_centre(self):
+        # The convention the whole library reads a grid through, stated as a
+        # test: a cell's index is where its data lives, and the cell occupies
+        # half a step on either side of that position.
+        g = _grid()
+        self.assertTrue(allclose(g.affine.apply(array([[0.], [0.]])),
+                                 [[0.], [3.]]))
+        self.assertTrue(allclose(g.to_local(array([[0.], [3.]])).sx, [0.]))
+        # Half a step past the last centre is still within the grid; a step
+        # past it is not.
+        self.assertTrue(allclose(g.bbox,
+                                 [[-0.5, 3.5], [0.5, 3.5]]))
 
     def test_a_grid_stores_an_affine_matrix_as_its_coords(self):
         g = _grid()
@@ -112,18 +133,20 @@ class TestGrid(TestCase):
         self.assertTrue(allclose(g.to_global(loc),
                                  [[0., 1., 2.], [3., 2.5, 2.]]))
 
-    def test_bbox_covers_the_index_space(self):
+    def test_bbox_covers_the_cells(self):
+        # The box encloses the cells, not the centres: half a step before the
+        # first centre along each axis to half a step past the last.
         g = _grid()
-        self.assertTrue(allclose(g.bbox, [[0., 3.], [1., 3.]]))
+        self.assertTrue(allclose(g.bbox, [[-0.5, 3.5], [0.5, 3.5]]))
 
     def test_transforming_a_grid_composes_onto_its_affine(self):
         g = _grid()
         moved = g.transformed(affine_translation([10., 0.]))
         self.assertEqual(moved.shape, g.shape)
-        self.assertTrue(allclose(moved.origin, [10., 3.]))
-        self.assertTrue(allclose(moved.bbox, [[10., 13.], [1., 3.]]))
+        self.assertTrue(allclose(moved.origin, [9.5, 3.5]))
+        self.assertTrue(allclose(moved.bbox, [[9.5, 13.5], [0.5, 3.5]]))
         # The original is unchanged.
-        self.assertTrue(allclose(g.origin, [0., 3.]))
+        self.assertTrue(allclose(g.origin, [-0.5, 3.5]))
 
     def test_scaling_a_grid_changes_its_spacing(self):
         scaled = _grid().transformed(affine_scaling([2., 3.]))

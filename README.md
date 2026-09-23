@@ -170,6 +170,15 @@ grid. Such objects can be specified using minimal information: the global
 coordinates of the corner of the grid, the spacing of the grid, the orientation
 of the grid, and the dimensions of the grid.
 
+The grid's `affine` carries an integer index to the global coordinates of that
+cell's **center**, as image formats in this field generally do: the cell
+numbered `i` has its data at `affine(i)` and occupies half a step on either side
+of it. The grid's corner is therefore half a step before the first center along
+every axis, which is the position `Grid.origin` reports, and the region the grid
+covers extends half a step past the last center. This is the convention every
+operation that reads a grid uses --- `positions_of`, `contains`, `bbox`, the
+interpolation of a grid's properties, and `voxel_intersections`.
+
 1. **Voxels** (3-dimensional grid; 3D spaces only) can be individual boxes or
    grids of boxes. Voxels can have properties, for example `'T1w_intensity'`,
    which are stored as 3D images.
@@ -180,7 +189,8 @@ The `euclib.GridTopology` type stores grid topological information,
 specifically the shape of the represented image matrix. The
 `euclib.GridGeometry` type stores a `GridTopology` object for its `topo` field
 and an `affine` transformation that describes how image indices are translated
-into global Euclidean Cartesian coordinates.
+into global Euclidean Cartesian coordinates: one index to the center of the cell
+it numbers, as described above.
 
 ### Derived Geometric Objects
 

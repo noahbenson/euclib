@@ -46,7 +46,7 @@ if _is_true(environ.get('EUCLIB_NO_C_EXTENSIONS')):
         "the euclib C extensions were disabled by EUCLIB_NO_C_EXTENSIONS")
 else:
     try:
-        from .._c import _core as _c  # noqa: F401
+        from .._c import _core as _c
         using_c_extension = True
     except Exception as exc:  # pragma: no cover - depends on the build
         backend_error = exc
@@ -59,15 +59,37 @@ if _is_true(environ.get('EUCLIB_REQUIRE_C')) and not using_c_extension:
 
 # Kernels ####################################################################
 
-# The pure-Python implementations are always imported. Where the C extension
-# provides a faster version of a kernel, it is substituted here, so that the
-# rest of the library imports its kernels from one place and never has to know
-# which backend is active.
+# Every kernel is imported from one of two places: the pure-Python module, which
+# is the definition of correct behavior, or the dispatching registry, which
+# chooses between that and the C extension per call. The rest of the library
+# imports its kernels from here and never has to know which backend is active.
 from ._pycore import (  # noqa: E402
     is_pointdata, unique_columns, unique_coords, simplex_measures,
-    bounds_of, simplex_boxes, split_cells, octree_split, quadtree_split,
+    bounds_of, simplex_boxes, octree_split, quadtree_split,
     nearest_vertices, project_onto_face, closest_simplex,
     closest_prism, barycentric_coords, cross3, closest_segment_params,
     segments_intersect, barycentric_in_triangle,
     segments_triangles_intersect, triangles_segments_intersect,
     tetrahedron_box_intersection)
+
+# The kernels the C extension provides. Each is registered against its
+# pure-Python counterpart, which is what any call that the C version cannot take
+# runs on.
+from ._dispatch import kernel as _kernel  # noqa: E402
+from . import _pycore as _python  # noqa: E402
+
+if using_c_extension:
+    split_cells = _kernel(_python.split_cells, _c.split_cells)
+    tetrahedron_box_vertices = _kernel(
+        _python.tetrahedron_box_vertices, _c.tetrahedron_box_vertices)
+else:
+    split_cells = _kernel(_python.split_cells)
+    tetrahedron_box_vertices = _kernel(_python.tetrahedron_box_vertices)
+
+# ``tetrahedron_box_intersection`` builds its region from a corner search, and
+# takes that search from a name in its own module rather than calling it
+# directly. Pointing that name at the dispatching kernel is what lets an
+# intersection --- the form of the operation that the library's callers
+# actually use --- take the C path without the pure-Python module having to know
+# that a C path exists.
+_python._vertices_kernel = tetrahedron_box_vertices

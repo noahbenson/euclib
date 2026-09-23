@@ -47,15 +47,21 @@ from ._topo import Topology, SimplexTopology
 
 # Normalization ##############################################################
 
-def normalize_properties(properties, form_shape, /):
+def normalize_properties(properties, spatial_shape, /):
     '''Validates a mapping of names to ``Property`` objects.
+
+    A value that is not a ``Property`` is wrapped in one, over the spatial
+    shape the properties are being installed for. This is what lets a
+    geometry's constructor and ``withprop`` accept the same thing: a caller who
+    has an array and no opinion about the rest of the metadata should not have
+    to construct the ``Property`` themselves to say so.
 
     Parameters
     ----------
     properties : mapping or None
         A mapping whose keys are property names and whose values are
-        ``Property`` objects, or ``None`` for no properties.
-    form_shape : tuple of int
+        ``Property`` objects or values to wrap, or ``None`` for no properties.
+    spatial_shape : tuple of int
         The spatial shape that every property must have.
 
     Returns
@@ -71,13 +77,11 @@ def normalize_properties(properties, form_shape, /):
     res = {}
     for (name, prop) in properties.items():
         if not is_property(prop):
+            prop = Property(prop, spatial_shape)
+        if tuple(prop.spatial_shape) != tuple(spatial_shape):
             raise ValueError(
-                f"property {name!r} must be a Property object; found"
-                f" {type(prop)}")
-        if tuple(prop.form_shape) != tuple(form_shape):
-            raise ValueError(
-                f"property {name!r} has form shape {tuple(prop.form_shape)},"
-                f" but must have {tuple(form_shape)}")
+                f"property {name!r} has spatial shape {tuple(prop.spatial_shape)},"
+                f" but must have {tuple(spatial_shape)}")
         res[name] = prop
     return ldict(res)
 
@@ -478,8 +482,34 @@ class Geometry(MetaObject, metaclass=plantypeABC):
                 f" {order} is not valid")
         props = self.properties
         if name not in props:
-            raise KeyError(f"no such property: {name!r}")
+            raise KeyError(f"no such property: {name!r}{self._order_hint(name)}")
         return props[name]
+
+    def _order_hint(self, name, /):
+        '''A sentence naming the simplex order a bare name lives under.
+
+        A property of a mesh's triangles is named by the pair ``(order, name)``
+        rather than by ``name``, and a geometry computes some of its own under
+        names a caller would naturally reach for unqualified --- a mesh's
+        ``'surface_area'``, a path's ``'length'``. Asking for the name alone is
+        asking for a *coordinate* property, which is a different thing that may
+        not exist; this says where the name does live when the object has it,
+        rather than only that the name was not found.
+
+        Returns
+        -------
+        str
+            A sentence to append to an error message, or the empty string.
+        '''
+        order = getattr(self, 'order', None)
+        if order is None:
+            return ''
+        for k in range(order + 1):
+            if name in self.simplex_properties[k]:
+                return (f"; {name!r} is a property of this object's"
+                        f" {k}-dimensional simplices, which is asked for as"
+                        f" {(k, name)!r}")
+        return ''
 
     def _prop_value(self, name, order, rest, /):
         '''Returns a property's values, restricted to ``rest`` if given.'''
@@ -532,7 +562,21 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         return self._prop_value(first, None, ordered[1:])
 
     def __setitem__(self, index, value):
-        raise TypeError(f"type {type(self)} is immutable")
+        '''Refuses item assignment, and says what to do instead.
+
+        A geometry is immutable: adding or replacing a property produces a
+        copy, so ``geom['v'] = values`` is a mistake rather than a mutation.
+        The two things a caller might have meant are named here, because the
+        message is the only thing that distinguishes them --- ``withprop``
+        returns an edited copy, and a *transient* geometry, whose plan fields
+        may be assigned in place, is edited by attribute rather than by item.
+        '''
+        raise TypeError(
+            f"a {type(self).__name__} is immutable, so its properties cannot be"
+            f" assigned by item. Use withprop({index!r}, values) for an edited"
+            " copy; a transient from transient() is edited in place by"
+            " assigning to its fields, as in t.coords = ...")
+
 
     def prop(self, property, /, at=UNSET, **kw):
         '''Extracts a property's values, interpolating them if asked to.
@@ -619,12 +663,19 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         props.update(changes)
         return self._install_props(order, props)
 
-    def withprop(self, name, values=UNSET, /, **meta):
+    def withprop(self, name=UNSET, values=UNSET, **meta):
         '''Returns a copy of the object with a property added or altered.
 
         Given values, the property is created (or replaced) with the supplied
         metadata. Given only metadata --- that is, with no values --- an
         existing property's metadata is updated and its values are left alone.
+
+        The name comes first and the values second, and both may be given by
+        keyword. The remaining keywords are the property's *metadata*, which is
+        to say its interpolation, mask, and the rest of what ``Property``
+        takes --- so a keyword that names a property rather than a piece of
+        metadata will be read as metadata, and the metadata keywords are not
+        where a value goes.
 
         Parameters
         ----------
@@ -641,20 +692,36 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         Geometry
             A copy of the object with the property set.
         '''
+        if name is UNSET:
+            if values is not UNSET or not meta:
+                raise TypeError(
+                    "withprop needs the property's name; it comes before the"
+                    " values, as in withprop('height', values).")
+            raise TypeError(
+                "withprop needs the property's name as its first argument; the"
+                f" keyword arguments {sorted(meta)} are the property's"
+                " metadata. Write withprop('height', values) rather than"
+                " withprop(height=values).")
         (order, pname) = split_property_name(name)
         container = self._prop_container(order)
         existing = container.get(pname, None)
         if values is UNSET:
             if existing is None:
+                # The likeliest reason to arrive here with keywords in hand is
+                # that the caller meant one of them to be the values.
+                hint = ("" if not meta else
+                        f" The keyword arguments {sorted(meta)} were read as"
+                        " metadata; values must be given separately, as in"
+                        f" withprop({pname!r}, values).")
                 raise KeyError(
                     f"cannot update the metadata of {pname!r}: no such"
-                    " property; supply values to create it")
+                    f" property; supply values to create it.{hint}")
             new = existing.withmeta(**meta)
         else:
-            new = Property(values, self._prop_form_shape(order), **meta)
+            new = Property(values, self._prop_spatial_shape(order), **meta)
         return self.copy(**self._props_updated(order, {pname: new}))
 
-    def dropprop(self, name, /):
+    def dropprop(self, name=UNSET):
         '''Returns a copy of the object without a property.
 
         Parameters
@@ -672,15 +739,20 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         KeyError
             If the object has no such property.
         '''
+        if name is UNSET:
+            raise TypeError(
+                "dropprop needs the property's name, as its first argument or"
+                " by keyword.")
         (order, pname) = split_property_name(name)
         container = self._prop_container(order)
         if pname not in container:
-            raise KeyError(f"no such property: {pname!r}")
+            raise KeyError(
+                f"no such property: {pname!r}{self._order_hint(pname)}")
         props = dict(container)
         del props[pname]
         return self.copy(**self._install_props(order, props))
 
-    def _prop_form_shape(self, order, /):
+    def _prop_spatial_shape(self, order, /):
         '''The spatial shape a property of a given order must have.'''
         if order is not None:
             raise IndexError(
@@ -988,7 +1060,7 @@ class SimplexGeometry(Geometry):
         seq[order] = props
         return {'simplex_properties': llist(seq)}
 
-    def _prop_form_shape(self, order, /):
+    def _prop_spatial_shape(self, order, /):
         if order is None:
             return self.property_shape
         return (self.simplex_count[order],)

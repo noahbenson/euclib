@@ -20,8 +20,7 @@ from __future__ import annotations
 import numpy as np
 from numpy import (
     arange, asarray, clip, concatenate, full, inf, isfinite, linalg, maximum,
-    around, arange, isfinite, nan, ones, sort, sqrt, stack, unique, where,
-    zeros)
+    nan, ones, sort, sqrt, stack, unique, where, zeros)
 
 from itertools import combinations
 
@@ -455,6 +454,13 @@ def _closest_simplex_brute(coords, indices, query):
 #: The relative size below which a quantity counts as zero.
 _EPSILON = 1e-12
 
+#: How far outside a plane, as a fraction of the sizes involved, a point may
+#: fall and still count as lying on it. Solving for a corner and then asking
+#: which side of each plane it is on does not answer the same way twice when
+#: the corner lies on that plane, which it usually does; this is the width of
+#: the band in which the answer is taken to be "on it".
+_FEASIBILITY_EPSILON = 1e-12
+
 
 def cross3(a, b, /):
     '''Returns the cross product of two sets of three-dimensional vectors.
@@ -787,21 +793,45 @@ def tetrahedron_box_vertices(tet, bounds, tolerance=0.0):
         if abs(linalg.det(matrix)) <= _EPSILON:
             continue
         point = linalg.solve(matrix, offsets[[i, j, k]])
+        # A corner usually lies exactly on some of the planes it is not built
+        # from, and whether a solved copy of it falls just inside or just
+        # outside one of them is decided by rounding. A slack proportional to
+        # the sizes involved keeps those corners, which is the difference
+        # between a mesh and a grid that share a face meeting there or missing
+        # each other. See the C counterpart in euclib._c._core.
+        slack = _FEASIBILITY_EPSILON * max(
+            float(abs(offsets).max()), float(abs(point).max()), 1.0)
         if ((normals * point[:, None]).sum(axis=0)
-                <= offsets + tolerance).all():
+                <= offsets + tolerance + slack).all():
             found.append(point)
     if not found:
         return zeros((3, 0))
     # Every feasible triple yields its own copy of a corner, and the copies
     # differ in the last bits of their coordinates; exact equality would keep
     # them all, leaving a set so nearly degenerate that the hull of it cannot
-    # be taken. Rounding to a tolerance before deduplicating collects them,
-    # while keeping the first copy's own coordinates.
+    # be taken. Two copies within `step` of one another are taken to be the
+    # same corner, and the first of them is the one kept. Comparing them to
+    # one another rather than to a rounding grid matters: a grid puts two
+    # copies of one corner in different cells whenever they fall on either
+    # side of a cell's edge, which is a decision rounding should not make.
     points = asarray(found)                 # (V, 3): one row per candidate
     scale = max(float(abs(points).max()), 1.0)
     step = max(float(tolerance), 1e-9 * scale)
-    (_, first) = unique(around(points / step), axis=0, return_index=True)
-    return points[first].T                  # (3, V)
+    kept = []
+    for point in points:
+        if not any(float(((point - q) ** 2).sum()) <= step * step
+                   for q in kept):
+            kept.append(point)
+    return asarray(kept).T                  # (3, V)
+
+
+#: The corner search that ``tetrahedron_box_intersection`` fills its region
+#: from. It is looked up here, once per intersection, rather than called by
+#: name, so that the dispatcher in ``euclib.utils._core`` can replace it with
+#: the C kernel when the extension provides one: the corner search is 120 small
+#: linear solves and accounts for essentially all of an intersection's cost,
+#: while the decomposition that follows it operates on a dozen points.
+_vertices_kernel = tetrahedron_box_vertices
 
 
 def tetrahedron_box_intersection(tet, bounds, tolerance=0.0):
@@ -825,7 +855,7 @@ def tetrahedron_box_intersection(tet, bounds, tolerance=0.0):
         A ``(4, T)`` integer matrix of the tetrahedra that fill the region,
         indexing ``vertices``.
     '''
-    vertices = tetrahedron_box_vertices(tet, bounds, tolerance)
+    vertices = _vertices_kernel(tet, bounds, tolerance)
     if vertices.shape[1] < 4:
         # Three corners make a triangle and two make a segment; neither has a
         # volume to fill.

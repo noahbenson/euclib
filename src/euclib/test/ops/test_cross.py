@@ -64,6 +64,16 @@ class TestPositions(TestCase):
         with self.assertRaises(TypeError):
             positions_of('not-a-geometry')
 
+    def test_a_grid_cell_s_position_is_its_centre(self):
+        # The affine carries an index to a cell's centre, so the cells of a
+        # grid whose affine is the identity sit at 0 and 1 along each axis and
+        # cover half a step either side of those positions.
+        grid = Grid(eye(3), GridTopology((2, 2)))
+        self.assertTrue(allclose(sorted(set(positions_of(grid)[0].tolist())),
+                                 [0., 1.]))
+        self.assertTrue(allclose(grid.origin, [-0.5, -0.5]))
+        self.assertTrue(allclose(grid.bbox, [[-0.5, 1.5], [-0.5, 1.5]]))
+
 
 class TestTransfer(TestCase):
     '''Moving a property from one representation to another.'''
@@ -93,6 +103,21 @@ class TestTransfer(TestCase):
     def test_metadata_can_be_set_on_the_result(self):
         g = transfer(_mesh(), _grid(), 'f', meta={'interp': 0})
         self.assertEqual(g.propinfo('f').interp, ('nearest', 0))
+
+    def test_a_property_lands_on_a_grid_at_the_cell_centres(self):
+        # The consequence of where a grid's data lives: transferring onto a
+        # grid takes the source's value at each cell's *centre*. Reading it at
+        # a corner instead would put every transferred value half a cell out of
+        # place, which is a shift nobody would notice in a picture.
+        mesh = TriMesh(array([[-1., 1., -1., 1.], [-1., -1., 1., 1.]]),
+                       TriTopology([[0, 0], [1, 3], [3, 2]]))
+        mesh = mesh.withprop('x', array([-1., 1., -1., 1.]))
+        grid = Grid(eye(3), GridTopology((2, 2)))
+        landed = transfer(mesh, grid, 'x')
+        # The cells are centred at 0 and 1 along each axis, so cell (i, j)
+        # takes the mesh's x at (i, j), which is j's value: the grid's property
+        # is indexed by cell, one index per axis.
+        self.assertTrue(allclose(landed['x'], [[0., 0.], [1., 1.]]))
 
     def test_the_original_is_unchanged(self):
         mesh = _mesh()

@@ -16,7 +16,7 @@ from euclib.ops import (
     tolerance_of, voxel_intersections)
 from euclib.types import (
     Grid, GridTopology, SegPath, SegTopology, TetMesh, TetTopology, TriMesh,
-    TriTopology, VertexSet, VertexTopology)
+    TriTopology, VertexSet, VertexTopology, affine_translation)
 
 
 # Fixtures ###################################################################
@@ -190,8 +190,25 @@ class TestVoxelIntersections(TestCase):
     '''The overlap of a tetrahedral mesh and a grid.'''
 
     def _grid(self):
-        '''A grid of unit voxels covering the positive octant.'''
-        return Grid(eye(4), GridTopology((3, 3, 3)))
+        '''A grid of unit voxels covering the positive octant.
+
+        A cell's index names its centre, so the affine is the identity shifted
+        by half a step: cell ``(i, j, k)`` is then centred at ``(i+.5, ...)``
+        and covers ``[i, i+1] x [j, j+1] x [k, k+1]``, which is what makes the
+        unit tetrahedron at the origin lie inside cell ``(0, 0, 0)``.
+        '''
+        return Grid(affine_translation([0.5, 0.5, 0.5]).matrix,
+                    GridTopology((3, 3, 3)))
+
+    def test_an_identity_grid_centres_its_first_cell_on_the_origin(self):
+        # The same statement the fixture relies on, made where it cannot be
+        # missed: an unshifted identity grid's first cell is centred at the
+        # origin and reaches half a unit in every direction.
+        unit = Grid(eye(4), GridTopology((3, 3, 3)))
+        self.assertTrue(allclose(unit.origin, [-0.5, -0.5, -0.5]))
+        self.assertTrue(allclose(unit.bbox,
+                                 [[-0.5, 2.5], [-0.5, 2.5], [-0.5, 2.5]]))
+        self.assertTrue(all(contains(unit, array([[0.], [0.], [0.]]))))
 
     def test_a_tetrahedron_inside_one_voxel(self):
         (pieces, tetrahedra, voxels) = voxel_intersections(_tet(), self._grid())

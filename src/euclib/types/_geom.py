@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from numpy import arange, asarray, concatenate, eye, meshgrid, stack
+from numpy import arange, asarray, concatenate, eye, meshgrid, ones, stack
 from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, llist
 
@@ -797,9 +797,9 @@ class Grid(Geometry):
     Parameters
     ----------
     coords : array-like
-        The ``(D+1, D+1)`` affine matrix that maps index space to global
-        coordinates, where ``D`` is the grid's number of dimensions. Its final
-        row must be ``[0, ..., 0, 1]``.
+        The ``(D+1, D+1)`` affine matrix that maps a cell's index to the global
+        coordinates of that cell's *centre*, where ``D`` is the grid's number
+        of dimensions. Its final row must be ``[0, ..., 0, 1]``.
     topo : GridTopology
         The grid's topology, which carries its extent.
     properties : mapping or None, optional
@@ -810,11 +810,13 @@ class Grid(Geometry):
     Attributes
     ----------
     affine : Affine
-        The transform from index space to global coordinates.
+        The transform from index space to global coordinates, an index to a
+        cell's centre.
     shape : tuple of int
         The grid's extent, from its topology.
     origin : array-like
-        The global position of the index-space origin.
+        The global position of the grid's corner: the corner of the first cell,
+        half a step before its centre along each axis.
     spacing : array-like
         The length of one index step along each axis.
     '''
@@ -836,6 +838,12 @@ class Grid(Geometry):
         coords : array-like
             The ``(D+1, D+1)`` affine matrix.
         '''
+        # The affine carries an integer index to the *centre* of that cell, the
+        # convention every image format in this field uses: the cell numbered
+        # ``i`` has its data at ``affine(i)`` and occupies half a step on either
+        # side of it. ``origin`` is therefore the corner of the first cell
+        # rather than the affine's translation, and a position belongs to the
+        # grid over the half-step beyond the first and last centres.
         if backend == 'torch':
             res = to_tensor(coords)
         elif backend == 'numpy' or not hasattr(coords, 'shape'):
@@ -918,15 +926,25 @@ class Grid(Geometry):
         return Affine(coords).inverse
 
     @calc('origin')
-    def proc_origin(coords):
-        '''The global position of the index-space origin.
+    def proc_origin(coords, topo):
+        '''The global position of the grid's corner.
+
+        A cell's index names its centre, so the grid begins half a step before
+        the first index along every axis. This is the corner the README
+        describes a grid as being specified by, and it is the only position of
+        a grid that is not a cell centre.
 
         Returns
         -------
         origin : array-like
             A length-``D`` vector.
         '''
-        return coords[:-1, -1]
+        d = len(topo.shape)
+        # The corner is half a step back along every axis of index space. The
+        # affine takes a matrix of positions, so it is handed one and the
+        # column is taken back off, leaving the length-``D`` vector.
+        corner = _to_like(coords, (-0.5 * ones((d, 1))))
+        return Affine(coords).apply(corner)[:, 0]
 
     @calc('spacing')
     def proc_spacing(coords):
@@ -952,9 +970,10 @@ class Grid(Geometry):
             dimension.
         '''
         d = len(topo.shape)
-        # The 2**D corners of the index space, each axis running from 0 to one
-        # less than its extent.
-        axes = [arange(2) * (s - 1) for s in topo.shape]
+        # The 2**D corners of the grid's region: half a step before the first
+        # cell centre along each axis to half a step beyond the last, so the
+        # box encloses the cells rather than the centres.
+        axes = [arange(2) * s - 0.5 for s in topo.shape]
         mesh = meshgrid(*axes, indexing='ij')
         pts = _to_like(coords, stack([m.reshape(-1) for m in mesh], axis=0))
         world = Affine(coords).apply(pts)

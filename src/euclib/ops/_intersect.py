@@ -87,6 +87,13 @@ def _nearby(geom, center, radius, /):
 def path_crossings(path, mesh, /, tolerance=None):
     '''Finds where a path crosses a triangle mesh.
 
+    One crossing is reported per (segment, triangle) pair that meets, so a
+    crossing that lands where two triangles share an edge is reported twice ---
+    once naming each triangle. That is the pair that met, and it is the answer
+    rather than a duplicate of it: the two rows say which triangles the path
+    passes between. A caller who wants one row per location can compare the
+    points, which are equal in the two rows.
+
     Parameters
     ----------
     path : SegPath
@@ -247,13 +254,15 @@ def contains(geom, points, /, tolerance=None):
     tol = tolerance_of(geom) if tolerance is None else float(tolerance)
     if isinstance(geom, Grid):
         # A grid has an affine rather than coordinates, so belonging to it
-        # means the index coordinate lying within the grid's extent.
+        # means the index coordinate lying within the grid's extent. An index
+        # names a cell's centre, so the extent runs from half a step before the
+        # first centre to half a step past the last.
         loc = geom.to_local(query)
         parts = [asarray(getattr(loc, f)) for f in loc._fields]
         inside = ones(parts[0].reshape(-1).shape, dtype=bool)
         for (p, size) in zip(parts, geom.shape):
-            inside = inside & (p.reshape(-1) >= -tol) & (
-                p.reshape(-1) <= (size - 1) + tol)
+            inside = inside & (p.reshape(-1) >= -0.5 - tol) & (
+                p.reshape(-1) <= (size - 0.5) + tol)
         return inside
     back = geom.to_global(geom.to_local(query))
     gap = asarray(query) - asarray(back)
@@ -320,15 +329,18 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
     from_voxel = []
     for i in range(corners.shape[2]):
         inside = to_index.apply(corners[:, :, i])    # (3, 4) in index space
-        # The voxels the tetrahedron can reach, from its own extent in
-        # index space: a tetrahedron reaches only the cells its box meets.
-        low = floor(inside.min(axis=1)).astype(int).clip(0, None)
-        high = ceil(inside.max(axis=1)).astype(int).clip(
+        # The voxels the tetrahedron can reach, from its own extent in index
+        # space: a tetrahedron reaches only the cells its box meets. An index
+        # names a cell's centre, so the cell numbered `v` covers the half step
+        # on either side of it, and the first cell whose region reaches a
+        # coordinate `x` is the one whose centre is within half a step of it.
+        low = floor(inside.min(axis=1) + 0.5).astype(int).clip(0, None)
+        high = ceil(inside.max(axis=1) - 0.5).astype(int).clip(
             None, [s - 1 for s in shape])
         for voxel in product(*(range(low[a], high[a] + 1)
                                for a in range(3))):
-            bounds = stack([asarray(voxel, dtype=float),
-                            asarray(voxel, dtype=float) + 1.0], axis=1)
+            bounds = stack([asarray(voxel, dtype=float) - 0.5,
+                            asarray(voxel, dtype=float) + 0.5], axis=1)
             (vertices, tets) = tetrahedron_box_intersection(
                 inside, bounds, tol)
             if tets.shape[1] == 0:

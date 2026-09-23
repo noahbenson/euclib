@@ -1,0 +1,328 @@
+# -*- coding: utf-8 -*-
+###############################################################################
+# euclib/test/utils/test_parity.py
+'''Tests that the C kernels agree with the pure-Python ones.
+
+The pure-Python kernels in ``euclib.utils._pycore`` are the definition of
+correct behavior; the C kernels in ``euclib._c._core`` exist to be faster. These
+tests hold the two to each other, in the two ways that matter:
+
+*Exact agreement* is required on every case this file constructs: the box, the
+lattice, the prism, the touching pair, the disjoint pair. Floating point does
+not enter into it, because each corner comes out of a solve and no two of them
+are near enough to one another for rounding to matter.
+
+*Agreement within the merge radius* is what a random pair of shapes can be held
+to, and this is a statement about the kernels rather than a weakening of the
+test. Every corner of the region is found by solving three of ten planes at a
+time, so the same corner is found several times over, each copy off from the
+others by whatever the solve's rounding gave it. Collecting those copies into
+one corner is a threshold test: copies closer than the merge radius are the same
+corner. A copy that lands exactly at that radius is decided one way by one
+implementation and the other way by the other, and no choice of radius removes
+that --- the random tests below therefore require the two results to be the same
+set of corners *up to the radius*, which is the strongest claim that is true.
+'''
+
+# Dependencies ###############################################################
+
+from __future__ import annotations
+
+from unittest import TestCase, skipUnless
+
+import numpy as np
+
+from euclib.utils import split_cells, tetrahedron_box_vertices
+from euclib.utils._core import using_c_extension
+from euclib.utils._pycore import (
+    split_cells as split_cells_python,
+    tetrahedron_box_vertices as vertices_python)
+
+
+# Fixtures ###################################################################
+
+#: The tetrahedron filling the unit cube: its corners and three of the cube's.
+UNIT_TET = np.array([[0., 1., 0., 0.],
+                     [0., 0., 1., 0.],
+                     [0., 0., 0., 1.]])
+
+#: A second tetrahedron that together with the first fills the unit cube.
+OTHER_TET = np.array([[1., 1., 0., 1.],
+                      [0., 1., 1., 1.],
+                      [1., 1., 1., 0.]])
+
+#: The unit cube.
+UNIT_BOX = np.array([[0., 1.], [0., 1.], [0., 1.]])
+
+#: The relative distance within which two corners count as one.
+MERGE = 1e-9
+
+
+def _merge_radius(vertices, /):
+    '''The radius within which two corners count as one, as the kernels take it.
+
+    The kernels are not told a tolerance, so they take one proportional to the
+    extent of what they found.
+    '''
+    scale = max(float(np.abs(vertices).max()) if vertices.size else 0.0, 1.0)
+    return MERGE * scale
+
+
+def _same_corners(a, b, /):
+    '''Determines whether two corner matrices hold the same set of corners.
+
+    A corner of either result must have a corner of the other within the merge
+    radius, and the two must hold the same number of them.
+    '''
+    if a.shape[1] != b.shape[1]:
+        return False
+    for column in range(a.shape[1]):
+        distance = np.sqrt(((b - a[:, column][:, None]) ** 2).sum(axis=0))
+        if distance.min() > max(_merge_radius(a), _merge_radius(b)):
+            return False
+    return True
+
+
+# Tests ######################################################################
+
+@skipUnless(using_c_extension, "the C extension is not built")
+class TestSplitCellsParity(TestCase):
+    '''The C bisection against the pure-Python one.'''
+
+    def setUp(self):
+        from euclib._c import _core
+        self.core = _core
+
+    def _check(self, centers, bounds):
+        centers = np.ascontiguousarray(centers, dtype='float64')
+        bounds = np.ascontiguousarray(bounds, dtype='float64')
+        native = split_cells_python(centers, bounds)
+        accelerated = self.core.split_cells(centers, bounds)
+        self.assertEqual(native.tolist(), accelerated.tolist())
+        self.assertEqual(native.dtype, accelerated.dtype)
+
+    def test_a_known_pair(self):
+        self._check(np.array([[0.2, 0.8], [0.2, 0.8], [0.2, 0.8]]), UNIT_BOX)
+
+    def test_points_on_the_midplanes(self):
+        # A point on a midplane is in the lower half: the comparison is strict.
+        centers = np.array([[0.0, 0.5, 1.0], [0.0, 0.5, 1.0], [0.0, 0.5, 1.0]])
+        self._check(centers, UNIT_BOX)
+
+    def test_a_point_outside_the_box(self):
+        centers = np.array([[-5.0, 5.0], [-5.0, 5.0], [-5.0, 5.0]])
+        self._check(centers, UNIT_BOX)
+
+    def test_an_empty_set_of_points(self):
+        self._check(np.zeros((3, 0)), UNIT_BOX)
+
+    def test_two_dimensions(self):
+        self._check(np.array([[0.2, 0.8], [0.2, 0.8]]),
+                    np.array([[0., 1.], [0., 1.]]))
+
+    def test_a_box_away_from_the_origin(self):
+        bounds = np.array([[-4., -2.], [10., 12.], [0., 1.]])
+        self._check(np.array([[-3., -1., 11., 0.5],
+                              [10.5, 11.5, 10.5, 11.5],
+                              [0.25, 0.75, 0.25, 0.75]]), bounds)
+
+    def test_random_boxes(self):
+        rng = np.random.default_rng(0)
+        for _ in range(200):
+            dimension = int(rng.integers(1, 5))
+            count = int(rng.integers(0, 30))
+            low = rng.normal(size=dimension)
+            high = low + rng.uniform(0.1, 3.0, size=dimension)
+            bounds = np.stack([low, high], axis=1)
+            centers = rng.normal(size=(dimension, count)) * 2.0
+            self._check(centers, bounds)
+
+    def test_a_large_set_of_points(self):
+        rng = np.random.default_rng(1)
+        centers = rng.normal(size=(3, 20000))
+        bounds = np.array([[-2., 2.], [-2., 2.], [-2., 2.]])
+        self._check(centers, bounds)
+
+
+@skipUnless(using_c_extension, "the C extension is not built")
+class TestVerticesParityOnConstructedCases(TestCase):
+    '''The C corner search against the pure-Python one, exactly.
+
+    Every case here is built rather than drawn, and each is one that the library
+    is expected to handle exactly: a mesh corner on a voxel face is what
+    ``voxel_intersections`` meets whenever a mesh and a grid line up, which is
+    the ordinary case rather than the exceptional one.
+    '''
+
+    def setUp(self):
+        from euclib._c import _core
+        self.core = _core
+
+    def _check(self, tet, bounds, tolerance=0.0):
+        tet = np.ascontiguousarray(tet, dtype='float64')
+        bounds = np.ascontiguousarray(bounds, dtype='float64')
+        native = vertices_python(tet, bounds, tolerance)
+        accelerated = self.core.tetrahedron_box_vertices(tet, bounds,
+                                                         tolerance)
+        self.assertEqual(native.shape, accelerated.shape)
+        self.assertTrue(np.array_equal(native, accelerated),
+                        f"\nnative:\n{native}\naccelerated:\n{accelerated}")
+
+    def test_a_tetrahedron_inside_the_unit_cube(self):
+        self._check(UNIT_TET, UNIT_BOX)
+
+    def test_the_two_tetrahedra_that_fill_the_cube(self):
+        self._check(OTHER_TET, UNIT_BOX)
+
+    def test_a_box_that_contains_the_tetrahedron(self):
+        self._check(UNIT_TET, np.array([[-1., 2.], [-1., 2.], [-1., 2.]]))
+
+    def test_a_box_that_misses_it(self):
+        self._check(UNIT_TET, np.array([[4., 5.], [4., 5.], [4., 5.]]))
+
+    def test_a_box_that_touches_one_face(self):
+        # The corner of the tetrahedron at the origin is on the box's low
+        # corner: the two meet at a single point.
+        self._check(UNIT_TET, np.array([[-1., 0.], [-1., 0.], [-1., 0.]]))
+
+    def test_a_box_that_shares_a_face(self):
+        self._check(UNIT_TET, np.array([[0., 1.], [0., 1.], [0., 0.]]))
+
+    def test_a_half_scale_tetrahedron(self):
+        self._check(UNIT_TET / 2.0, UNIT_BOX)
+
+    def test_a_translated_tetrahedron(self):
+        self._check(UNIT_TET + np.array([[3.], [5.], [-2.]]),
+                    np.array([[3., 4.], [5., 6.], [-2., -1.]]))
+
+    def test_a_mirrored_tetrahedron(self):
+        # A negative volume is a valid tetrahedron; the planes are oriented
+        # from the corners, not from the sign of the determinant.
+        self._check(UNIT_TET[:, [1, 0, 2, 3]], UNIT_BOX)
+
+    def test_every_corner_subset_of_the_cube(self):
+        # The four corners of a lattice tetrahedron can be any four of the
+        # cube's eight; a box that lines up with the cube meets all of them the
+        # same way.
+        cube = np.array(np.meshgrid(*[np.arange(2)] * 3)).reshape(3, 8) * 1.0
+        from itertools import combinations
+        for corners in combinations(range(8), 4):
+            tet = cube[:, corners]
+            edges = np.stack([tet[:, 1] - tet[:, 0], tet[:, 2] - tet[:, 0],
+                              tet[:, 3] - tet[:, 0]], axis=1)
+            if abs(np.linalg.det(edges)) < 1e-12:
+                continue
+            with self.subTest(corners=corners):
+                self._check(tet, UNIT_BOX)
+                self._check(tet, np.array([[-0.5, 1.5], [-0.5, 1.5],
+                                           [-0.5, 1.5]]))
+
+    def test_lattice_tetrahedra_against_lattice_boxes(self):
+        rng = np.random.default_rng(7)
+        cube = np.array(np.meshgrid(*[np.arange(2)] * 3)).reshape(3, 8) * 1.0
+        for _ in range(200):
+            corners = rng.permutation(8)[:4]
+            tet = cube[:, corners]
+            edges = np.stack([tet[:, 1] - tet[:, 0], tet[:, 2] - tet[:, 0],
+                              tet[:, 3] - tet[:, 0]], axis=1)
+            if abs(np.linalg.det(edges)) < 1e-12:
+                continue
+            low = rng.integers(-1, 2, size=3).astype('float64')
+            high = low + rng.integers(1, 3, size=3)
+            self._check(tet, np.stack([low, high], axis=1))
+
+    def test_a_tolerance_is_passed_through(self):
+        bounds = np.array([[0., 1.], [0., 1.], [2., 3.]])
+        self._check(UNIT_TET, bounds, 0.5)
+
+
+@skipUnless(using_c_extension, "the C extension is not built")
+class TestVerticesParityOnRandomCases(TestCase):
+    '''The C corner search against the pure-Python one, on drawn shapes.'''
+
+    def setUp(self):
+        from euclib._c import _core
+        self.core = _core
+
+    def test_random_pairs_agree_on_the_corners(self):
+        rng = np.random.default_rng(4)
+        overlapping = 0
+        corners = 0
+        for _ in range(500):
+            tet = rng.normal(size=(3, 4)) * rng.uniform(0.3, 3.0)
+            center = rng.normal(size=3) * rng.uniform(0.2, 3.0)
+            half = rng.uniform(0.1, 1.5, size=3)
+            bounds = np.stack([center - half, center + half], axis=1)
+            native = vertices_python(tet, bounds)
+            accelerated = self.core.tetrahedron_box_vertices(tet, bounds)
+            if native.size:
+                overlapping += 1
+                corners += native.shape[1]
+            self.assertTrue(_same_corners(native, accelerated),
+                            f"\nnative:\n{native}\naccelerated:\n{accelerated}")
+        # The draw has to actually produce overlaps, or the test says nothing.
+        self.assertGreater(overlapping, 100)
+        self.assertGreater(corners, 500)
+
+    def test_an_operation_built_on_the_kernel_agrees(self):
+        # The end of the chain: a voxelized mesh. The operation cuts a
+        # tetrahedron against a voxel through the corner search, so pointing the
+        # dispatcher at each kernel in turn is what compares the two routes
+        # through the whole operation rather than through the kernel alone.
+        from euclib import grid, ops, tetmesh
+        from euclib.utils import _pycore
+        # A three-cube block, each cube cut into six tetrahedra.
+        corners = []
+        tets = []
+        for i in range(3):
+            for j in range(3):
+                for k in range(3):
+                    base = len(corners)
+                    for x in range(2):
+                        for y in range(2):
+                            for z in range(2):
+                                corners.append((i + x, j + y, k + z))
+                    high = base + 7
+                    for (a, b) in ((0, 1), (0, 2), (1, 0),
+                                   (1, 2), (2, 0), (2, 1)):
+                        tets.append([base, base + (1 << a),
+                                     base + (1 << a) + (1 << b), high])
+        mesh = tetmesh(np.array(corners, dtype=float).T,
+                       np.array(tets, dtype=int).T)
+        cells = grid((6, 6, 6), affine=np.array([[0.5, 0., 0., 0.],
+                                                 [0., 0.5, 0., 0.],
+                                                 [0., 0., 0.5, 0.],
+                                                 [0., 0., 0., 1.]]))
+        dispatching = _pycore._vertices_kernel
+        answers = {}
+        try:
+            for (label, kernel) in (('python', dispatching.native),
+                                    ('C', dispatching.accelerated)):
+                _pycore._vertices_kernel = kernel
+                (pieces, from_tet, from_voxel) = ops.voxel_intersections(
+                    mesh, cells)
+                answers[label] = (pieces.topo.simplex_count[3],
+                                  from_tet.tolist(), from_voxel.tolist())
+        finally:
+            _pycore._vertices_kernel = dispatching
+        self.assertGreater(answers['python'][0], 100)
+        self.assertEqual(answers['python'], answers['C'])
+
+    def test_the_decomposition_agrees_too(self):
+        # The intersection the operations call goes through the same corner
+        # search, so it is held to the same standard.
+        from euclib.utils import _pycore
+        rng = np.random.default_rng(12)
+        checked = 0
+        for _ in range(100):
+            tet = rng.normal(size=(3, 4)) * rng.uniform(0.5, 2.0)
+            center = rng.normal(size=3) * 1.5
+            half = rng.uniform(0.3, 1.5, size=3)
+            bounds = np.stack([center - half, center + half], axis=1)
+            (native, native_tets) = _pycore.tetrahedron_box_intersection(
+                tet, bounds)
+            accelerated = self.core.tetrahedron_box_vertices(tet, bounds)
+            if native.size:
+                checked += 1
+                self.assertTrue(_same_corners(native, accelerated))
+        self.assertGreater(checked, 20)

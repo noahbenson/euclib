@@ -270,7 +270,7 @@ def normalize_extrap(extrap, /):
     return extrap
 
 
-def normalize_mask(mask, form_shape, /):
+def normalize_mask(mask, spatial_shape, /):
     '''Normalizes a ``mask`` metadata value.
 
     Parameters
@@ -278,7 +278,7 @@ def normalize_mask(mask, form_shape, /):
     mask : array-like or None
         A boolean mask marking missing values. It must be broadcastable to the
         property's spatial shape.
-    form_shape : tuple of int
+    spatial_shape : tuple of int
         The property's spatial shape.
 
     Returns
@@ -290,11 +290,11 @@ def normalize_mask(mask, form_shape, /):
         return None
     marr = asarray(mask).astype(bool)
     try:
-        broadcast_shapes(marr.shape, tuple(form_shape))
+        broadcast_shapes(marr.shape, tuple(spatial_shape))
     except ValueError as exc:
         raise ValueError(
-            f"mask shape {marr.shape} is not broadcastable to form shape"
-            f" {tuple(form_shape)}") from exc
+            f"mask shape {marr.shape} is not broadcastable to spatial shape"
+            f" {tuple(spatial_shape)}") from exc
     return marr
 
 
@@ -423,7 +423,7 @@ class Property(planobject):
 
     ``Property`` pairs the value array ``value`` with the metadata that governs
     how it is interpolated, extrapolated, and masked. The value's spatial
-    dimensions must match ``form_shape``; any leading dimensions are "channel"
+    dimensions must match ``spatial_shape``; any leading dimensions are "channel"
     dimensions, following the ``(C..., X...)`` ordering convention that
     ``euclib`` uses throughout.
 
@@ -436,10 +436,14 @@ class Property(planobject):
     ----------
     value : array-like
         The property's value. Its trailing dimensions must equal
-        ``form_shape``.
-    form_shape : tuple of int
-        The shape of the spatial dimensions that the property is defined over;
-        for a coordinate property this is ``(coord_count,)``.
+        ``spatial_shape``.
+    spatial_shape : tuple of int
+        The shape of the spatial dimensions the property is defined over ---
+        the *domain*, not the value. A coordinate property of a mesh with 3
+        coordinates has ``(3,)``, and its value may be anything ending in those
+        dimensions: a length-3 vector has shape ``(3,)``, and a 2-by-3 value
+        has shape ``(2, 3)``, whose leading ``2`` is a channel dimension and
+        whose spatial shape is still ``(3,)``.
     backend : str or None, optional
         ``'numpy'``, ``'torch'``, or ``None``. The default, ``None``, leaves
         the value in its own backend; an explicit backend converts it.
@@ -460,7 +464,7 @@ class Property(planobject):
     dtype : dtype-like or None, optional
         The value's dtype. The default, ``None``, keeps the natural dtype.
     mask : array-like or None, optional
-        A boolean mask, broadcastable to ``form_shape``, marking values that
+        A boolean mask, broadcastable to ``spatial_shape``, marking values that
         are missing. The default, ``None``, marks nothing as missing.
     null : object or Ellipsis, optional
         The value substituted for missing results. The default, ``Ellipsis``,
@@ -477,20 +481,20 @@ class Property(planobject):
     channel_shape : tuple of int
         The shape of the value's leading (non-spatial) dimensions.
     shape : tuple of int
-        The full shape of the value, ``channel_shape + form_shape``.
+        The full shape of the value, ``channel_shape + spatial_shape``.
     is_quantitative : bool
         Whether the property is quantitative.
     is_masked : bool
         Whether the property has a mask.
     '''
 
-    def __init__(self, value, form_shape, backend=None, vartype=None,
+    def __init__(self, value, spatial_shape, backend=None, vartype=None,
                  interp=UNSET, extrap=None, dtype=None, mask=None, null=UNSET,
                  unit=None, detach=True):
         # Every field is assigned exactly as given; the filters below normalize
         # and validate it, and re-run whenever an input changes.
         self.value = value
-        self.form_shape = tuple(form_shape)
+        self.spatial_shape = tuple(spatial_shape)
         self.backend = backend
         self.vartype = vartype
         self.interp = interp
@@ -603,7 +607,7 @@ class Property(planobject):
         return normalize_extrap(extrap)
 
     @calc('mask', lazy=False)
-    def proc_mask(mask, form_shape):
+    def proc_mask(mask, spatial_shape):
         '''Normalizes the property's mask to a boolean array.
 
         Returns
@@ -611,7 +615,7 @@ class Property(planobject):
         mask : numpy.ndarray or None
             The mask, or ``None`` when none was given.
         '''
-        return normalize_mask(mask, form_shape)
+        return normalize_mask(mask, spatial_shape)
 
     @calc('null', lazy=False)
     def proc_null(null, dtype, value):
@@ -636,7 +640,7 @@ class Property(planobject):
         return normalize_unit(unit)
 
     @calc('channel_shape', 'shape', lazy=False)
-    def proc_shape(value, form_shape):
+    def proc_shape(value, spatial_shape):
         '''The channel shape and the full shape of the value.
 
         Returns
@@ -647,11 +651,11 @@ class Property(planobject):
             The full shape of the value.
         '''
         sh = tuple(value.shape)
-        n = len(form_shape)
-        if n > len(sh) or sh[len(sh) - n:] != tuple(form_shape):
+        n = len(spatial_shape)
+        if n > len(sh) or sh[len(sh) - n:] != tuple(spatial_shape):
             raise ValueError(
-                f"value shape {sh} does not end with form shape"
-                f" {tuple(form_shape)}")
+                f"value shape {sh} does not end with spatial shape"
+                f" {tuple(spatial_shape)}")
         return (sh[:len(sh) - n], sh)
 
     @calc('is_quantitative')
@@ -679,7 +683,7 @@ class Property(planobject):
     def withmeta(self, **kwargs):
         '''Returns a copy of the property with altered metadata.
 
-        Only metadata may be changed; the value and the form shape are fixed.
+        Only metadata may be changed; the value and the spatial shape are fixed.
 
         Parameters
         ----------
@@ -704,8 +708,8 @@ class Property(planobject):
         res = self.copy(**updates)
         return self if res == self else res
 
-    def subprop(self, form_shape, /):
-        '''Returns a copy of the property with a different form shape.
+    def subprop(self, spatial_shape, /):
+        '''Returns a copy of the property with a different spatial shape.
 
         This is used when a property is re-expressed over a different set of
         spatial positions, for example when a coordinate property is restricted
@@ -713,7 +717,7 @@ class Property(planobject):
 
         Parameters
         ----------
-        form_shape : tuple of int
+        spatial_shape : tuple of int
             The new spatial shape. The value's trailing dimensions are
             re-interpreted accordingly.
 
@@ -723,7 +727,7 @@ class Property(planobject):
             The re-shaped property.
         '''
         return Property(
-            value=self.value, form_shape=form_shape, backend=self.backend,
+            value=self.value, spatial_shape=spatial_shape, backend=self.backend,
             vartype=self.vartype, interp=self.interp, extrap=self.extrap,
             dtype=self.dtype, mask=self.mask, null=self.null, unit=self.unit,
             detach=self.detach)

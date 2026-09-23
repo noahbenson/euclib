@@ -137,7 +137,7 @@ class TestNormalizers(TestCase):
         m = normalize_mask([True, False, True], (3,))
         self.assertEqual(m.dtype.kind, 'b')
         self.assertEqual(m.tolist(), [True, False, True])
-        # A mask broadcastable to the form shape is permitted.
+        # A mask broadcastable to the spatial shape is permitted.
         self.assertEqual(normalize_mask(True, (3,)).shape, ())
         with self.assertRaises(ValueError):
             normalize_mask([True, False], (3,))
@@ -149,7 +149,7 @@ class TestProperty(TestCase):
     def test_basic_construction(self):
         p = Property(zeros((3, 5)), (5,))
         self.assertTrue(is_property(p))
-        self.assertEqual(p.form_shape, (5,))
+        self.assertEqual(p.spatial_shape, (5,))
         self.assertEqual(p.channel_shape, (3,))
         self.assertEqual(p.shape, (3, 5))
         self.assertEqual(p.vartype, QUANTITATIVE)
@@ -230,7 +230,7 @@ class TestProperty(TestCase):
     def test_subprop(self):
         p = Property(zeros((2, 5)), (5,), interp=1)
         q = p.subprop((5,))
-        self.assertEqual(q.form_shape, (5,))
+        self.assertEqual(q.spatial_shape, (5,))
         self.assertEqual(q.interp, ('polynomial', 1))
 
     def test_getitem_returns_raw_values(self):
@@ -298,5 +298,5 @@ class TestProperty(TestCase):
     def test_plan_inputs_are_the_constructor_arguments(self):
         self.assertEqual(
             set(Property.plan.inputs),
-            {'value', 'form_shape', 'backend', 'vartype', 'interp', 'extrap',
+            {'value', 'spatial_shape', 'backend', 'vartype', 'interp', 'extrap',
              'dtype', 'mask', 'null', 'unit', 'detach'})

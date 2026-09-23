@@ -169,8 +169,8 @@ class TestConstructors(TestCase):
         grid = euclib.grid((4, 5))
         self.assertIsInstance(grid, euclib.Grid)
         self.assertEqual(grid.shape, (4, 5))
-        # An affine of None is the identity: a cell's indices are its
-        # coordinates.
+        # An affine of None is the identity: the index of a cell is the
+        # position of its centre.
         self.assertTrue(allclose(grid.coords, eye(3)))
         # A dtype is passed to the affine, whether given or defaulted.
         self.assertEqual(euclib.grid((4, 5), dtype='f4').coords.dtype.str,
@@ -179,7 +179,9 @@ class TestConstructors(TestCase):
                                                    [0., 2., 0.],
                                                    [0., 0., 1.]]),
                              dtype='f8')
-        self.assertEqual(tilted.origin.tolist(), [1., 0.])
+        # The affine carries index (0, 0) to (1, 0), which is the centre of the
+        # first cell; the grid's corner is half a two-unit step back from it.
+        self.assertEqual(tilted.origin.tolist(), [0., -1.])
 
     def test_the_constructors_take_properties_and_metadata(self):
         prop = euclib.Property(array([1., 2., 3.]), (3,))

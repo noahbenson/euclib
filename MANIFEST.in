@@ -1,0 +1,7 @@
+# The sources of the optional C extension.
+#
+# euclib._c._core is built from C rather than from Python, so setuptools does
+# not know it is part of the package and would leave it out of a source
+# distribution, leaving anyone who builds from the sdist with no extension to
+# build. It is harmless for the file to land in a wheel as well.
+include src/euclib/_c/_core.c

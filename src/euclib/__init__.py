@@ -42,9 +42,16 @@ from . import ops
 
 #: The ``euclib`` submodules, in the order in which they are loaded. This is
 #: the order in which they must be reloaded.
+#:
+#: The kernel modules are named individually rather than left to be reached
+#: through ``euclib.utils``, because reloading a package does not reload what it
+#: imports. ``euclib.utils._core`` is the module that reads
+#: ``EUCLIB_NO_C_EXTENSIONS`` and ``EUCLIB_REQUIRE_C``, so naming it is what
+#: lets a change to either take effect without restarting the interpreter.
 submodules = (
-    'euclib._init', 'euclib._version', 'euclib.utils', 'euclib.abc',
-    'euclib.types', 'euclib.ops')
+    'euclib._init', 'euclib._version',
+    'euclib.utils._pycore', 'euclib.utils._dispatch', 'euclib.utils._core',
+    'euclib.utils', 'euclib.abc', 'euclib.types', 'euclib.ops')
 
 
 # Types and constructors #####################################################

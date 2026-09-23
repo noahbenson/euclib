@@ -2,7 +2,16 @@
 # setuptools 77 is the first release that understands PEP 639 SPDX license
 # expressions; the "License ::" classifiers are superseded by the `license`
 # field below and are rejected outright by setuptools 80+.
-requires = ["setuptools >= 77"]
+#
+# numpy is needed to *build* the optional euclib._c._core extension, because
+# setup.py asks it for the include directory its headers live in. Without it
+# here, a build under isolation cannot compile the extension and quietly falls
+# back to the pure-Python kernels --- a working installation that is missing the
+# speedup, and a silent one. A machine with no compiler still gets that fallback
+# by design; a machine with a compiler and no numpy here would get it by
+# accident. It is listed under `dependencies` below as well, since the compiled
+# extension imports numpy at run time.
+requires = ["setuptools >= 77", "numpy"]
 build-backend = "setuptools.build_meta"
 
 [project]

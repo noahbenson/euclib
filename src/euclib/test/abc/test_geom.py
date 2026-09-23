@@ -188,6 +188,24 @@ class TestProperties(TestCase):
         with self.assertRaises(KeyError):
             self.cloud.dropprop('nope')
 
+    def test_a_simplex_property_asked_for_by_name_says_where_it_lives(self):
+        # A mesh's 'surface_area' is a property of its triangles, named by the
+        # pair (2, 'surface_area'), so asking for the bare name asks for a
+        # coordinate property and is told where the name actually lives.
+        from euclib.types import TriMesh, TriTopology
+        mesh = TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
+                       TriTopology([[0], [1], [2]]))
+        with self.assertRaises(KeyError) as caught:
+            mesh['surface_area']
+        message = str(caught.exception)
+        self.assertIn("(2, 'surface_area')", message)
+        # The simplex property itself is there, and is the triangle's area.
+        self.assertAlmostEqual(float(mesh[2, 'surface_area'][0]), 0.5)
+        # A name that is nowhere gets no such suggestion.
+        with self.assertRaises(KeyError) as caught:
+            mesh['nope-not-anywhere']
+        self.assertNotIn('simplices', str(caught.exception))
+
     def test_dropprop(self):
         c = self.cloud.withprop('a', zeros(4))
         self.assertNotIn('a', c.dropprop('a').properties)
@@ -213,15 +231,61 @@ class TestProperties(TestCase):
         with self.assertRaises(TypeError):
             self.cloud['a'] = zeros(4)
 
+    def test_the_immutability_error_says_what_to_do_instead(self):
+        # Item assignment and attribute assignment look alike, and only one of
+        # them works on a transient; the message is what tells them apart.
+        with self.assertRaises(TypeError) as caught:
+            self.cloud['a'] = zeros(4)
+        message = str(caught.exception)
+        self.assertIn('withprop', message)
+        self.assertIn('transient', message)
+
+    def test_the_name_and_values_may_be_keywords(self):
+        c = self.cloud.withprop(name='a', values=array([1., 2., 3., 4.]))
+        self.assertEqual(c['a'].tolist(), [1., 2., 3., 4.])
+        self.assertNotIn('a', c.dropprop(name='a').properties)
+
+    def test_a_property_name_passed_as_a_keyword_is_diagnosed(self):
+        # The keywords of withprop are metadata, so a property named by keyword
+        # is read as metadata. Both mistakes say so rather than reporting a
+        # missing argument or an unknown property.
+        with self.assertRaises(TypeError) as caught:
+            self.cloud.withprop(height=zeros(4))
+        self.assertIn('metadata', str(caught.exception))
+        self.assertIn('height', str(caught.exception))
+        with self.assertRaises(KeyError) as caught:
+            self.cloud.withprop('a', a=zeros(4))
+        message = str(caught.exception)
+        self.assertIn('metadata', message)
+        self.assertIn("withprop('a', values)", message)
+
+    def test_a_missing_name_is_reported(self):
+        with self.assertRaises(TypeError):
+            self.cloud.withprop()
+        with self.assertRaises(TypeError):
+            self.cloud.withprop(values=zeros(4))
+
     def test_properties_may_be_passed_at_construction(self):
         prop = Property(zeros(4), (4,))
         c = _cloud(properties={'a': prop})
         self.assertEqual(c['a'].tolist(), [0., 0., 0., 0.])
 
-    def test_raw_values_are_rejected_at_construction(self):
-        # Construction takes Property objects; withprop builds them.
+    def test_raw_values_are_wrapped_at_construction(self):
+        # Construction and withprop take the same thing: a Property, or the
+        # values on their own, which are wrapped in one over the shape the
+        # properties are being installed for.
+        c = _cloud(properties={'a': zeros(4)})
+        self.assertEqual(c['a'].tolist(), [0., 0., 0., 0.])
+        self.assertEqual(tuple(c.propinfo('a').spatial_shape), (4,))
+        self.assertEqual(c['a'].tolist(), _cloud(properties={
+            'a': Property(zeros(4), (4,))})['a'].tolist())
+
+    def test_a_value_of_the_wrong_shape_is_still_refused(self):
         with self.assertRaises(Exception):
-            _cloud(properties={'a': zeros(4)})
+            _cloud(properties={'a': zeros(3)})
+        # ...including when the Property is constructed by hand.
+        with self.assertRaises(Exception):
+            _cloud(properties={'a': Property(zeros(3), (3,))})
 
     def test_prop_returns_values(self):
         c = self.cloud.withprop('a', array([1., 2., 3., 4.]))
