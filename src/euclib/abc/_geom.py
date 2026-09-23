@@ -544,10 +544,18 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         a sequence of names returning a tuple of values (``geom[['a', 'b']]``),
         or a name followed by indices applied to the value's spatial dimensions
         (``geom['flux', mask]``).
+
+        A leading ``Ellipsis`` is ignored, so ``geom[..., 'flux']`` is
+        ``geom['flux']``: the order is optional and may be passed as
+        ``Ellipsis`` to say that it is not the simplex order being named.
         '''
         ordered = index if isinstance(index, tuple) else (index,)
         if len(ordered) == 0:
             raise IndexError("empty property index")
+        # An Ellipsis in the order's place says only that an order is not
+        # being given, so it is dropped, as the README describes.
+        if ordered[0] is Ellipsis and len(ordered) > 1:
+            ordered = ordered[1:]
         first = ordered[0]
         # Several names at once, as in geom[['a', 'b']].
         if isinstance(first, list):
