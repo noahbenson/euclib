@@ -38,10 +38,9 @@ be inspected directly:
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
-translation = et.affine_translation([1.0, 2.0, 3.0])
-scaling = et.affine_scaling([2.0, 2.0, 2.0])
+translation = el.types.affine_translation([1.0, 2.0, 3.0])
+scaling = el.types.affine_scaling([2.0, 2.0, 2.0])
 
 print('translation matrix\n', translation.matrix)
 print('\nscaling matrix\n', scaling.matrix)
@@ -60,7 +59,7 @@ def affine_matrix(linear, translation=None):
     matrix[:D, :D] = linear
     if translation is not None:
         matrix[:D, D] = translation
-    return et.Affine(matrix)
+    return el.types.Affine(matrix)
 
 
 theta = np.pi / 2
@@ -107,7 +106,7 @@ without disturbing anything else about it:
 coords = np.array([[0.0, 1.0, 0.0, 1.0],
                    [0.0, 0.0, 1.0, 1.0],
                    [0.0, 0.0, 0.0, 1.0]])
-cloud = et.VertexSet(coords, et.VertexTopology(np.arange(4)[None, :]))
+cloud = el.points(coords)
 
 moved = cloud.transformed(translation)
 print('original corner 3:', cloud.coords[:, 3])
@@ -135,10 +134,10 @@ _root = next((d for d in [pathlib.Path.cwd(), *pathlib.Path.cwd().parents]
 sys.path.insert(0, str(_root))
 import euclib_viz
 
-triangle = et.TriMesh(np.array([[0.0, 1.0, 0.0],
+triangle = el.trimesh(np.array([[0.0, 1.0, 0.0],
                                 [0.0, 0.0, 1.0],
                                 [0.0, 0.0, 0.0]]),
-                      et.TriTopology(np.array([[0], [1], [2]], dtype='int64')))
+                      np.array([[0], [1], [2]], dtype='int64'))
 moved_triangle = triangle.transformed(combined)
 euclib_viz.show3d(moved_triangle, color_by='z', name='affine-triangle')
 ```

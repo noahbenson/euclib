@@ -36,11 +36,10 @@ A segment path measures its segments:
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et, utils
 
 # A path through three points: two segments of length 3 and 4.
 pts = np.array([[0.0, 3.0, 3.0], [0.0, 0.0, 4.0]])
-path = et.SegPath(pts, et.SegTopology(np.array([[0, 1], [1, 2]], dtype='int64')))
+path = el.segpath(pts)
 
 print('segment lengths:', path.measures)
 print('total length   :', float(np.sum(path.measures)))
@@ -55,14 +54,14 @@ A triangle mesh measures its triangles. Here a unit right triangle has area
 # One triangle, then the same triangle mirrored into a unit square.
 right = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
 tri_top = np.array([[0], [1], [2]], dtype='int64')
-one = et.TriMesh(np.vstack([right, [0.0, 0.0, 0.0]]), et.TriTopology(tri_top))
+one = el.trimesh(np.vstack([right, [0.0, 0.0, 0.0]]), tri_top)
 print('one triangle :', one.measures, '-> area', float(np.sum(one.measures)))
 
 square_coords = np.array([[0.0, 1.0, 1.0, 0.0],
                           [0.0, 0.0, 1.0, 1.0],
                           [0.0, 0.0, 0.0, 0.0]])
-square_top = et.TriTopology(np.array([[0, 0], [1, 2], [2, 3]], dtype='int64'))
-square = et.TriMesh(square_coords, square_top)
+square_corners = np.array([[0, 0], [1, 2], [2, 3]], dtype='int64')
+square = el.trimesh(square_coords, square_corners)
 print('two triangles:', square.measures, '-> area', float(np.sum(square.measures)))
 ```
 
@@ -75,7 +74,7 @@ triple product of the three edges from one corner:
 corners = np.array([[0.0, 1.0, 0.0, 0.0],
                     [0.0, 0.0, 1.0, 0.0],
                     [0.0, 0.0, 0.0, 1.0]])
-tet = et.TetMesh(corners, et.TetTopology(np.array([[0], [1], [2], [3]], dtype='int64')))
+tet = el.tetmesh(corners, np.array([[0], [1], [2], [3]], dtype='int64'))
 print('corner tetrahedron volume:', float(np.sum(tet.measures)))
 print('expected (1/6)           :', 1 / 6)
 ```
@@ -87,8 +86,8 @@ the triangle's coordinates in one direction changes the area while leaving the
 topology identical:
 
 ```{code-cell}
-stretched = et.TriMesh(np.array([[0.0, 2.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]]),
-                       et.TriTopology(tri_top))
+stretched = el.trimesh(np.array([[0.0, 2.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]]),
+                       tri_top)
 print('original area :', float(np.sum(one.measures)))
 print('stretched area:', float(np.sum(stretched.measures)))
 print('topologies equal:',
@@ -103,7 +102,7 @@ separation is what lets the same code measure a geometry's coordinates without
 constructing the geometry:
 
 ```python
->>> utils.simplex_measures(square_coords, square_top.indices)
+>>> el.utils.simplex_measures(square_coords, square_corners)
 ```
 :::
 

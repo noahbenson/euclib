@@ -42,7 +42,6 @@ flat mesh, and it is shared by both faces:
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
 n, width = 6, 0.8
 x = np.linspace(0, 3, n)
@@ -58,9 +57,9 @@ faces = []
 for i in range(n - 1):
     a, b, c, d = i, i + 1, n + i, n + i + 1
     faces += [[a, b, d], [a, d, c]]
-ptopo = et.PrismTopology(np.array(faces, dtype='int64').T)
+corners = np.array(faces, dtype='int64').T
 
-sheet = et.PrismMesh(np.array([bottom, top]), ptopo)
+sheet = el.prismmesh(np.array([bottom, top]), corners)
 sheet
 ```
 
@@ -125,10 +124,10 @@ _root = next((d for d in [pathlib.Path.cwd(), *pathlib.Path.cwd().parents]
 sys.path.insert(0, str(_root))
 import euclib_viz
 
-tri = np.asarray(ptopo.indices)
-both_faces = et.TriMesh(
+tri = np.asarray(corners)
+both_faces = el.trimesh(
     np.concatenate([bottom, top], axis=1),
-    et.TriTopology(np.concatenate([tri, tri + N], axis=1)))
+    np.concatenate([tri, tri + N], axis=1))
 euclib_viz.show3d(both_faces, color_by='z', name='prism-sheet')
 ```
 

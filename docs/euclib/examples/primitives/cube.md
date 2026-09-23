@@ -40,7 +40,6 @@ the twelve triangles.
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
 # The eight corners of the unit cube, as a (3, 8) coordinate matrix.
 corners = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
@@ -58,7 +57,7 @@ geometries share a topology but differ in their coordinates — the
 gives a `TriMesh`:
 
 ```{code-cell}
-cube = et.TriMesh(corners, et.TriTopology(tris))
+cube = el.trimesh(corners, tris)
 cube
 ```
 

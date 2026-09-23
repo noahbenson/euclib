@@ -58,6 +58,24 @@ The HTML lands in `docs/euclib/_build/html`. To view it:
 python3 -m http.server -d docs/euclib/_build/html 8000
 ```
 
+## API style in the examples
+
+The example pages are written against `euclib`'s settled public API, which is
+flat: geometries and operations are reached directly from the package
+(`el.trimesh`, `el.grid`, `el.geodesic`, `el.contains`), and the one-line
+constructors (`el.points`, `el.segpath`, `el.trimesh`, `el.tetmesh`,
+`el.prismmesh`, `el.grid`) are preferred over building a topology by hand.
+
+Two groups of names are deliberately *not* at the top level, so pages reach for
+them through their module:
+
+- `el.types.Affine` and the `el.types.affine_*` helpers (transforms);
+- `el.ops.sample`, `el.ops.transfer`, `el.ops.positions_of`, and
+  `el.ops.tolerance_of` (the tools the operations are built from).
+
+Every page imports with `import euclib as el` and, where a figure is drawn,
+`import euclib_viz`.
+
 ## Provenance policy
 
 Every example page must cite the upstream test it adapts in a **Provenance**

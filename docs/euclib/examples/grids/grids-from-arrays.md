@@ -40,18 +40,17 @@ affine matrix.
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et, ops
 
 shape = (4, 5)
 
 # The affine matrix is (D+1, D+1); its final row must be [0, ..., 0, 1].
 # Here each column step is 2 units in x and each row step is 3 units in y,
-# with the first cell's center at the origin.
+# with the grid's first corner at the origin.
 affine = np.array([[2, 0, 0],
                    [0, 3, 0],
                    [0, 0, 1]], dtype=float)
 
-grid = et.Grid(affine, et.GridTopology(shape))
+grid = el.grid(shape, affine)
 grid
 ```
 
@@ -85,8 +84,9 @@ grid['radial'].shape
 
 To draw the image in global coordinates rather than index coordinates, we need
 the global position of each cell. `euclib.ops.positions_of` reports where a
-geometry's data lives: for a grid, the cell centers obtained by applying the
-affine.
+geometry's data lives: for a grid, each cell's anchor, obtained by applying the
+affine to its index. A cell then spans one `spacing` step from its anchor, so
+the whole image covers `shape * spacing` from the origin.
 
 ```{code-cell}
 import pathlib
@@ -97,13 +97,11 @@ _root = next((d for d in [pathlib.Path.cwd(), *pathlib.Path.cwd().parents]
 sys.path.insert(0, str(_root))
 import euclib_viz
 
-centers = ops.positions_of(grid)
-lo_x = grid.origin[0] - grid.spacing[0] / 2
-lo_y = grid.origin[1] - grid.spacing[1] / 2
-extent = (lo_x, lo_x + shape[0] * grid.spacing[0],
-          lo_y, lo_y + shape[1] * grid.spacing[1])
+anchors = el.ops.positions_of(grid)
+extent = (grid.origin[0], grid.origin[0] + shape[0] * grid.spacing[0],
+          grid.origin[1], grid.origin[1] + shape[1] * grid.spacing[1])
 euclib_viz.show2d(grid['radial'], name='grid-radial', extent=extent,
-                  points=centers, label='radial value')
+                  points=anchors, label='radial value')
 ```
 
 :::{admonition} Provenance
