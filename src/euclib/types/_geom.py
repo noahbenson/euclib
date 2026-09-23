@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from numpy import arange, asarray, concatenate, meshgrid, stack
+from numpy import arange, asarray, concatenate, eye, meshgrid, stack
 from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, llist
 
@@ -38,7 +38,9 @@ from ..abc import (
     check_coordinfo, split_property_name)
 from ..utils import (
     closest_prism, closest_simplex, nearest_vertices, simplex_measures)
-from ._topo import GridTopology, PrismTopology, TetTopology, TriTopology
+from ._topo import (
+    GridTopology, PrismTopology, SegTopology, TetTopology, TriTopology,
+    VertexTopology)
 from ._transform import Affine
 
 
@@ -499,13 +501,14 @@ class PrismMesh(SimplexGeometry):
     '''
 
     def __init__(self, coords, topo, properties=None, backend=None,
-                 simplex_properties=None, elevations=None):
+                 simplex_properties=None, elevations=None, metadata=None):
         self.coords = coords
         self.topo = topo
         self.properties = properties
         self.backend = backend
         self.simplex_properties = simplex_properties
         self.elevations = elevations
+        self.metadata = metadata
 
     @calc('coords', lazy=False)
     def proc_coords(coords, backend, topo):
@@ -816,11 +819,13 @@ class Grid(Geometry):
         The length of one index step along each axis.
     '''
 
-    def __init__(self, coords, topo, properties=None, backend=None):
+    def __init__(self, coords, topo, properties=None, backend=None,
+                 metadata=None):
         self.coords = coords
         self.topo = topo
         self.properties = properties
         self.backend = backend
+        self.metadata = metadata
 
     @calc('coords', lazy=False)
     def proc_coords(coords, backend, topo):
@@ -999,7 +1004,201 @@ class Grid(Geometry):
         return self.affine.apply(pts)
 
 
+# Constructors ###############################################################
+
+def points(coords, vertices=None, properties=None, metadata=None):
+    '''Returns a point cloud over a matrix of coordinates.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(D, N)`` matrix of point positions.
+    vertices : array-like or None, optional
+        The coordinates to use, by index. The default, ``None``, uses all of
+        them.
+    properties : mapping or None, optional
+        Coordinate properties.
+    metadata : mapping or None, optional
+        Metadata to attach to the point cloud.
+
+    Returns
+    -------
+    VertexSet
+        The point cloud.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import euclib
+    >>> cloud = euclib.points(np.array([[0., 1.], [0., 0.]]))
+    >>> cloud.coord_count
+    2
+    '''
+    coords = asarray(coords)
+    count = coords.shape[1]
+    if vertices is None:
+        vertices = arange(count)
+    indices = asarray(vertices).reshape(1, -1)
+    return VertexSet(coords, VertexTopology(indices, coord_count=count),
+                     properties=properties, metadata=metadata)
+
+
+def segpath(coords, vertices=None, properties=None, metadata=None):
+    '''Returns a path through a matrix of coordinates.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(D, N)`` matrix of coordinates.
+    vertices : array-like or None, optional
+        The coordinates to use, by index. The default, ``None``, uses all of
+        them, in the order given.
+    properties : mapping or None, optional
+        Coordinate properties.
+    metadata : mapping or None, optional
+        Metadata to attach to the path.
+
+    Returns
+    -------
+    SegPath
+        The path, one segment per consecutive pair of coordinates.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import euclib
+    >>> path = euclib.segpath(np.array([[0., 1., 2.], [0., 0., 0.]]))
+    >>> path.topo.simplex_count[1]
+    2
+    '''
+    coords = asarray(coords)
+    count = coords.shape[1]
+    if vertices is None:
+        vertices = arange(count)
+    vertices = asarray(vertices).reshape(-1)
+    indices = asarray([vertices[:-1], vertices[1:]])
+    return SegPath(coords, SegTopology(indices, coord_count=count),
+                   properties=properties, metadata=metadata)
+
+
+def trimesh(coords, corners, properties=None, metadata=None):
+    '''Returns a triangle mesh from coordinates and their triangles.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(D, N)`` matrix of coordinates.
+    corners : array-like
+        A ``(3, M)`` integer matrix of the coordinates that form each triangle.
+    properties : mapping or None, optional
+        Coordinate properties.
+    metadata : mapping or None, optional
+        Metadata to attach to the mesh.
+
+    Returns
+    -------
+    TriMesh
+        The mesh.
+    '''
+    coords = asarray(coords)
+    return TriMesh(coords,
+                   TriTopology(corners, coord_count=coords.shape[1]),
+                   properties=properties, metadata=metadata)
+
+
+def tetmesh(coords, corners, properties=None, metadata=None):
+    '''Returns a tetrahedral mesh from coordinates and their tetrahedra.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(3, N)`` matrix of coordinates.
+    corners : array-like
+        A ``(4, M)`` integer matrix of the coordinates that form each
+        tetrahedron.
+    properties : mapping or None, optional
+        Coordinate properties.
+    metadata : mapping or None, optional
+        Metadata to attach to the mesh.
+
+    Returns
+    -------
+    TetMesh
+        The mesh.
+    '''
+    coords = asarray(coords)
+    return TetMesh(coords,
+                   TetTopology(corners, coord_count=coords.shape[1]),
+                   properties=properties, metadata=metadata)
+
+
+def prismmesh(coords, corners, properties=None, metadata=None):
+    '''Returns a prism mesh from a pair of surfaces and their triangles.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(2, D, N)`` array of coordinates, one plane per surface.
+    corners : array-like
+        A ``(3, M)`` integer matrix of the coordinates that form each
+        triangle; both surfaces share it.
+    properties : mapping or None, optional
+        Coordinate properties.
+    metadata : mapping or None, optional
+        Metadata to attach to the mesh.
+
+    Returns
+    -------
+    PrismMesh
+        The mesh.
+    '''
+    coords = asarray(coords)
+    return PrismMesh(coords,
+                     PrismTopology(corners, coord_count=coords.shape[2]),
+                     properties=properties, metadata=metadata)
+
+
+def grid(shape, affine=None, dtype=None, properties=None, metadata=None):
+    '''Returns a grid image of a given extent.
+
+    Parameters
+    ----------
+    shape : sequence of int
+        The number of cells along each axis, from 2 to 3 axes.
+    affine : array-like or None, optional
+        The ``(D+1, D+1)`` matrix that maps index space to global coordinates.
+        The default, ``None``, uses the identity, so that a cell's indices are
+        its coordinates.
+    dtype : dtype-like or None, optional
+        The dtype of the affine matrix. The default, ``None``, keeps the one
+        the matrix was given with.
+    properties : mapping or None, optional
+        Properties, each of the grid's shape.
+    metadata : mapping or None, optional
+        Metadata to attach to the grid.
+
+    Returns
+    -------
+    Grid
+        The grid.
+
+    Examples
+    --------
+    >>> import euclib
+    >>> grid = euclib.grid((4, 5))
+    >>> grid.shape
+    (4, 5)
+    '''
+    shape = tuple(shape)
+    if affine is None:
+        affine = eye(len(shape) + 1, dtype=dtype)
+    elif dtype is not None:
+        affine = asarray(affine, dtype=dtype)
+    return Grid(affine, GridTopology(shape), properties=properties,
+                metadata=metadata)
+
+
 # Exports ####################################################################
 
-__all__ = ('VertexSet', 'SegPath', 'TriMesh', 'TetMesh', 'PrismMesh',
-           'Grid')
+__all__ = ('VertexSet', 'SegPath', 'TriMesh', 'TetMesh', 'PrismMesh', 'Grid',
+           'points', 'segpath', 'trimesh', 'tetmesh', 'prismmesh', 'grid')

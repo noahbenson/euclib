@@ -20,13 +20,13 @@ subclass's version replaces the base's, and the value names that only the base
 produced are dropped from the plan. This is how each concrete geometry supplies
 its own validation for its own ``coords`` payload.
 
-**Every class must define ``__init__``.** ``plantype`` rebuilds the initializer
-at every level of the hierarchy from that class's own attributes. A subclass
-that omits ``__init__`` therefore receives the default ``merge``-based
-initializer instead of inheriting its parent's, which silently discards the
-parent's validation and makes positional construction fail. ``euclib`` classes
-always define ``__init__`` explicitly, even when it only delegates to a shared
-helper.
+**A subclass inherits its parent's initializer.** ``plantype`` used to rebuild
+the initializer at every level from that class's own attributes, so a subclass
+that omitted ``__init__`` silently received the default ``merge``-based one and
+lost its parent's validation. That is fixed in ``immlib``: a subclass that
+omits ``__init__`` now inherits its nearest base's, so ``euclib`` classes define
+``__init__`` only when their inputs genuinely differ. The regression is pinned
+by ``euclib.test.abc.test_subclass_inherits_parent_init``.
 '''
 
 # Dependencies ###############################################################
@@ -34,8 +34,11 @@ helper.
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
+from collections.abc import Mapping
 
 from immlib.workflow import calc, plantype, planobject
+
+from pcollections import ldict
 
 from ..utils import content_hash, values_equal
 from .._init import backend_names, checktorch
@@ -90,6 +93,109 @@ def normalize_backend(backend, /):
         raise ValueError(
             "the 'torch' backend was requested, but PyTorch is not installed")
     return backend
+
+
+# Metadata ###################################################################
+
+def normalize_metadata(metadata, /):
+    '''Normalizes a ``metadata`` value to a lazy dictionary.
+
+    Parameters
+    ----------
+    metadata : mapping or None
+        Arbitrary metadata to attach to an object. A mapping is converted to a
+        lazy ``pcollections.ldict``, so that it is hashable and cannot be
+        modified in place.
+
+    Returns
+    -------
+    pcollections.ldict
+        The metadata; empty when none was given.
+    '''
+    if metadata is None:
+        return ldict.empty
+    if not isinstance(metadata, Mapping):
+        raise ValueError(
+            f"metadata must be a mapping or None; found {type(metadata)}")
+    return ldict(metadata)
+
+
+class MetaObject(planobject):
+    '''A ``planobject`` that carries arbitrary metadata.
+
+    An object's metadata is a lazy dictionary of anything the user wishes to
+    record about it, and is not otherwise interpreted: ``euclib`` never reads
+    it. It is attached with ``withmeta`` and removed with ``dropmeta``, both of
+    which return copies, and it takes no part in equality --- two objects whose
+    structure agrees are equal whatever labels have been hung on them.
+
+    Parameters
+    ----------
+    metadata : mapping or None, optional
+        The metadata to attach. The default, ``None``, attaches none.
+
+    Attributes
+    ----------
+    metadata : pcollections.ldict
+        The object's metadata, empty when none was attached.
+    '''
+
+    def __init__(self, metadata=None):
+        self.metadata = metadata
+
+    @calc('metadata', lazy=False)
+    def proc_metadata(metadata):
+        '''Normalizes the object's metadata to a lazy dictionary.
+
+        Returns
+        -------
+        metadata : pcollections.ldict
+            The metadata, empty when none was given.
+        '''
+        return normalize_metadata(metadata)
+
+    def withmeta(self, mapping=None, /, **kw):
+        '''Returns a copy of the object with metadata added or replaced.
+
+        Parameters
+        ----------
+        mapping : mapping or None, optional
+            Metadata to add. The default, ``None``, adds none.
+        **kw
+            Metadata to add, merged over ``mapping``.
+
+        Returns
+        -------
+        MetaObject
+            A copy with the merged metadata; ``self`` when nothing changes.
+        '''
+        updates = dict(mapping) if mapping is not None else {}
+        updates.update(kw)
+        if not updates:
+            return self
+        merged = dict(self.metadata)
+        merged.update(updates)
+        return self.copy(metadata=ldict(merged))
+
+    def dropmeta(self, *keys):
+        '''Returns a copy of the object with metadata removed.
+
+        Parameters
+        ----------
+        *keys
+            The names of the metadata to remove. A name the object does not
+            have is ignored.
+
+        Returns
+        -------
+        MetaObject
+            A copy without the named metadata; ``self`` when nothing changes.
+        '''
+        dropped = set(keys)
+        kept = {k: v for (k, v) in self.metadata.items() if k not in dropped}
+        if len(kept) == len(self.metadata):
+            return self
+        return self.copy(metadata=ldict(kept))
 
 
 # Content Comparison #########################################################
@@ -171,5 +277,5 @@ def planobject_hash(obj, /, exclude=()):
 # Exports ####################################################################
 
 __all__ = ('plantypeABC', 'planobject', 'plantype', 'calc', 'abstractmethod',
-           'normalize_backend',
+           'normalize_backend', 'MetaObject', 'normalize_metadata',
            'plan_inputs', 'planobject_eq', 'planobject_hash')

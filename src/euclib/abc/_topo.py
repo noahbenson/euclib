@@ -37,8 +37,8 @@ from pcollections import llist, pdict
 
 from ..utils import unique_columns
 from ._core import (
-    calc, normalize_backend, plantypeABC, planobject, planobject_eq,
-    planobject_hash)
+    MetaObject, calc, normalize_backend, plantypeABC, planobject,
+    planobject_eq, planobject_hash)
 
 
 # Local Coordinates ##########################################################
@@ -147,29 +147,6 @@ def normalize_indices(indices, /):
     return mat
 
 
-def normalize_metadata(metadata, /):
-    '''Normalizes a topology's ``metadata`` value to a persistent mapping.
-
-    Parameters
-    ----------
-    metadata : mapping or None
-        Arbitrary metadata to attach to the topology. A mapping is converted to
-        a persistent ``pcollections.pdict`` so that it is hashable and cannot be
-        modified in place.
-
-    Returns
-    -------
-    pcollections.pdict or None
-        The metadata, or ``None`` when none was given.
-    '''
-    if metadata is None:
-        return None
-    if not isinstance(metadata, Mapping):
-        raise ValueError(
-            f"metadata must be a mapping or None; found {type(metadata)}")
-    return pdict(metadata)
-
-
 def check_simplex_loc(loc_type, local_dim, locs, /):
     '''Coerces and validates a simplex local coordinate.
 
@@ -225,7 +202,7 @@ def check_simplex_loc(loc_type, local_dim, locs, /):
 
 # Topology ###################################################################
 
-class Topology(planobject, metaclass=plantypeABC):
+class Topology(MetaObject, metaclass=plantypeABC):
     '''The abstract connectivity of a geometric object.
 
     A topology records how an object's components are connected, and defines
@@ -243,15 +220,15 @@ class Topology(planobject, metaclass=plantypeABC):
         The numeric backend for coordinate data, ``'numpy'``, ``'torch'``, or
         ``None`` (the default) to use whatever backend the data already uses.
     metadata : mapping or None, optional
-        Arbitrary hashable metadata to associate with the topology. The
-        default, ``None``, attaches none.
+        Arbitrary metadata to associate with the topology. The default,
+        ``None``, attaches none.
 
     Attributes
     ----------
     backend : str or None
         The numeric backend for coordinate data.
-    metadata : pcollections.pdict or None
-        The topology's metadata.
+    metadata : pcollections.ldict
+        The topology's metadata, empty when none was attached.
     coord_count : int
         The number of coordinates that this topology is valid for. This may
         exceed the number of coordinates the topology actually references.
@@ -275,17 +252,6 @@ class Topology(planobject, metaclass=plantypeABC):
             ``'numpy'``, ``'torch'``, or ``None``.
         '''
         return normalize_backend(backend)
-
-    @calc('metadata', lazy=False)
-    def proc_metadata(metadata):
-        '''Normalizes the topology's metadata to a persistent mapping.
-
-        Returns
-        -------
-        metadata : pcollections.pdict or None
-            The topology's metadata.
-        '''
-        return normalize_metadata(metadata)
 
     #: The type of this topology's local coordinates. Every concrete topology
     #: sets this to a type built with ``make_loc``.
@@ -330,8 +296,10 @@ class Topology(planobject, metaclass=plantypeABC):
         return (self.local_dim, int(count))
 
     #: Names of plan inputs that identify a topology but do not take part in
-    #: equality. Subclasses may extend this.
-    _eq_excluded = ()
+    #: equality. Subclasses list every name they exclude, since an assignment
+    #: replaces this rather than adding to it. Metadata is excluded because it
+    #: is a label rather than part of the object.
+    _eq_excluded = ('metadata',)
 
     def __eq__(self, other):
         if type(other) is not type(self):
@@ -404,7 +372,7 @@ class SimplexTopology(Topology):
     #: with rather than about the connectivity itself. Two topologies that
     #: connect the same simplices are the same topology, whether or not they
     #: were declared for coordinate matrices of different sizes.
-    _eq_excluded = ('coord_count',)
+    _eq_excluded = ('coord_count', 'metadata')
 
     def __init__(self, indices, coord_count=None, backend=None, metadata=None):
         self.indices = indices

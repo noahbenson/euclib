@@ -30,6 +30,7 @@ __all__ = (
     'PrismTopology', 'GridTopology',
     # from euclib.types._geom
     'VertexSet', 'SegPath', 'TriMesh', 'TetMesh', 'PrismMesh', 'Grid',
+    'points', 'segpath', 'trimesh', 'tetmesh', 'prismmesh', 'grid',
     # from euclib.types._transform
     'Transform', 'Affine',
     'affine_identity', 'affine_translation', 'affine_scaling')

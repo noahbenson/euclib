@@ -169,11 +169,17 @@ class TestTopologyMetadata(TestCase):
         with self.assertRaises(Exception):
             ExampleTopology([[0], [1]], backend='jax')
 
-    def test_metadata_is_made_persistent(self):
+    def test_metadata_is_made_lazy(self):
+        from pcollections import ldict
         meta = normalize_metadata({'name': 'test'})
+        self.assertIsInstance(meta, ldict)
         self.assertEqual(dict(meta), {'name': 'test'})
         topo = ExampleTopology([[0], [1]], metadata={'name': 'test'})
+        self.assertIsInstance(topo.metadata, ldict)
         self.assertEqual(dict(topo.metadata), {'name': 'test'})
+        # No metadata at all is empty rather than absent.
+        self.assertIsInstance(ExampleTopology([[0], [1]]).metadata, ldict)
+        self.assertEqual(len(ExampleTopology([[0], [1]]).metadata), 0)
         with self.assertRaises(Exception):
             ExampleTopology([[0], [1]], metadata='not-a-mapping')
 
@@ -196,6 +202,7 @@ class TestTopologyMetadata(TestCase):
         b = ExampleTopology([[0, 0], [1, 2], [2, 3]], coord_count=7)
         self.assertEqual(a, b)
         self.assertEqual(hash(a), hash(b))
-        # Other metadata still distinguishes them.
-        self.assertNotEqual(a, ExampleTopology([[0, 0], [1, 2], [2, 3]],
-                                               metadata={'name': 'x'}))
+        # Metadata is a label rather than part of the object, so it does not
+        # distinguish two topologies either.
+        self.assertEqual(a, ExampleTopology([[0, 0], [1, 2], [2, 3]],
+                                            metadata={'name': 'x'}))

@@ -37,7 +37,7 @@ from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, llist
 
 from .. import _init
-from ._core import calc, normalize_backend, planobject, plantypeABC
+from ._core import MetaObject, calc, normalize_backend, plantypeABC
 from ..utils import (
     SpatialTree, content_hash, simplex_boxes, values_equal, simplex_measures)
 from ._property import (
@@ -228,7 +228,7 @@ def split_property_name(name, /):
 
 # Geometry ###################################################################
 
-class Geometry(planobject, metaclass=plantypeABC):
+class Geometry(MetaObject, metaclass=plantypeABC):
     '''The abstract base class of every geometric object.
 
     A geometry realizes a topology with data that places it in space, and
@@ -270,11 +270,13 @@ class Geometry(planobject, metaclass=plantypeABC):
         The spatial shape that a coordinate property must have.
     '''
 
-    def __init__(self, coords, topo, properties=None, backend=None):
+    def __init__(self, coords, topo, properties=None, backend=None,
+                 metadata=None):
         self.coords = coords
         self.topo = topo
         self.properties = properties
         self.backend = backend
+        self.metadata = metadata
 
     @calc('topo', lazy=False)
     def proc_topo(topo):
@@ -753,12 +755,13 @@ class SimplexGeometry(Geometry):
     '''
 
     def __init__(self, coords, topo, properties=None, backend=None,
-                 simplex_properties=None):
+                 simplex_properties=None, metadata=None):
         self.coords = coords
         self.topo = topo
         self.properties = properties
         self.backend = backend
         self.simplex_properties = simplex_properties
+        self.metadata = metadata
 
     @calc('coords', lazy=False)
     def proc_coords(coords, backend):

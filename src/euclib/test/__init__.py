@@ -17,6 +17,7 @@ test to be collected twice.
 
 from __future__ import annotations
 
+from .test_api import *
 from .abc import *
 from .utils import *
 from .types import *
@@ -26,6 +27,7 @@ from .ops import *
 # Exports ####################################################################
 
 __all__ = (
+    'TestNamespace', 'TestConstructors', 'TestMetadata',
     # from euclib.test.abc
     'TestPlantypeABC', 'TestNormalizers', 'TestProperty',
     'TestLoc', 'TestTopologyAbstractness', 'TestSimplexTopology',

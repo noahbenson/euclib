@@ -20,13 +20,13 @@ it inside the method body.
 from __future__ import annotations
 
 from ._core import (
+    MetaObject, normalize_metadata,
     plantypeABC, planobject, plantype, calc, abstractmethod,
     plan_inputs, planobject_eq, planobject_hash)
 from ._topo import (
     Topology, SimplexTopology,
     LocMixin, make_loc, is_loc, check_simplex_loc, normalize_indices,
-    is_topology, is_simplex_topology,
-    normalize_metadata)
+    is_topology, is_simplex_topology)
 from ._geom import (
     Geometry, SimplexGeometry,
     is_geometry, is_simplex_geometry,
@@ -46,6 +46,7 @@ from ._property import (
 
 __all__ = (
     'plantypeABC', 'planobject', 'plantype', 'calc', 'abstractmethod',
+    'MetaObject',
     'plan_inputs', 'planobject_eq', 'planobject_hash',
     'Property', 'is_property',
     'QUANTITATIVE', 'QUALITATIVE', 'VARTYPES',
