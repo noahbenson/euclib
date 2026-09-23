@@ -22,8 +22,8 @@ triangle and barycentric weights it landed on.
 
 :::{admonition} What this demonstrates
 :class: tip
-- `euclib.ops.nearest`: the closest position on a geometry to each query point.
-- `euclib.ops.distance`: the distance from a geometry to each query point.
+- `euclib.nearest`: the closest position on a geometry to each query point.
+- `euclib.distance`: the distance from a geometry to each query point.
 - `Geometry.to_local`, which returns a `TriLoc` naming the triangle and the two
   barycentric weights of the projected point.
 - The three cases a projection can fall into: inside a face, on an edge, or at a
@@ -35,12 +35,11 @@ triangle and barycentric weights it landed on.
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et, ops
 
 corners = np.array([[0.0, 1.0, 0.0],
                     [0.0, 0.0, 1.0],
                     [0.0, 0.0, 0.0]])
-mesh = et.TriMesh(corners, et.TriTopology(np.array([[0], [1], [2]], dtype='int64')))
+mesh = el.trimesh(corners, np.array([[0], [1], [2]], dtype='int64'))
 print('triangle area:', float(np.sum(mesh.measures)))
 ```
 
@@ -53,15 +52,15 @@ points = [[0.25, 0.25, 2.0],   # above the middle of the face
           [2.0, -3.0, 0.0]]    # far outside, nearest a corner
 # Coordinates are stored as (D, N): one column per point.
 queries = np.array(points, dtype=float).T
-query_cloud = et.VertexSet(queries, et.VertexTopology(np.arange(3)[None, :]))
+query_cloud = el.points(queries)
 ```
 
 ## The nearest position
 
-`ops.nearest` returns, for each query, a position on the mesh:
+`el.nearest` returns, for each query, a position on the mesh:
 
 ```{code-cell}
-nearest = np.asarray(ops.nearest(mesh, query_cloud))
+nearest = np.asarray(el.nearest(mesh, query_cloud))
 for i in range(queries.shape[1]):
     print(f'query {queries[:, i]} -> nearest {np.round(nearest[:, i], 4)}')
 ```
@@ -72,10 +71,10 @@ surface beyond its edges.
 
 ## The distance
 
-`ops.distance` returns the distance to that nearest position:
+`el.distance` returns the distance to that nearest position:
 
 ```{code-cell}
-distances = np.asarray(ops.distance(mesh, query_cloud)).ravel()
+distances = np.asarray(el.distance(mesh, query_cloud)).ravel()
 for i in range(queries.shape[1]):
     print(f'query {i}: distance {distances[i]:.4f}')
 

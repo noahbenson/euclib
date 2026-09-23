@@ -39,7 +39,6 @@ connecting them through the faces. The eight corners are the same as the
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
 corners = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
                     [1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 1, 1]], dtype=float).T
@@ -48,7 +47,7 @@ corners = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
 tets = np.array([[0, 1, 2, 5], [0, 2, 5, 6], [0, 1, 5, 4],
                  [0, 3, 6, 7], [0, 4, 5, 7], [0, 5, 6, 7]], dtype='int64').T
 
-cube = et.TetMesh(corners, et.TetTopology(tets))
+cube = el.tetmesh(corners, tets)
 cube
 ```
 
@@ -72,7 +71,7 @@ overlap, so their volumes sum to the true volume.
 :::{admonition} Why the decomposition matters
 :class: tip
 A tetrahedral mesh gives every point a well-defined region, which is what makes
-`ops.contains` answer "inside" for a `TetMesh` but not for a `TriMesh` — see
+`el.contains` answer "inside" for a `TetMesh` but not for a `TriMesh` — see
 [distance, separation, and containment](../queries/distance-and-separation.md).
 :::
 
@@ -85,9 +84,9 @@ worth making:
 ```{code-cell}
 bottom = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])
 top = bottom + np.array([[0.5], [0.0], [1.5]])
-ptopo = et.PrismTopology(np.array([[0], [1], [2]], dtype='int64'))
+corners = np.array([[0], [1], [2]], dtype='int64')
 
-sheet = et.PrismMesh(np.array([bottom, top]), ptopo)
+sheet = el.prismmesh(np.array([bottom, top]), corners)
 solid = sheet.to_tetmesh()
 print('prism total :', round(float(np.sum(sheet.measures)), 6))
 print('tet total   :', round(float(np.sum(solid.measures)), 6))
@@ -108,9 +107,9 @@ _root = next((d for d in [pathlib.Path.cwd(), *pathlib.Path.cwd().parents]
 sys.path.insert(0, str(_root))
 import euclib_viz
 
-tri = np.asarray(ptopo.indices)
-both = et.TriMesh(np.concatenate([bottom, top], axis=1),
-                  et.TriTopology(np.concatenate([tri, tri + 3], axis=1)))
+tri = np.asarray(corners)
+both = el.trimesh(np.concatenate([bottom, top], axis=1),
+                  np.concatenate([tri, tri + 3], axis=1))
 euclib_viz.show3d(both, color_by='z', name='tetrahedra')
 ```
 

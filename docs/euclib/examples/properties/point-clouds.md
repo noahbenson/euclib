@@ -40,12 +40,11 @@ separate for every geometry:
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
 rng = np.random.default_rng(0)
 coords = rng.normal(size=(3, 40))
 
-cloud = et.VertexSet(coords, et.VertexTopology(np.arange(40)[None, :]))
+cloud = el.points(coords)
 print('coordinates:', cloud.coords.shape)
 print('vertices   :', cloud.topo.vertex_count)
 ```
