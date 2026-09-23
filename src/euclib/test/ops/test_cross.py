@@ -64,8 +64,8 @@ class TestPositions(TestCase):
         with self.assertRaises(TypeError):
             positions_of('not-a-geometry')
 
-    def test_a_grid_cell_s_position_is_its_centre(self):
-        # The affine carries an index to a cell's centre, so the cells of a
+    def test_a_grid_cell_s_position_is_its_center(self):
+        # The affine carries an index to a cell's center, so the cells of a
         # grid whose affine is the identity sit at 0 and 1 along each axis and
         # cover half a step either side of those positions.
         grid = Grid(eye(3), GridTopology((2, 2)))
@@ -104,9 +104,9 @@ class TestTransfer(TestCase):
         g = transfer(_mesh(), _grid(), 'f', meta={'interp': 0})
         self.assertEqual(g.propinfo('f').interp, ('nearest', 0))
 
-    def test_a_property_lands_on_a_grid_at_the_cell_centres(self):
+    def test_a_property_lands_on_a_grid_at_the_cell_centers(self):
         # The consequence of where a grid's data lives: transferring onto a
-        # grid takes the source's value at each cell's *centre*. Reading it at
+        # grid takes the source's value at each cell's *center*. Reading it at
         # a corner instead would put every transferred value half a cell out of
         # place, which is a shift nobody would notice in a picture.
         mesh = TriMesh(array([[-1., 1., -1., 1.], [-1., -1., 1., 1.]]),
@@ -114,7 +114,7 @@ class TestTransfer(TestCase):
         mesh = mesh.withprop('x', array([-1., 1., -1., 1.]))
         grid = Grid(eye(3), GridTopology((2, 2)))
         landed = transfer(mesh, grid, 'x')
-        # The cells are centred at 0 and 1 along each axis, so cell (i, j)
+        # The cells are centerd at 0 and 1 along each axis, so cell (i, j)
         # takes the mesh's x at (i, j), which is j's value: the grid's property
         # is indexed by cell, one index per axis.
         self.assertTrue(allclose(landed['x'], [[0., 0.], [1., 1.]]))

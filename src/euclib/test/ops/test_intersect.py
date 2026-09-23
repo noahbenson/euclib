@@ -192,17 +192,17 @@ class TestVoxelIntersections(TestCase):
     def _grid(self):
         '''A grid of unit voxels covering the positive octant.
 
-        A cell's index names its centre, so the affine is the identity shifted
-        by half a step: cell ``(i, j, k)`` is then centred at ``(i+.5, ...)``
+        A cell's index names its center, so the affine is the identity shifted
+        by half a step: cell ``(i, j, k)`` is then centerd at ``(i+.5, ...)``
         and covers ``[i, i+1] x [j, j+1] x [k, k+1]``, which is what makes the
         unit tetrahedron at the origin lie inside cell ``(0, 0, 0)``.
         '''
         return Grid(affine_translation([0.5, 0.5, 0.5]).matrix,
                     GridTopology((3, 3, 3)))
 
-    def test_an_identity_grid_centres_its_first_cell_on_the_origin(self):
+    def test_an_identity_grid_centers_its_first_cell_on_the_origin(self):
         # The same statement the fixture relies on, made where it cannot be
-        # missed: an unshifted identity grid's first cell is centred at the
+        # missed: an unshifted identity grid's first cell is centerd at the
         # origin and reaches half a unit in every direction.
         unit = Grid(eye(4), GridTopology((3, 3, 3)))
         self.assertTrue(allclose(unit.origin, [-0.5, -0.5, -0.5]))

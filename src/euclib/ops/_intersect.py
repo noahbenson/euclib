@@ -255,8 +255,8 @@ def contains(geom, points, /, tolerance=None):
     if isinstance(geom, Grid):
         # A grid has an affine rather than coordinates, so belonging to it
         # means the index coordinate lying within the grid's extent. An index
-        # names a cell's centre, so the extent runs from half a step before the
-        # first centre to half a step past the last.
+        # names a cell's center, so the extent runs from half a step before the
+        # first center to half a step past the last.
         loc = geom.to_local(query)
         parts = [asarray(getattr(loc, f)) for f in loc._fields]
         inside = ones(parts[0].reshape(-1).shape, dtype=bool)
@@ -331,9 +331,9 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
         inside = to_index.apply(corners[:, :, i])    # (3, 4) in index space
         # The voxels the tetrahedron can reach, from its own extent in index
         # space: a tetrahedron reaches only the cells its box meets. An index
-        # names a cell's centre, so the cell numbered `v` covers the half step
+        # names a cell's center, so the cell numbered `v` covers the half step
         # on either side of it, and the first cell whose region reaches a
-        # coordinate `x` is the one whose centre is within half a step of it.
+        # coordinate `x` is the one whose center is within half a step of it.
         low = floor(inside.min(axis=1) + 0.5).astype(int).clip(0, None)
         high = ceil(inside.max(axis=1) - 0.5).astype(int).clip(
             None, [s - 1 for s in shape])
