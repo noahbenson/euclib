@@ -109,8 +109,9 @@ print('resampled image shape:', resampled.shape)
 ```
 
 The resampled image approximates the original function at the grid's cell
-anchors; it is not exact, because the mesh stores the function only at its
-vertices and `euclib` interpolates linearly within each triangle.
+centers --- the position of each cell, which is where its data lives; it is not
+exact, because the mesh stores the function only at its vertices and `euclib`
+interpolates linearly within each triangle.
 
 :::{admonition} Transfers must share a dimension
 :class: tip
