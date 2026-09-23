@@ -38,7 +38,6 @@ coincide; the latitudes include theirs, because the poles do not.
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
 n_lat, n_lon, radius = 8, 12, 1.0
 
@@ -66,7 +65,7 @@ for i in range(n_lat):
         d = (i + 1) * n_lon + (j + 1) % n_lon
         faces += [[a, b, d], [a, d, c]]
 
-sphere = et.TriMesh(points, et.TriTopology(np.array(faces, dtype='int64').T))
+sphere = el.trimesh(points, np.array(faces, dtype='int64').T)
 sphere
 ```
 

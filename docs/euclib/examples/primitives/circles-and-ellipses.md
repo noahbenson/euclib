@@ -37,7 +37,6 @@ each sample to the next, wrapping the final sample back to index 0:
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et, utils
 
 n, radius = 24, 1.0
 theta = np.linspace(0, 2 * np.pi, n, endpoint=False)
@@ -45,7 +44,7 @@ theta = np.linspace(0, 2 * np.pi, n, endpoint=False)
 coords = np.array([radius * np.cos(theta), radius * np.sin(theta)])
 segments = np.array([np.arange(n), (np.arange(n) + 1) % n], dtype='int64')
 
-circle = et.SegPath(coords, et.SegTopology(segments))
+circle = el.segpath(coords, vertices=list(range(n)) + [0])
 circle.topo.simplex_count[1]
 ```
 
@@ -53,7 +52,7 @@ The circle's diameter can be read off its bounding box, which should be
 `2 * radius` in each of x and y:
 
 ```{code-cell}
-lo, hi = utils.bounds_of(coords)
+lo, hi = el.utils.bounds_of(coords)
 print('bounds        :', np.round(np.column_stack([lo, hi]), 3).tolist())
 print('measured width:', np.round(hi - lo, 3))
 ```
@@ -77,8 +76,8 @@ box has width `2a` and height `2b`:
 a, b = 2.0, 0.5
 ell_coords = np.array([a * np.cos(theta), b * np.sin(theta)])
 
-ellipse = et.SegPath(ell_coords, et.SegTopology(segments))
-lo, hi = utils.bounds_of(ell_coords)
+ellipse = el.segpath(ell_coords, vertices=list(range(n)) + [0])
+lo, hi = el.utils.bounds_of(ell_coords)
 print('semi-axes from bounds:', (hi - lo) / 2)
 ell_lengths = ellipse.measures
 print('segment lengths equal:', np.allclose(ell_lengths, ell_lengths[0]))
@@ -121,7 +120,7 @@ radius or semi-axis, and that the polyline's segments are of equal length. No
 code is copied. `euclib` has no circle generator, so the samples are written
 out explicitly and joined into a `SegPath`; the upstream polyline becomes a
 segment path with an explicit wrap-around segment. The diameter assertion is
-re-expressed through `utils.bounds_of`, and the equal-length assertion is kept
+re-expressed through `el.utils.bounds_of`, and the equal-length assertion is kept
 for the circle but deliberately *inverted* for the ellipse — where it does not
 hold — since showing where a uniform parameterization stops being uniform is
 more useful than asserting it. The upstream tests check equality of segment

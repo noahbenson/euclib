@@ -34,7 +34,6 @@ entries.
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
 
 def affine_matrix(linear, translation=None):
@@ -45,7 +44,7 @@ def affine_matrix(linear, translation=None):
     matrix[:D, :D] = linear
     if translation is not None:
         matrix[:D, D] = translation
-    return et.Affine(matrix)
+    return el.types.Affine(matrix)
 
 
 def rotation_about(axis, angle):
@@ -92,8 +91,8 @@ point, translate that point to the origin, rotate, and translate back — three
 ```{code-cell}
 def rotation_about_point(point, axis, angle):
     point = np.asarray(point, dtype=float)
-    to_origin = et.affine_translation(-point)
-    back = et.affine_translation(point)
+    to_origin = el.types.affine_translation(-point)
+    back = el.types.affine_translation(point)
     spin = affine_matrix(rotation_about(axis, angle))
     return back @ spin @ to_origin
 
@@ -154,10 +153,10 @@ _root = next((d for d in [pathlib.Path.cwd(), *pathlib.Path.cwd().parents]
 sys.path.insert(0, str(_root))
 import euclib_viz
 
-shape = et.TriMesh(np.array([[0.0, 2.0, 1.0],
+shape = el.trimesh(np.array([[0.0, 2.0, 1.0],
                              [0.0, 0.0, 3.0],
                              [0.0, 0.0, 0.0]]),
-                   et.TriTopology(np.array([[0], [1], [2]], dtype='int64')))
+                   np.array([[0], [1], [2]], dtype='int64'))
 euclib_viz.show3d(shape.transformed(reflect), color_by='x', name='reflection')
 ```
 

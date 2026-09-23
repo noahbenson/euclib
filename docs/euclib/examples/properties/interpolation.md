@@ -39,7 +39,6 @@ checked against a formula:
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
 xs, ys = np.meshgrid(np.arange(4.0), np.arange(4.0))
 coords = np.array([xs.ravel(), ys.ravel(), np.zeros(16)], dtype=float)
@@ -48,7 +47,7 @@ for i in range(3):
     for j in range(3):
         a, b, c, d = i * 4 + j, i * 4 + j + 1, i * 4 + j + 4, i * 4 + j + 5
         tris += [[a, b, d], [a, d, c]]
-mesh = et.TriMesh(coords, et.TriTopology(np.array(tris, dtype='int64').T))
+mesh = el.trimesh(coords, np.array(tris, dtype='int64').T)
 
 values = 2 * coords[0] + 3 * coords[1]
 mesh = mesh.withprop('plane', values)

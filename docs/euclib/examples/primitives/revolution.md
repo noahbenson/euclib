@@ -34,7 +34,6 @@ area.
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
 
 def revolve(profile, n_theta, close_profile):
@@ -74,7 +73,7 @@ def revolve(profile, n_theta, close_profile):
             c = ((i + 1) % P) * n_theta + j
             d = ((i + 1) % P) * n_theta + (j + 1) % n_theta
             faces += [[a, b, d], [a, d, c]]
-    return et.TriMesh(grid, et.TriTopology(np.array(faces, dtype='int64').T))
+    return el.trimesh(grid, np.array(faces, dtype='int64').T)
 ```
 
 ## A torus

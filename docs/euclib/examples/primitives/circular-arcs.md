@@ -38,7 +38,6 @@ fewer segment than there are points:
 ```{code-cell}
 import numpy as np
 import euclib as el
-from euclib import types as et
 
 radius, angle, n = 1.0, np.pi / 2, 16
 theta = np.linspace(0, angle, n)
@@ -46,7 +45,7 @@ coords = np.array([radius * np.cos(theta), radius * np.sin(theta)])
 
 # n points joined by n - 1 segments; no wrap-around.
 segments = np.array([np.arange(n - 1), np.arange(1, n)], dtype='int64')
-arc = et.SegPath(coords, et.SegTopology(segments))
+arc = el.segpath(coords)
 arc.topo.simplex_count[1]
 ```
 
@@ -64,7 +63,7 @@ print(f'exact  arc length  : {exact:.6f}')
 ## Distance across the arc
 
 The straight-line distance between the endpoints is a different, shorter
-quantity. It is what `euclib.ops.separation` reports between two point
+quantity. It is what `euclib.separation` reports between two point
 geometries — but here it is simplest to read directly from the coordinates:
 
 ```{code-cell}
@@ -93,7 +92,7 @@ for count in (4, 8, 16, 64):
     t = np.linspace(0, angle, count)
     c = np.array([radius * np.cos(t), radius * np.sin(t)])
     s = np.array([np.arange(count - 1), np.arange(1, count)], dtype='int64')
-    total = np.sum(et.SegPath(c, et.SegTopology(s)).measures)
+    total = np.sum(el.segpath(c).measures)
     print(f'{count:3d} segments: {total:.6f}  (error {exact - total:.2e})')
 ```
 
