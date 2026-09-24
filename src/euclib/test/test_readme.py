@@ -128,11 +128,40 @@ class TestCoordinatesAndShapes(TestCase):
     def test_coordinates_may_be_given_as_a_mapping(self):
         # README 94-99: individual points and collections of points can also be
         # represented as a mapping with keys 'x' and 'y' (and 'z').
-        self.skipTest(
-            "README 94-99 says a point or a collection of points may be given "
-            "as a mapping of 'x'/'y'/'z'; the constructors take arrays only. A "
-            "mapping is accepted for the `at` argument of prop, not for "
-            "coordinates.")
+        cloud = el.points({'x': [0., 1.], 'y': [0., 0.]})
+        self.assertTrue(np.allclose(np.asarray(cloud.coords),
+                                    [[0., 1.], [0., 0.]]))
+        # A mapping of scalars is a single point, which the library reads as a
+        # one-column matrix.
+        point = el.points({'x': 2., 'y': 3.})
+        self.assertEqual(tuple(point.coords.shape), (2, 1))
+        # Every simplex constructor reads them, and so does a topology that
+        # needs the coordinate count.
+        mesh = el.trimesh({'x': [0., 1., 0.], 'y': [0., 0., 1.]},
+                          [[0], [1], [2]])
+        self.assertEqual(tuple(mesh.coords.shape), (2, 3))
+        self.assertEqual(mesh.coord_count, 3)
+        solid = el.tetmesh({'x': [0., 1., 0., 0.], 'y': [0., 0., 1., 0.],
+                            'z': [0., 0., 0., 1.]}, [[0], [1], [2], [3]])
+        self.assertEqual(tuple(solid.coords.shape), (3, 4))
+        path = el.segpath({'x': [0., 1., 2.], 'y': [0., 0., 0.]})
+        self.assertEqual(path.topo.simplex_count[1], 2)
+        # A key that is not an axis is refused rather than ignored.
+        with self.assertRaises(ValueError):
+            el.points({'w': [0., 1.], 'y': [0., 0.]})
+        # ...as is a mapping that names no axis at all.
+        with self.assertRaises(ValueError):
+            el.points({'w': [0., 1.]})
+
+    def test_the_mapping_conversion_is_available_to_callers(self):
+        # The conversion is one function, so a caller who wants the matrix a
+        # mapping stands for does not have to construct a geometry to get it.
+        coords = el.abc.as_coords({'x': np.array([1., 2.]),
+                                   'z': np.array([3., 4.])})
+        self.assertTrue(np.allclose(coords, [[1., 2.], [3., 4.]]))
+        # A value that is not a mapping passes through untouched.
+        matrix = np.zeros((2, 3))
+        self.assertIs(el.abc.as_coords(matrix), matrix)
 
 
 # Copies, not mutation #######################################################
@@ -323,16 +352,19 @@ class TestPropertyMetadata(TestCase):
     def test_the_default_interpolation_is_the_one_the_readme_promises(self):
         # README 339-341 says Ellipsis means nearest-neighbor for a
         # non-continuous value "and otherwise cubic (3) interpolation". The
-        # library's default for continuous data is linear, because cubic is not
-        # implemented. This test says so rather than encoding either answer.
+        # library's default for continuous data is linear, which is a
+        # placeholder: the higher orders are not implemented yet, and the default
+        # returns to a higher one when they are (see euclib._init, where
+        # default_quantitative_interp says so, and the plan's note on the
+        # quadratic/cubic basis). This test says so rather than encoding either
+        # answer as the truth.
         self.assertEqual(Property(np.arange(4), (4,)).interp, ('nearest', 0))
-        linear = ('polynomial', 1)
-        self.assertEqual(Property(np.ones(4), (4,)).interp, linear)
+        self.assertEqual(Property(np.ones(4), (4,)).interp, ('polynomial', 1))
         self.skipTest(
             "README 339-341 promises cubic (3) as the default for continuous "
-            "data; the default is ('polynomial', 1). Cubic is unimplemented, so "
-            "either the README's wording or the default has to change before "
-            "1.0 --- see the plan's note on the quadratic/cubic basis.")
+            "data; ('polynomial', 1) stands in until the higher orders are "
+            "implemented, at which point the default moves and this skip goes "
+            "away.")
 
     def test_extrapolation_may_be_none_or_zero(self):
         # README 345-352.

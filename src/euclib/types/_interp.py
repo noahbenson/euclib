@@ -42,7 +42,7 @@ from numpy import (
     arange, asarray, concatenate, floor, ones, ravel_multi_index, where,
     zeros)
 
-from ..abc import SimplexGeometry, is_loc
+from ..abc import SimplexGeometry, as_coords, is_loc
 from ..abc._property import (
     INTERP_SUPPORTED, UNSET, normalize_interp)
 from ._geom import Grid
@@ -56,9 +56,6 @@ GRID_TOLERANCE = 1e-9
 
 
 # Positions ##################################################################
-
-#: The names a mapping may use to give global coordinates, in order.
-COORD_NAMES = ('x', 'y', 'z')
 
 
 def is_local_at(at, topo, /):
@@ -95,7 +92,9 @@ def to_query(at, /):
     '''Returns an ``at`` argument as a matrix of global positions.
 
     A mapping is read as a coordinate tuple, so ``{'x': 0, 'y': 0}`` is the
-    position ``(0, 0)``. The keys must be coordinate names.
+    position ``(0, 0)``. The keys must be coordinate names, and the conversion
+    is ``as_coords``'s, which is also what a geometry's own coordinates are
+    given through.
 
     Parameters
     ----------
@@ -108,13 +107,7 @@ def to_query(at, /):
         A ``(D, Q)`` matrix of positions.
     '''
     if isinstance(at, Mapping):
-        unknown = sorted(k for k in at if k not in COORD_NAMES)
-        if unknown:
-            raise ValueError(
-                f"unrecognized coordinate names: {unknown}; expected a subset"
-                f" of {COORD_NAMES}")
-        vals = asarray([at[k] for k in COORD_NAMES if k in at])
-        return vals.reshape(-1, 1) if vals.ndim == 1 else vals
+        return as_coords(at)
     if not hasattr(at, 'shape'):
         return asarray(at)
     return at.reshape(-1, 1) if at.ndim == 1 else at

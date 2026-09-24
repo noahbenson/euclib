@@ -34,7 +34,7 @@ from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, llist
 
 from ..abc import (
-    Geometry, Property, SimplexGeometry, UNSET, as_query, calc,
+    Geometry, Property, SimplexGeometry, UNSET, as_coords, as_query, calc,
     check_coordinfo, split_property_name)
 from ..utils import (
     closest_prism, closest_simplex, nearest_vertices, simplex_measures)
@@ -55,8 +55,10 @@ def _corner_coords(coords, indices, index, /):
 
     Parameters
     ----------
-    coords : array-like
-        A ``(D, N)`` matrix of coordinates.
+    coords : array-like or mapping
+        A ``(D, N)`` matrix of coordinates, or a mapping of the axis names
+        ``'x'``, ``'y'``, and ``'z'`` whose values are the coordinates along
+        them, as the README allows.
     indices : numpy.ndarray
         The topology's ``(K+1, M)`` corner matrix.
     index : array-like
@@ -203,8 +205,10 @@ class SegPath(SimplexGeometry):
 
     Parameters
     ----------
-    coords : array-like
-        A ``(D, N)`` matrix of coordinates.
+    coords : array-like or mapping
+        A ``(D, N)`` matrix of coordinates, or a mapping of the axis names
+        ``'x'``, ``'y'``, and ``'z'`` whose values are the coordinates along
+        them, as the README allows.
     topo : SegTopology
         The path's topology.
     properties : mapping or None, optional
@@ -281,8 +285,10 @@ class TriMesh(SimplexGeometry):
 
     Parameters
     ----------
-    coords : array-like
-        A ``(D, N)`` matrix of coordinates.
+    coords : array-like or mapping
+        A ``(D, N)`` matrix of coordinates, or a mapping of the axis names
+        ``'x'``, ``'y'``, and ``'z'`` whose values are the coordinates along
+        them, as the README allows.
     topo : TriTopology
         The mesh's topology.
     properties : mapping or None, optional
@@ -362,8 +368,10 @@ class TetMesh(SimplexGeometry):
 
     Parameters
     ----------
-    coords : array-like
-        A ``(3, N)`` matrix of coordinates.
+    coords : array-like or mapping
+        A ``(3, N)`` matrix of coordinates, or a mapping of the axis names
+        ``'x'``, ``'y'``, and ``'z'`` whose values are the coordinates along
+        them, as the README allows.
     topo : TetTopology
         The mesh's topology.
     properties : mapping or None, optional
@@ -1053,7 +1061,7 @@ def points(coords, vertices=None, properties=None, metadata=None):
     >>> cloud.coord_count
     2
     '''
-    coords = asarray(coords)
+    coords = asarray(as_coords(coords))
     count = coords.shape[1]
     if vertices is None:
         vertices = arange(count)
@@ -1067,8 +1075,10 @@ def segpath(coords, vertices=None, properties=None, metadata=None):
 
     Parameters
     ----------
-    coords : array-like
-        A ``(D, N)`` matrix of coordinates.
+    coords : array-like or mapping
+        A ``(D, N)`` matrix of coordinates, or a mapping of the axis names
+        ``'x'``, ``'y'``, and ``'z'`` whose values are the coordinates along
+        them, as the README allows.
     vertices : array-like or None, optional
         The coordinates to use, by index. The default, ``None``, uses all of
         them, in the order given.
@@ -1090,7 +1100,7 @@ def segpath(coords, vertices=None, properties=None, metadata=None):
     >>> path.topo.simplex_count[1]
     2
     '''
-    coords = asarray(coords)
+    coords = asarray(as_coords(coords))
     count = coords.shape[1]
     if vertices is None:
         vertices = arange(count)
@@ -1105,8 +1115,10 @@ def trimesh(coords, corners, properties=None, metadata=None):
 
     Parameters
     ----------
-    coords : array-like
-        A ``(D, N)`` matrix of coordinates.
+    coords : array-like or mapping
+        A ``(D, N)`` matrix of coordinates, or a mapping of the axis names
+        ``'x'``, ``'y'``, and ``'z'`` whose values are the coordinates along
+        them, as the README allows.
     corners : array-like
         A ``(3, M)`` integer matrix of the coordinates that form each triangle.
     properties : mapping or None, optional
@@ -1119,7 +1131,7 @@ def trimesh(coords, corners, properties=None, metadata=None):
     TriMesh
         The mesh.
     '''
-    coords = asarray(coords)
+    coords = asarray(as_coords(coords))
     return TriMesh(coords,
                    TriTopology(corners, coord_count=coords.shape[1]),
                    properties=properties, metadata=metadata)
@@ -1130,8 +1142,10 @@ def tetmesh(coords, corners, properties=None, metadata=None):
 
     Parameters
     ----------
-    coords : array-like
-        A ``(3, N)`` matrix of coordinates.
+    coords : array-like or mapping
+        A ``(3, N)`` matrix of coordinates, or a mapping of the axis names
+        ``'x'``, ``'y'``, and ``'z'`` whose values are the coordinates along
+        them, as the README allows.
     corners : array-like
         A ``(4, M)`` integer matrix of the coordinates that form each
         tetrahedron.
@@ -1145,7 +1159,7 @@ def tetmesh(coords, corners, properties=None, metadata=None):
     TetMesh
         The mesh.
     '''
-    coords = asarray(coords)
+    coords = asarray(as_coords(coords))
     return TetMesh(coords,
                    TetTopology(corners, coord_count=coords.shape[1]),
                    properties=properties, metadata=metadata)

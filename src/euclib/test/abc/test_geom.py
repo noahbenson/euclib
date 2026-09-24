@@ -183,10 +183,13 @@ class TestProperties(TestCase):
             self.cloud.withprop('bad', zeros(5))
 
     def test_missing_property_raises(self):
+        # Reading a property that is not there is an error; dropping one is not,
+        # unless asked, which is what pcollections.pdict.drop does.
         with self.assertRaises(KeyError):
             self.cloud['nope']
+        self.assertIs(self.cloud.dropprop('nope'), self.cloud)
         with self.assertRaises(KeyError):
-            self.cloud.dropprop('nope')
+            self.cloud.dropprop('nope', error=True)
 
     def test_a_simplex_property_asked_for_by_name_says_where_it_lives(self):
         # A mesh's 'surface_area' is a property of its triangles, named by the

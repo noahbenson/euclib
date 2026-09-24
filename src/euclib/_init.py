@@ -39,6 +39,12 @@ if default_backend is not None and default_backend not in backend_names:
 #: that suits smooth real-valued data on a simplex; ``('polynomial', 1)`` is
 #: what is implemented, and this returns to the design's default once the
 #: higher orders are built (see ``euclib.types._interp``).
+#:
+#: The README says something else again --- that an unspecified interpolation on
+#: continuous data is cubic (3) --- so three answers are on record here, and the
+#: two that are not this one are the same answer in spirit: whatever the higher
+#: order turns out to be, it replaces linear. `test_readme.py` skips over the
+#: discrepancy until then rather than pretending the README is satisfied.
 default_quantitative_interp = ('polynomial', 1)
 
 #: The number of simplices a geometry must have before it builds a spatial

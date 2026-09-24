@@ -30,7 +30,8 @@ from ._topo import (
 from ._geom import (
     Geometry, SimplexGeometry,
     is_geometry, is_simplex_geometry,
-    normalize_properties, split_property_name, as_query, check_coordinfo)
+    normalize_properties, split_property_name,
+    as_coords, COORD_NAMES, as_query, check_coordinfo)
 from ._property import (
     Property,
     is_property,
@@ -63,4 +64,4 @@ __all__ = (
     'Geometry', 'SimplexGeometry',
     'is_geometry', 'is_simplex_geometry',
     'normalize_properties', 'split_property_name',
-    'as_query', 'check_coordinfo')
+    'as_coords', 'COORD_NAMES', 'as_query', 'check_coordinfo')

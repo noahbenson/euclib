@@ -159,6 +159,59 @@ def as_query(coords, /):
     return coords if hasattr(coords, 'shape') else asarray(coords)
 
 
+#: The names a mapping may use to give global coordinates, in order. The order
+#: is that of the axes, so a mapping names its own row of the matrix it becomes.
+COORD_NAMES = ('x', 'y', 'z')
+
+
+def as_coords(coords, /):
+    '''Returns coordinates as a matrix, reading a mapping of axis names.
+
+    The README allows a point or a collection of points to be given as a mapping
+    rather than a matrix: the keys ``'x'``, ``'y'``, and ``'z'`` name the axes
+    and the values give the coordinates along them, either one apiece for a
+    single point or one array apiece for a collection. This is what turns such a
+    mapping into the ``(D, N)`` matrix that the rest of the library works with,
+    and it is the same conversion the ``at`` argument of ``prop`` uses.
+
+    A value that is not a mapping is returned unchanged, so that a tensor, a
+    quantity, a list, and a matrix all pass through to whatever conversion their
+    own kind needs.
+
+    Parameters
+    ----------
+    coords : object
+        Coordinates, as a mapping of axis names or as anything else.
+
+    Returns
+    -------
+    array-like or object
+        A ``(D, N)`` matrix when ``coords`` is a mapping, and ``coords`` itself
+        otherwise.
+
+    Raises
+    ------
+    ValueError
+        If a mapping names an axis outside ``'x'``, ``'y'``, and ``'z'``, or if
+        it names none of them at all.
+    '''
+    if not isinstance(coords, Mapping):
+        return coords
+    unknown = sorted(k for k in coords if k not in COORD_NAMES)
+    if unknown:
+        raise ValueError(
+            f"unrecognized coordinate names: {unknown}; expected a subset of"
+            f" {COORD_NAMES}")
+    named = [k for k in COORD_NAMES if k in coords]
+    if not named:
+        raise ValueError(
+            f"a mapping of coordinates needs at least one of {COORD_NAMES}")
+    values = asarray([coords[k] for k in named])
+    # A mapping of scalars is one point, which needs the column dimension the
+    # rest of the library reads positions along.
+    return values.reshape(-1, 1) if values.ndim == 1 else values
+
+
 def check_coordinfo(coords, topo, /, dims=(2, 3)):
     '''Validates a simplex geometry's coordinate matrix against its topology.
 
@@ -729,23 +782,32 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             new = Property(values, self._prop_spatial_shape(order), **meta)
         return self.copy(**self._props_updated(order, {pname: new}))
 
-    def dropprop(self, name=UNSET):
+    def dropprop(self, name=UNSET, error=False):
         '''Returns a copy of the object without a property.
+
+        A property that is not there is not a failure unless ``error`` says so,
+        which is what ``pcollections.pdict.drop`` does: without it a missing
+        name returns the object itself rather than a copy, there being nothing
+        to change.
 
         Parameters
         ----------
         name : hashable or tuple
             The property's name, optionally as a ``(order, name)`` pair.
+        error : bool, optional
+            Whether to raise when there is no such property. The default,
+            ``False``, returns the object unchanged.
 
         Returns
         -------
         Geometry
-            A copy of the object without the property.
+            A copy of the object without the property, or the object itself
+            when it has no such property and ``error`` is false.
 
         Raises
         ------
         KeyError
-            If the object has no such property.
+            If ``error`` is true and the object has no such property.
         '''
         if name is UNSET:
             raise TypeError(
@@ -754,8 +816,10 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         (order, pname) = split_property_name(name)
         container = self._prop_container(order)
         if pname not in container:
-            raise KeyError(
-                f"no such property: {pname!r}{self._order_hint(pname)}")
+            if error:
+                raise KeyError(
+                    f"no such property: {pname!r}{self._order_hint(pname)}")
+            return self
         props = dict(container)
         del props[pname]
         return self.copy(**self._install_props(order, props))
@@ -852,6 +916,10 @@ class SimplexGeometry(Geometry):
         coords : array-like
             A ``(D, N)`` coordinate matrix, with ``D`` equal to 2 or 3.
         '''
+        # A mapping of axis names becomes the matrix it stands for, as the
+        # README allows; anything else is already in the form the backend
+        # conversion below expects.
+        coords = as_coords(coords)
         # Coordinate data must end up array-like, whatever was passed. When no
         # backend is requested, anything that is already array-like is left
         # alone, so that a tensor stays a tensor and a quantity keeps its
