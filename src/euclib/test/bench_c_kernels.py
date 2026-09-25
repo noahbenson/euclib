@@ -273,6 +273,35 @@ def bench_interpolation():
     print()
 
 
+def bench_search():
+    '''Times the nearest-simplex search as the number of positions grows.
+
+    This is what an interpolation pays before it can fit anything, and it is the
+    whole cost of locating positions. A row that is flat in the number of
+    positions is the work being array-shaped; a row that grows with it is a
+    Python loop per position wearing the mask of a batched call.
+    '''
+    print("locating positions in a mesh (the nearest-simplex search)")
+    (mesh, coords, values, gradient) = _sheet(60)
+    rng = np.random.default_rng(0)
+    nodes = coords.shape[1]
+    # The index is built, and flattened, the first time a position is located,
+    # which is a cost of the geometry rather than of the search; one call takes
+    # it out of the first row.
+    mesh.to_local(coords[:, :1])
+    for count in (10, 100, 1000, 10000):
+        where = np.ascontiguousarray(
+            coords[:, rng.choice(coords.shape[1], count)])
+        start = perf_counter()
+        mesh.to_local(where)
+        took = perf_counter() - start
+        print(f"  {count:6d} positions  {took * 1e3:9.2f} ms"
+              f"   {took / count * 1e6:8.2f} us each")
+    print(f"  ({nodes} vertices, {mesh.topo.simplex_count.sum()} simplices;"
+          f" the index exists above {mesh.spatial_index_min_items})")
+    print()
+
+
 def main():
     '''Prints the timings.'''
     print(f"using the C extension: {using_c_extension}\n")
@@ -280,6 +309,7 @@ def main():
     bench_vertices()
     bench_index_queries()
     bench_interpolation()
+    bench_search()
     bench_voxel_intersections()
 
 

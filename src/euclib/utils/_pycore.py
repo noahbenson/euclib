@@ -260,6 +260,72 @@ def project_onto_face(face, query):
 #: within rounding, the same point as the true closest one.
 _TOLERANCE = 1e-9
 
+#: The number of candidates of one position beyond which the indexed search
+#: gives up on its widening and answers from the whole mesh instead. A search
+#: whose radius has grown to this reaches nearly every simplex, which means the
+#: index is no longer narrowing anything down; the global search is then both
+#: correct --- the candidates are a subset of what it examines --- and, because
+#: it is one array-shaped call rather than one call per candidate, far quicker.
+_MAX_SLOTS = 4096
+
+
+def project_onto_face_paired(face, query):
+    '''Projects each query onto the affine hull of its own face.
+
+    This is ``project_onto_face`` for the case where every query has a
+    *different* face --- the shape a batched nearest-simplex search arrives in,
+    where each position is considering its own candidate. The two differ in what
+    is paired with what, and therefore in what can be held in memory: the
+    many-face form compares every face against every query, which is a
+    ``(M, Q)`` answer, while this one compares each face against one query only,
+    which is a ``(Q,)`` answer and never forms the product.
+
+    Parameters
+    ----------
+    face : numpy.ndarray
+        A ``(D, S, Q)`` array of the corners of ``Q`` faces, each with ``S``
+        corners, one face per query.
+    query : numpy.ndarray
+        A ``(D, Q)`` matrix of query positions.
+
+    Returns
+    -------
+    weight : numpy.ndarray
+        A ``(S, Q)`` array of barycentric weights within each face.
+    inside : numpy.ndarray
+        A length-``Q`` boolean array that is ``True`` where the projection lies
+        within its face.
+    d2 : numpy.ndarray
+        A length-``Q`` array of squared distances from each query to its
+        projection.
+    '''
+    face = _as_numpy(face)
+    query = _as_numpy(query)
+    (d, s, q) = face.shape
+    if d != query.shape[0] or q != query.shape[1]:
+        raise ValueError(
+            f"a (D, S, Q) array of faces must be paired with a (D, Q) array of"
+            f" queries; found {face.shape} and {query.shape}")
+    # Each query's own face, with the query's axis leading, so that every
+    # stacked operation below is a batch over positions.
+    per = face.transpose(2, 0, 1)                      # (Q, D, S)
+    origin = per[:, :, 0:1]                            # (Q, D, 1)
+    if s == 1:
+        weight = ones((1, q))
+    else:
+        edges = per[:, :, 1:] - origin                     # (Q, D, S-1)
+        rel = query.T[:, :, None] - origin                 # (Q, D, 1)
+        et = edges.transpose(0, 2, 1)                      # (Q, S-1, D)
+        rest = linalg.pinv(et @ edges) @ (et @ rel)        # (Q, S-1, 1)
+        last = 1.0 - rest.sum(axis=1)                      # (Q, 1)
+        weight = concatenate(
+            [last, rest[:, :, 0]], axis=1).T               # (S, Q)
+    near = (face * weight[None, :, :]).sum(axis=1)         # (D, Q)
+    diff = query - near
+    d2 = (diff * diff).sum(axis=0)
+    inside = (weight >= -_TOLERANCE).all(axis=0)
+    return (weight, inside, d2)
+
 
 def barycentric_coords(coords, indices, query):
     '''Computes the barycentric coordinates of query positions on simplices.
@@ -329,15 +395,69 @@ def simplex_points(coords, indices, index, weight):
     return res + corners[:, count] * last
 
 
+def _closest_simplex_slot(coords, indices, choose, query):
+    '''The closest point on one candidate simplex per query position.
+
+    Parameters
+    ----------
+    coords : numpy.ndarray
+        A ``(D, N)`` matrix of coordinates.
+    indices : numpy.ndarray
+        A ``(K+1, M)`` integer matrix of simplex corners.
+    choose : numpy.ndarray
+        A length-``Q`` vector of the simplex each position is considering.
+    query : numpy.ndarray
+        A ``(D, Q)`` matrix of positions, one per candidate.
+
+    Returns
+    -------
+    d2 : numpy.ndarray
+        A length-``Q`` vector of squared distances to each position's closest
+        point on its candidate.
+    weight : numpy.ndarray
+        A ``(K, Q)`` matrix of the first ``K`` barycentric weights of that
+        point.
+    '''
+    corners = coords[:, indices[:, choose]]        # (D, K+1, Q)
+    k1 = indices.shape[0]
+    total = query.shape[1]
+    best_d2 = full(total, inf)
+    best_w = zeros((k1, total))
+    for s in range(1, k1 + 1):
+        for mem in combinations(range(k1), s):
+            (weight, inside, d2) = project_onto_face_paired(
+                corners[:, list(mem)], query)
+            better = inside & (d2 < best_d2)
+            if not better.any():
+                continue
+            cand = zeros((k1, total))
+            for (j, corner) in enumerate(mem):
+                cand[corner] = weight[j]
+            best_d2 = where(better, d2, best_d2)
+            best_w = where(better[None, :], cand, best_w)
+    # The last weight is the complement of the others, as local coordinates
+    # store it, so it is dropped here.
+    return (best_d2, best_w[:-1])
+
+
 def _closest_simplex_indexed(coords, indices, query, tree):
     '''The nearest simplex to each query, by way of a spatial index.
 
     The index answers with the simplices whose bounding spheres come within a
     radius of a position, which is conservative in the safe direction: the
     simplex that is truly nearest is among them whenever the radius reaches it.
-    So each position is searched with a radius that grows until the answer
+    So the positions are searched with a radius that grows until the answer
     found is nearer than the radius, at which point no unexamined simplex could
     be nearer and the answer is the true one.
+
+    The positions advance **together** rather than one at a time, which is what
+    makes the search pay for a mesh of any size: one call asks the index for
+    every position's candidates, and one pass fits every position against its
+    own candidate. The radius is shared by the positions still searching, and
+    that is correct where a per-position radius would also be --- a radius
+    larger than a position's own can only add simplices to its candidates, and
+    the test of the answer is against the radius the search actually used ---
+    and it costs nothing, because positions near one another have radii alike.
     '''
     coords = _as_numpy(coords)
     indices = asarray(indices)
@@ -346,38 +466,77 @@ def _closest_simplex_indexed(coords, indices, query, tree):
     total = query.shape[1]
     out_index = zeros(total, dtype=int)
     out_weight = zeros((count, total))
-    # The nearest sphere is a lower bound on the nearest position, so it makes a
-    # good radius to start each search from. Asking for all of them at once is
-    # one call to the index rather than one per position, which is the
-    # difference between the array of positions being the unit of work and each
-    # position being it.
+    if total == 0:
+        return (out_index, out_weight)
+    # The nearest sphere is a lower bound on the nearest position, so the
+    # largest of them is a radius no position needs to begin beyond.
     starts = maximum(asarray(tree.nearest(query, k=1)[1])[0], _TOLERANCE)
-    for i in range(total):
-        point = query[:, i:i + 1]
-        radius = float(starts[i])
-        selected = None
-        for _ in range(40):
-            nearby = tree.candidates(point, radius)[0]
-            if nearby.size == 0:
-                radius *= 2.0
-                continue
-            (idx, weight) = _closest_simplex_brute(coords, indices[:, nearby],
-                                                   point)
-            found = simplex_points(coords, indices[:, nearby], idx, weight)
-            away = float(sqrt(((point[:, 0] - found[:, 0]) ** 2).sum()))
-            selected = (nearby, idx, weight)
-            if away <= radius:
-                break
-            radius = max(away, radius * 2.0)
-        if selected is None:
-            # The index found nothing at any radius, which can only happen for
-            # a degenerate geometry; the whole search answers it.
+    remaining = arange(total)
+    radius = float(starts.max())
+    for _ in range(40):
+        if remaining.size == 0:
+            break
+        points = query[:, remaining]
+        (counts, found) = tree.candidate_runs(points, radius)
+        counts = asarray(counts)
+        here = remaining.size
+        best_d2 = full(here, inf)
+        best_w = zeros((count, here))
+        best_at = zeros(here, dtype=int)
+        if counts.size and counts.max() > _MAX_SLOTS:
+            # The search has widened until nearly every simplex is a candidate
+            # of some position, which takes a degenerate geometry. The global
+            # search answers those positions --- a superset of their candidates
+            # can only give the same answer --- and one call over the whole mesh
+            # is faster than visiting its candidates a slot at a time.
+            (idx, weight) = _closest_simplex_brute(coords, indices, points)
+            out_index[remaining] = idx
+            out_weight[:, remaining] = weight
+            remaining = arange(0)
+            break
+        if counts.size and counts.max() > 0:
+            begins = concatenate([[0], counts.cumsum()])[:-1]
+            # One slot is the next candidate of every position that has one:
+            # the fit is handed one candidate per position, so a position's
+            # candidates are visited a slot at a time rather than all at once,
+            # and no position-by-candidate product is ever formed.
+            for slot in range(int(counts.max())):
+                has = counts > slot
+                if not has.any():
+                    break
+                (d2, weight) = _closest_simplex_slot(
+                    coords, indices, found[begins[has] + slot], points[:, has])
+                better = d2 < best_d2[has]
+                if better.any():
+                    chosen = where(has)[0][better]
+                    best_d2[chosen] = d2[better]
+                    best_w[:, chosen] = weight[:, better]
+                    best_at[chosen] = slot
+            # The answer is proven nearest when it is nearer than the radius:
+            # everything unexamined is at least as far as the radius, and this
+            # one is within it.
+            away = sqrt(best_d2)
+        else:
+            away = full(here, inf)
+            begins = zeros(here, dtype=int)
+        settled = away <= radius
+        if settled.any():
+            (rows,) = where(settled)
+            out_index[remaining[rows]] = found[begins[rows] + best_at[rows]]
+            out_weight[:, remaining[rows]] = best_w[:, settled]
+        remaining = remaining[~settled]
+        if remaining.size:
+            far = away[~settled]
+            far = far[isfinite(far)]
+            radius = max(2.0 * radius,
+                         float(far.max()) if far.size else 0.0)
+    if remaining.size:
+        # No radius reached an answer, which takes a degenerate geometry; the
+        # whole search answers what is left of it.
+        for i in remaining:
+            point = query[:, i:i + 1]
             (idx, weight) = _closest_simplex_brute(coords, indices, point)
             out_index[i] = idx[0]
-            out_weight[:, i] = weight[:, 0]
-        else:
-            (nearby, idx, weight) = selected
-            out_index[i] = nearby[idx[0]]
             out_weight[:, i] = weight[:, 0]
     return (out_index, out_weight)
 

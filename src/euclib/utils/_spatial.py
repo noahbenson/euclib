@@ -211,6 +211,49 @@ class SpatialTree:
 
     # Queries ###############################################################
 
+    def candidate_runs(self, query, radius, /):
+        '''Returns the candidates of each query as one flat run of indices.
+
+        This is ``candidates`` in the form a caller that wants all of them at
+        once can use without a Python loop per position: the answers are
+        concatenated, and a length-``Q`` vector of counts says where each
+        position's run begins. A batched search over thousands of positions
+        reads them in this form, and building the list of separate arrays is
+        then done once, by ``candidates``, on top of it.
+
+        Parameters
+        ----------
+        query : numpy.ndarray
+            A ``(D, Q)`` matrix of query positions.
+        radius : float
+            The radius to search within.
+
+        Returns
+        -------
+        counts : numpy.ndarray
+            A length-``Q`` vector of the number of candidates per position.
+        found : numpy.ndarray
+            The concatenated item indices, ``counts[q]`` of them for position
+            ``q``, sorted within each run.
+        '''
+        query = asarray(query)
+        if query.ndim == 1:
+            query = query.reshape(-1, 1)
+        if query.shape[0] != self.dim:
+            raise ValueError(
+                f"this tree subdivides {self.dim}-dimensional space, but the"
+                f" query has dimension {query.shape[0]}")
+        if query.shape[1] == 0:
+            return (zeros(0, dtype=intp), zeros(0, dtype=intp))
+        if c_spatial is not None:
+            return c_spatial.candidates(
+                *(self._flattened()), ascontiguousarray(query, dtype='float64'),
+                float(radius))
+        runs = [self._candidates_one(query[:, q], float(radius))
+                for q in range(query.shape[1])]
+        return (asarray([run.size for run in runs], dtype=intp),
+                concatenate(runs))
+
     def candidates(self, query, radius, /):
         '''Returns the items whose spheres come within a radius of each query.
 
@@ -231,25 +274,13 @@ class SpatialTree:
         list of numpy.ndarray
             One sorted array of item indices per query position.
         '''
-        query = asarray(query)
-        if query.ndim == 1:
-            query = query.reshape(-1, 1)
-        if query.shape[0] != self.dim:
-            raise ValueError(
-                f"this tree subdivides {self.dim}-dimensional space, but the"
-                f" query has dimension {query.shape[0]}")
-        if c_spatial is not None:
-            (counts, found) = c_spatial.candidates(
-                *(self._flattened()), ascontiguousarray(query, dtype='float64'),
-                float(radius))
-            res = []
-            at = 0
-            for count in counts:
-                res.append(found[at:at + count])
-                at += count
-            return res
-        return [self._candidates_one(query[:, q], float(radius))
-                for q in range(query.shape[1])]
+        (counts, found) = self.candidate_runs(query, radius)
+        res = []
+        at = 0
+        for count in counts:
+            res.append(found[at:at + count])
+            at += count
+        return res
 
     def _candidates_one(self, point, radius, /):
         '''The items within a radius of one position.'''

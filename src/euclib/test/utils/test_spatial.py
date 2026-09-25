@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from unittest import TestCase
 
+import numpy as np
+
 from numpy import (
     allclose, arange, argsort, array, concatenate, flatnonzero, linspace,
     maximum, meshgrid, ones, sqrt, stack, zeros)
@@ -198,3 +200,134 @@ class TestSpatialTree(TestCase):
         tree = SpatialTree(zeros((2, 100)), zeros(100), max_items=1,
                            max_depth=3)
         self.assertEqual((tree.candidates(zeros((2, 1)), 0.5)[0]).size, 100)
+
+
+class TestCandidateRuns(TestCase):
+    '''The flat form of the candidates, which the batched search reads.'''
+
+    def test_the_runs_are_the_arrays(self):
+        (coords, tri) = grid_mesh(12)
+        (centers, radii) = simplex_boxes(coords, tri)
+        tree = SpatialTree(centers, radii)
+        query = array([[0.05, 0.31, 0.6, 0.99], [0.05, 0.72, 0.4, 0.01]])
+        for radius in (0.01, 0.1, 0.5):
+            with self.subTest(radius=radius):
+                (counts, found) = tree.candidate_runs(query, radius)
+                separate = tree.candidates(query, radius)
+                self.assertEqual(counts.tolist(),
+                                 [run.size for run in separate])
+                at = 0
+                for run in separate:
+                    self.assertEqual(found[at:at + run.size].tolist(),
+                                     run.tolist())
+                    at += run.size
+
+    def test_an_empty_query_has_no_runs(self):
+        (coords, tri) = grid_mesh(8)
+        tree = SpatialTree(*simplex_boxes(coords, tri))
+        (counts, found) = tree.candidate_runs(zeros((2, 0)), 0.5)
+        self.assertEqual(counts.size, 0)
+        self.assertEqual(found.size, 0)
+        self.assertEqual(tree.candidates(zeros((2, 0)), 0.5), [])
+
+
+class TestBatchedClosestSimplex(TestCase):
+    '''The indexed nearest-simplex search, which advances its positions together.
+
+    The brute-force search over every simplex is the definition, and the indexed
+    one must agree with it exactly: it is the same fit, over the candidates the
+    index promises contain the answer. That promise is what makes the two the
+    same search rather than two similar ones, so these tests run the index at
+    several radii and several sizes of query.
+    '''
+
+    def test_it_agrees_with_examining_every_simplex(self):
+        (coords, tri) = grid_mesh(20)
+        (centers, radii) = simplex_boxes(coords, tri)
+        tree = SpatialTree(centers, radii)
+        rng = np.random.default_rng(0)
+        # Inside the grid, on its edges, and well outside it, where the answer
+        # is a corner of some boundary triangle.
+        inside = rng.uniform(0.0, 1.0, size=(2, 60))
+        outside = rng.uniform(-0.5, 1.5, size=(2, 40))
+        query = concatenate([inside, outside], axis=1)
+        (index, weight) = closest_simplex(coords, tri, query, tree=tree)
+        (want_index, want_weight) = closest_simplex(coords, tri, query)
+        self.assertTrue((index == want_index).all(),
+                        f"{(index != want_index).sum()} of {query.shape[1]}"
+                        " positions took a different simplex")
+        self.assertTrue(allclose(weight, want_weight, atol=1e-12))
+
+    def test_it_agrees_one_position_at_a_time(self):
+        # The radius the search uses is shared by the positions still looking,
+        # so a search of one position must agree with the same position inside a
+        # larger batch: the shared radius must not change any answer.
+        (coords, tri) = grid_mesh(16)
+        tree = SpatialTree(*simplex_boxes(coords, tri))
+        rng = np.random.default_rng(3)
+        query = rng.uniform(-0.2, 1.2, size=(2, 30))
+        (whole_index, whole_weight) = closest_simplex(coords, tri, query,
+                                                      tree=tree)
+        for q in range(query.shape[1]):
+            with self.subTest(position=q):
+                (index, weight) = closest_simplex(coords, tri, query[:, q:q + 1],
+                                                  tree=tree)
+                self.assertEqual(int(index[0]), int(whole_index[q]))
+                self.assertTrue(allclose(weight[:, 0], whole_weight[:, q],
+                                         atol=1e-12))
+
+    def test_a_position_on_a_vertex_takes_that_vertex(self):
+        (coords, tri) = grid_mesh(10)
+        tree = SpatialTree(*simplex_boxes(coords, tri))
+        # A grid node is shared by several triangles and is a corner of each, so
+        # the answer is fixed: the position itself, with all of the weight on
+        # the corner the search names.
+        query = coords[:, [0, 33, 66]].copy()
+        (index, weight) = closest_simplex(coords, tri, query, tree=tree)
+        for q in range(query.shape[1]):
+            corners = tri[:, index[q]]
+            self.assertIn(0, (coords[:, corners] - query[:, [q]]).__abs__()
+                          .sum(axis=0).round(9).tolist())
+            self.assertTrue(allclose(
+                coords[:, corners] @ concatenate([weight[:, q],
+                                                  [1.0 - weight[:, q].sum()]]),
+                query[:, q], atol=1e-9))
+
+    def test_many_positions_at_once_agree(self):
+        # A batch large enough to take the slots a candidate at a time rather
+        # than all at once: the shapes of the fits must not depend on it.
+        (coords, tri) = grid_mesh(40)
+        tree = SpatialTree(*simplex_boxes(coords, tri))
+        rng = np.random.default_rng(11)
+        query = rng.uniform(-0.1, 1.1, size=(2, 1200))
+        (index, weight) = closest_simplex(coords, tri, query, tree=tree)
+        (want_index, want_weight) = closest_simplex(coords, tri, query)
+        self.assertTrue((index == want_index).all())
+        self.assertTrue(allclose(weight, want_weight, atol=1e-12))
+
+    def test_an_empty_query_answers_nothing(self):
+        (coords, tri) = grid_mesh(8)
+        tree = SpatialTree(*simplex_boxes(coords, tri))
+        (index, weight) = closest_simplex(coords, tri, zeros((2, 0)), tree=tree)
+        self.assertEqual(index.size, 0)
+        self.assertEqual(weight.shape, (2, 0))
+
+    def test_the_escape_hatch_agrees(self):
+        # A search that widens until nearly every simplex is a candidate is
+        # answered from the whole mesh instead, which is correct rather than
+        # merely equivalent --- the candidates are a subset of what the global
+        # search examines. The threshold is lowered here to reach it.
+        from euclib.utils import _pycore
+        (coords, tri) = grid_mesh(20)
+        tree = SpatialTree(*simplex_boxes(coords, tri))
+        rng = np.random.default_rng(5)
+        query = rng.uniform(-0.3, 1.3, size=(2, 200))
+        (want_index, want_weight) = closest_simplex(coords, tri, query)
+        saved = _pycore._MAX_SLOTS
+        try:
+            _pycore._MAX_SLOTS = 3
+            (index, weight) = closest_simplex(coords, tri, query, tree=tree)
+        finally:
+            _pycore._MAX_SLOTS = saved
+        self.assertTrue((index == want_index).all())
+        self.assertTrue(allclose(weight, want_weight, atol=1e-12))
