@@ -38,6 +38,7 @@ work.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import factorial
 
 from numpy import (
     arange, asarray, concatenate, einsum, floor, linalg, moveaxis, ones,
@@ -242,12 +243,12 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     extrap = prop.extrap if extrap is UNSET else extrap
     null = prop.null if null is UNSET else null
     mask = prop.mask if mask is UNSET else mask
-    # The fits above linear need derivative data: a segment's values alone do
+    # The fits above linear need derivative data: an element's values alone do
     # not determine a quadratic or a cubic. A caller's gradient overrides the
     # property's, and a property that carries none has one estimated from the
     # values around the geometry.
     fitted = None
-    if order >= 2 and geom.order == 1:
+    if order >= 2 and geom.order in (1, 2):
         if gradient is not UNSET and gradient is not None:
             fitted = asarray(gradient)
         elif prop.gradient is not None:
@@ -320,9 +321,9 @@ def _interp_simplex(geom, prop, loc, order, gradient=None, /):
         # just a point index and that point's value is the whole answer.
         return (values[..., 0, :], corners, ones(corners.shape, dtype=bool))
     if order >= 2:
-        # The higher orders are built one element at a time, and a segment's
-        # are the ones that exist.
-        return (segment_fit(geom, loc, values, corners, gradient, order),
+        # The higher orders are built one element at a time.
+        fit = segment_fit if geom.order == 1 else triangle_fit
+        return (fit(geom, loc, values, corners, gradient, order),
                 corners, ones(corners.shape, dtype=bool))
     weight = asarray(loc.weight)
     # A local coordinate stores the first K barycentric weights; the last
@@ -491,6 +492,162 @@ def _stencil(neighbours, node, wanted, /):
     return sorted(seen)
 
 
+def simplex_exponents(order, /):
+    '''Returns the multi-indices of a Bezier simplex's control values.
+
+    A polynomial of degree ``order`` on a triangle is a combination of the
+    Bernstein basis polynomials, one per multi-index whose entries sum to the
+    order. Those with a single non-zero entry sit at the corners, those with two
+    along the edges, and the rest --- on a triangle, only ``(1, 1, 1)`` ---
+    inside it.
+
+    Parameters
+    ----------
+    order : int
+        The degree.
+
+    Returns
+    -------
+    list of tuple of int
+        One index tuple per control value.
+    '''
+    res = []
+    for i in range(order + 1):
+        for j in range(order - i + 1):
+            res.append((i, j, order - i - j))
+    return res
+
+
+def triangle_fit(geom, loc, values, corners, gradient, order, /):
+    '''Fits a polynomial of the given order through one triangle's data.
+
+    A triangle's polynomial is determined by its values and its corners'
+    gradients --- except for one degree of freedom, because a cubic has ten
+    coefficients where a triangle's three values and three gradients give nine
+    conditions, and a quadratic has six where they give more than enough. The
+    construction that settles the rest is the Bezier one, edge by edge:
+
+    * Each edge carries a one-dimensional fit of its own, through the values and
+      the slopes at *its* two corners, exactly as a segment's fit is made. Two
+      triangles sharing an edge therefore give that edge the same polynomial,
+      which is what keeps the field continuous across it, and it is why the
+      construction starts with the edges rather than the triangle. Its middle
+      control value is the *reflection* of the edge's midpoint value about the
+      endpoints' average: a quadratic's middle control is not the value at the
+      midpoint, and using that value instead costs the fit its reproduction.
+    * A cubic has one control value left inside, and it is the average of the
+      three edges' *degree-2* control values --- the reflected midpoints below,
+      not the cubic edges' midpoint values. Degree elevation of a quadratic
+      gives exactly that average, so the rule is what reproduces quadratics
+      exactly, which is the most the corners can determine: a general cubic's
+      interior value is not knowable from them, which is why the C1 schemes
+      split the triangle instead of fitting it whole.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry the triangle belongs to.
+    loc : LocMixin
+        The local coordinates: a triangle index and the first two barycentric
+        weights.
+    values : numpy.ndarray
+        A ``(C..., 3, Q)`` array of the corners' values at each position.
+    corners : numpy.ndarray
+        The ``(3, Q)`` matrix of the corners each position draws on.
+    gradient : array-like
+        A ``(C..., D, N)`` gradient over the geometry's coordinates.
+    order : int
+        ``2`` or ``3``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The fitted values, with the property's channel dimensions and one value
+        per position.
+    '''
+    coords = asarray(geom.coords)
+    dim = coords.shape[0]
+    gradient = asarray(gradient)
+    if gradient.shape[-2] != dim:
+        raise ValueError(
+            f"the gradient has {gradient.shape[-2]} dimensions, but this"
+            f" geometry occupies {dim} of them")
+    powers = simplex_exponents(order)
+    exponents = asarray(powers)
+    q = corners.shape[1]
+    ends = coords[:, corners]                                  # (D, 3, Q)
+    # The gradient at each of the corners, which is also how the channels are
+    # carried: a scalar property's gradient is (D, N) and a channelled one's is
+    # (C..., D, N), and the corner axis is the last either way.
+    at = gradient[..., :, corners]                             # (C..., D, 3, Q)
+    control = zeros((len(powers),) + tuple(values.shape[:-2]) + (q,))
+    # The corners hold their own values.
+    for c in range(3):
+        corner = tuple(order if i == c else 0 for i in range(3))
+        control[powers.index(corner)] = values[..., c, :]
+    # Each edge holds the one-dimensional fit of its two ends.
+    for (i, j) in ((0, 1), (1, 2), (2, 0)):
+        step = ends[:, j, :] - ends[:, i, :]                   # (D, Q)
+        # The slope each end asks for along the edge is the gradient's component
+        # in the edge's direction: the parameter runs from 0 at one corner to 1
+        # at the other, so the edge's length is already accounted for.
+        at_i = (at[..., :, i, :] * step).sum(axis=-2)          # (C..., Q)
+        at_j = (at[..., :, j, :] * step).sum(axis=-2)
+        near_i = tuple(order - 1 if c == i else (1 if c == j else 0)
+                       for c in range(3))
+        if order == 3:
+            control[powers.index(near_i)] = values[..., i, :] + at_i / 3.0
+            near_j = tuple(1 if c == i else (order - 1 if c == j else 0)
+                           for c in range(3))
+            control[powers.index(near_j)] = values[..., j, :] - at_j / 3.0
+        else:
+            # The edge's middle control value: the *reflection* of the midpoint's
+            # value about the endpoints' average. A quadratic's Bezier middle
+            # control is not the value at the midpoint --- that value is the
+            # average of the three controls (b0 + 2 b1 + b2) / 4 --- so the
+            # correction term enters at twice its size, not once.
+            control[powers.index(near_i)] = (
+                (values[..., i, :] + values[..., j, :]) / 2.0
+                + (at_i - at_j) / 4.0)
+    if order == 3:
+        # The one interior control value: the average of the three edges'
+        # *degree-2* control values, which is what degree elevation asks for.
+        # Taking the average of the cubic edges' midpoint values instead --- the
+        # same tempting mistake as above --- is what stops a naive cubic patch
+        # reproducing quadratics.
+        middle = []
+        for (i, j) in ((0, 1), (1, 2), (2, 0)):
+            near_i = tuple(order - 1 if c == i else (1 if c == j else 0)
+                           for c in range(3))
+            near_j = tuple(1 if c == i else (order - 1 if c == j else 0)
+                           for c in range(3))
+            at_i = tuple(order if c == i else 0 for c in range(3))
+            at_j = tuple(order if c == j else 0 for c in range(3))
+            # The cubic edge's own value at its midpoint ...
+            halfway = (control[powers.index(at_i)]
+                       + 3.0 * control[powers.index(near_i)]
+                       + 3.0 * control[powers.index(near_j)]
+                       + control[powers.index(at_j)]) / 8.0
+            # ... reflected, as a control value of degree 2 must be.
+            middle.append(2.0 * halfway
+                          - (values[..., i, :] + values[..., j, :]) / 2.0)
+        control[powers.index((1, 1, 1))] = sum(middle) / 3.0
+    # Evaluate the Bernstein basis at the barycentric weights. The last weight
+    # is what the first two leave of the unit sum.
+    weight = asarray(loc.weight)
+    full = concatenate([weight, (1.0 - weight.sum(axis=0))[None, :]], axis=0)
+    # The Bernstein basis, one value per control point: the product of the
+    # barycentric weights taken to the control point's exponents, over the three
+    # corners, scaled by the multinomial coefficient. The weights are (Q, 3), so
+    # the exponents have to be (1, 3) alongside them for the product to be taken
+    # over the corners rather than over the queries.
+    basis = (full.T[None, :, :] ** exponents[:, None, :]).prod(axis=-1)
+    counts = asarray([factorial(p) for p in exponents.ravel()]
+                     ).reshape(exponents.shape).prod(axis=1)
+    basis = basis * (factorial(order) / counts)[:, None]
+    return einsum('wq,w...q->...q', basis, control)
+
+
 def estimate_gradient(geom, prop, order, /):
     '''Estimates each coordinate's gradient from the values around it.
 
@@ -542,39 +699,28 @@ def estimate_gradient(geom, prop, order, /):
     neighbours = _neighbours(asarray(geom.topo.simplices[1]), count)
     res = zeros(tuple(values.shape[:-1]) + (dim, count))
     for i in range(count):
-        stencil = _stencil(neighbours, i, len(powers))
-        # The displacement of each stencil node from the one being estimated,
-        # which is what the polynomial is written in terms of.
-        step = (coords[:, stencil] - coords[:, i:i + 1]).T        # (M, D)
-        # How many dimensions the stencil actually spans. A path's nodes lie on
-        # a line *whatever* it is placed in --- a diagonal path in the plane no
-        # less than an axis-aligned one --- so a fit of the line's own dimension
-        # is determined where a fit of the plane's is not. The frame's columns
-        # are the directions the stencil measures; the rest count for nothing,
-        # which is the same as treating them as flat.
-        (_, sizes, frame) = linalg.svd(step, full_matrices=False)
-        room = (sizes > _RANK_TOLERANCE * sizes[0]).sum() if sizes.size else 0
-        room = max(room, 1)
-        # Fit the highest degree those dimensions can determine, up to the order
-        # asked for: the stencil cannot outgrow the geometry either, and
-        # reproducing a lower-order polynomial exactly is better than
-        # reproducing none.
+        # The stencil grows until the polynomial of the order asked for is
+        # *determined* by it. Enough nodes is not enough: a grid's nodes can
+        # number more than the monomials of an order and still not span them, so
+        # the test is the rank of the fit's design matrix, not its row count.
+        stencil = [i]
+        while True:
+            (step, frame, room) = _stencil_frame(coords, stencil, i)
+            (basis, linear, design) = _monomial_design(step, frame, room, order)
+            if (len(basis) <= len(stencil)
+                    and linalg.matrix_rank(design) == len(basis)):
+                break
+            wider = _stencil(neighbours, i, len(stencil) + 1)
+            if len(wider) == len(stencil):
+                # The whole neighbourhood is here and the order asked for is
+                # still not determined by it; fit the highest degree that is.
+                break
+            stencil = wider
         degree = order
-        while degree > 1 and \
-                len(monomial_exponents(room, degree)) > len(stencil):
+        while degree > 1 and (len(basis) > len(stencil)
+                              or linalg.matrix_rank(design) < len(basis)):
             degree -= 1
-        basis = monomial_exponents(room, degree)
-        # The gradient's components are the coefficients of the linear
-        # monomials, taken one axis at a time: the monomials are ordered by
-        # their exponents rather than by axis, so they have to be picked out in
-        # the axes' own order or the components come back transposed.
-        linear = [basis.index(tuple(1 if b == a else 0 for b in range(room)))
-                  for a in range(room)]
-        exponents = asarray(basis)
-        # `frame`'s rows are the directions the stencil spans; taking its
-        # columns would project onto the wrong ones.
-        local = step @ frame[:room].T                             # (M, room)
-        design = (local[:, None, :] ** exponents[None, :, :]).prod(axis=-1)
+            (basis, linear, design) = _monomial_design(step, frame, room, degree)
         # The values of the stencil, one row per node and the channels after, so
         # that one solve answers for every channel at once.
         rhs = moveaxis(values[..., stencil], -1, 0)               # (M, C...)
@@ -584,6 +730,39 @@ def estimate_gradient(geom, prop, order, /):
         hull = moveaxis(coeffs[linear], 0, -1) @ frame[:room]      # (C..., D)
         res[..., :, i] = hull
     return res
+
+
+def _stencil_frame(coords, stencil, node, /):
+    '''Returns a stencil's displacements, the directions it spans, and how many.
+
+    A path's nodes lie on a line *whatever* it is placed in --- a diagonal path
+    in the plane no less than an axis-aligned one --- so a fit of the line's own
+    dimension is determined where a fit of the plane's is not. The frame's rows
+    are the directions the stencil spans, and the rest count for nothing, which
+    is the same as treating them as flat.
+    '''
+    step = (coords[:, stencil] - coords[:, node:node + 1]).T      # (M, D)
+    (_, sizes, frame) = linalg.svd(step, full_matrices=False)
+    room = (sizes > _RANK_TOLERANCE * sizes[0]).sum() if sizes.size else 0
+    return (step, frame, max(room, 1))
+
+
+def _monomial_design(step, frame, room, degree, /):
+    '''Returns a polynomial basis and the least-squares design matrix for it.
+
+    The polynomial is written in the stencil's own frame, so the design is over
+    the `room` directions the stencil actually spans. The returned linear
+    indices pick the gradient's components out of the solved coefficients in the
+    axes' own order: the monomials are ordered by their exponents rather than by
+    axis, so taking them in order would transpose the components.
+    '''
+    basis = monomial_exponents(room, degree)
+    linear = [basis.index(tuple(1 if b == a else 0 for b in range(room)))
+              for a in range(room)]
+    exponents = asarray(basis)
+    local = step @ frame[:room].T                                 # (M, room)
+    design = (local[:, None, :] ** exponents[None, :, :]).prod(axis=-1)
+    return (basis, linear, design)
 
 
 def _interp_grid(geom, prop, loc, order, /):

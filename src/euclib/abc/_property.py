@@ -104,6 +104,17 @@ INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1))
 INTERP_SUPPORTED_SEGMENT = (('nearest', 0), ('polynomial', 1),
                             ('polynomial', 2), ('polynomial', 3))
 
+#: The interpolations a *triangle* supports. A cubic's ten control values come
+#: from the nine conditions a triangle's three values and three gradients
+#: supply, so the fit is built edge by edge and its one interior value follows a
+#: rule that reproduces quadratics; a quadratic's six are more than determined by
+#: the same nine and are settled the same way. See
+#: ``examples/properties/bezier-triangle.md`` for the construction and the
+#: derivation. A prism mesh reports a triangle's order with a third local
+#: dimension and its own interpolation is deferred, so it does not get these.
+INTERP_SUPPORTED_TRIANGLE = (('nearest', 0), ('polynomial', 1),
+                             ('polynomial', 2), ('polynomial', 3))
+
 #: The valid extrapolation orders. Only 0 (nearest point on the object) is
 #: supported; ``None`` means "no extrapolation".
 EXTRAP_ORDERS = (None, 0)

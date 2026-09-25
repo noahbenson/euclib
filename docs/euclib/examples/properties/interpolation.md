@@ -163,6 +163,8 @@ against `2x + 3y`.
 :::
 
 :::{seealso}
+- [Bézier interpolation on a triangle](bezier-triangle.md) for what the higher
+  orders actually compute, and how we know the answer is right.
 - [Transferring a property between geometries](transfer.md) for sampling a
   property from a *different* geometry.
 - [Nearest points on a triangle mesh](../queries/nearest-points.md) for the

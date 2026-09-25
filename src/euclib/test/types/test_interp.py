@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from unittest import TestCase
 
-from numpy import (allclose, arange, array, asarray, eye, isfinite,
-                   isnan, nan, zeros)
+from numpy.random import default_rng
+from numpy import (allclose, arange, array, asarray, concatenate, cos, eye,
+                   isfinite, isnan, nan, pi, sin, stack, zeros)
 
 from euclib.types import (
-    Grid, GridTopology, SegPath, SegTopology, TriMesh, TriTopology, VertexSet,
-    VertexTopology)
+    Grid, GridTopology, SegPath, SegTopology, TetMesh, TetTopology, TriMesh,
+    TriTopology, VertexSet, VertexTopology)
 
 
 # Fixtures ###################################################################
@@ -218,14 +219,16 @@ class TestUnimplementedOrders(TestCase):
                     isfinite(float(_path().prop('t', at=array([[0.5], [0.]]),
                                                 interp=order)[0])))
 
-    def test_a_higher_order_is_not_built_for_a_triangle_yet(self):
-        mesh = TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
-                       TriTopology([[0], [1], [2]])).withprop(
-                           't', array([1., 2., 3.]))
+    def test_a_higher_order_is_not_built_for_a_tetrahedron_yet(self):
+        # Triangles are built; tetrahedra come next.
+        mesh = TetMesh(array([[0., 1., 0., 0.], [0., 0., 1., 0.],
+                              [0., 0., 0., 1.]]),
+                       TetTopology([[0], [1], [2], [3]])).withprop(
+                           't', array([1., 2., 3., 4.]))
         for order in (2, 3):
             with self.subTest(order=order):
                 with self.assertRaises(NotImplementedError):
-                    mesh.prop('t', at=array([[0.25], [0.25]]), interp=order)
+                    mesh.prop('t', at=array([[0.1], [0.1], [0.1]]), interp=order)
 
 
 class TestSegmentPolynomial(TestCase):
@@ -371,6 +374,202 @@ class TestSegmentPolynomial(TestCase):
                              mask=array([False, False, True]))
         self.assertFalse(isnan(self._at(path, 0.5, 2)))
         self.assertTrue(isnan(self._at(path, 1.5, 2)))
+
+
+class TestTrianglePolynomial(TestCase):
+    '''The polynomial method on a triangle.
+
+    A triangle's three values and three gradients are nine conditions where a
+    quadratic takes six coefficients and a cubic takes ten, so the fit is built
+    edge by edge: each shared edge gets its own one-dimensional fit, which is
+    what keeps the field continuous across it, and a cubic's one interior value
+    follows from the three edges. See
+    ``docs/euclib/examples/properties/bezier-triangle.md`` for the derivation.
+    '''
+
+    #: The fan from that page: a central triangle with six around it. Six
+    #: nodes is enough for the estimate to determine a quadratic.
+    ANGLES = array([90., 210., 330.]) * pi / 180
+
+    def _fan(self, gradient=None):
+        inner = stack([cos(self.ANGLES), sin(self.ANGLES)])
+        coords = concatenate([inner, 3.0 * inner], axis=1)
+        triangles = ([(0, 1, 2)]
+                     + [(k, (k + 1) % 3, 3 + (k + 2) % 3) for k in range(3)]
+                     + [(k, 3 + (k + 1) % 3, 3 + (k + 2) % 3) for k in range(3)])
+        mesh = TriMesh(coords, TriTopology(array(triangles).T))
+        return mesh.withprop('f', self.F(coords[0], coords[1]), gradient=gradient)
+
+    @staticmethod
+    def F(x, y):
+        '''A quadratic with a cross term, and its exact gradient.'''
+        return 0.4 * x * x + 0.3 * y * y + 0.25 * x * y + 0.5 * x
+
+    @staticmethod
+    def gradient_of(coords):
+        return stack([0.8 * coords[0] + 0.25 * coords[1] + 0.5,
+                      0.6 * coords[1] + 0.25 * coords[0]])
+
+    def _inside(self, mesh):
+        '''A handful of positions inside the mesh, and their weights.'''
+        tris = array(mesh.topo.indices).T
+        rng = default_rng(3)
+        found = []
+        for _ in range(8):
+            w = rng.uniform(size=3)
+            w /= w.sum()
+            (i, j, k) = tris[rng.integers(len(tris))]
+            found.append((w, array(mesh.coords)[:, [i, j, k]] @ w))
+        return found
+
+    def test_a_quadratic_is_reproduced_with_supplied_gradients(self):
+        coords = array([[0., 1., 0., 1.], [0., 0., 1., 1.]])
+        mesh = TriMesh(coords, TriTopology([[0, 0], [1, 3], [3, 2]]))
+        mesh = mesh.withprop('f', self.F(coords[0], coords[1]),
+                             gradient=self.gradient_of(coords))
+        for order in (2, 3):
+            with self.subTest(order=order):
+                for (w, point) in self._inside(mesh):
+                    got = float(asarray(mesh.prop(
+                        'f', at=point.reshape(2, 1), interp=order))[0])
+                    self.assertAlmostEqual(got, self.F(point[0], point[1]),
+                                           places=12)
+
+    def test_the_estimate_reproduces_a_quadratic_too(self):
+        # The stencil grows until the polynomial is determined by it, so an
+        # estimated gradient is as good as a supplied one wherever the geometry
+        # gives the neighbours to determine it.
+        mesh = self._fan()
+        for order in (2, 3):
+            with self.subTest(order=order):
+                for (w, point) in self._inside(mesh):
+                    got = float(asarray(mesh.prop(
+                        'f', at=point.reshape(2, 1), interp=order))[0])
+                    self.assertAlmostEqual(got, self.F(point[0], point[1]),
+                                           places=12)
+
+    def test_the_shared_edge_is_interpolated_identically(self):
+        # A position on an edge that two triangles share must be answered the
+        # same way from either side. That is the edge-first construction's whole
+        # purpose, and it is what the docs page's own check measures.
+        inner = stack([cos(self.ANGLES), sin(self.ANGLES)])
+        coords = concatenate([inner, 3.0 * inner], axis=1)
+        triangles = array([(0, 1, 2)]
+                          + [(k, (k + 1) % 3, 3 + (k + 2) % 3) for k in range(3)]
+                          + [(k, 3 + (k + 1) % 3, 3 + (k + 2) % 3)
+                             for k in range(3)])
+        mesh = TriMesh(coords, TriTopology(triangles.T))
+        mesh = mesh.withprop('f', self.F(coords[0], coords[1]),
+                             gradient=self.gradient_of(coords))
+        # Which triangles hold each edge, and where in each the edge's corners
+        # sit, since a triangle's local weights are its own.
+        sides = {}
+        for (index, triangle) in enumerate(triangles):
+            for (a, b) in ((0, 1), (1, 2), (2, 0)):
+                sides.setdefault(tuple(sorted((triangle[a], triangle[b]))),
+                                 []).append((index, a, b))
+        shared = [(edge, held) for (edge, held) in sides.items()
+                  if len(held) == 2]
+        self.assertEqual(len(shared), 9)
+        for order in (2, 3):
+            for (edge, held) in shared:
+                for s in (0.25, 0.5, 0.75):
+                    answers = []
+                    for (index, a, b) in held:
+                        weights = zeros(3)
+                        weights[a] = 1.0 - s
+                        weights[b] = s
+                        # A triangle's local weight holds the first two
+                        # barycentric weights; the third is the remainder.
+                        loc = mesh.topo.Loc(array([index]),
+                                            weights[:2].reshape(2, 1))
+                        answers.append(float(asarray(mesh.prop(
+                            'f', at=loc, interp=order))[0]))
+                    with self.subTest(order=order, edge=edge, s=s):
+                        self.assertAlmostEqual(answers[0], answers[1],
+                                               places=12)
+
+    def test_a_channelled_property_interpolates_channel_by_channel(self):
+        # The fits carry the value's channel dimensions through the control
+        # values and the Bernstein sum, so a two-channel property has to come
+        # back with two channels, each interpolated as the scalar case is.
+        inner = stack([cos(self.ANGLES), sin(self.ANGLES)])
+        coords = concatenate([inner, 3.0 * inner], axis=1)
+        triangles = array([(0, 1, 2)]
+                          + [(k, (k + 1) % 3, 3 + (k + 2) % 3) for k in range(3)]
+                          + [(k, 3 + (k + 1) % 3, 3 + (k + 2) % 3)
+                             for k in range(3)])
+        mesh = TriMesh(coords, TriTopology(triangles.T))
+        # Channel 0 is f; channel 1 is twice f, so both must interpolate.
+        values = stack([self.F(coords[0], coords[1]),
+                        2.0 * self.F(coords[0], coords[1])])
+        gradient = stack([self.gradient_of(coords),
+                          2.0 * self.gradient_of(coords)])
+        mesh = mesh.withprop('f', values, gradient=gradient)
+        for order in (2, 3):
+            for (w, point) in self._inside(mesh):
+                got = asarray(mesh.prop('f', at=point.reshape(2, 1),
+                                        interp=order))
+                self.assertEqual(got.shape, (2, 1))
+                self.assertAlmostEqual(float(got[0, 0]),
+                                       self.F(point[0], point[1]), places=12)
+                self.assertAlmostEqual(float(got[1, 0]),
+                                       2.0 * self.F(point[0], point[1]),
+                                       places=12)
+
+    def test_the_values_at_the_corners_are_interpolated(self):
+        mesh = self._fan()
+        coords = array(mesh.coords)
+        for order in (2, 3):
+            with self.subTest(order=order):
+                for node in range(6):
+                    got = float(asarray(mesh.prop(
+                        'f', at=coords[:, node].reshape(2, 1), interp=order))[0])
+                    self.assertAlmostEqual(got, self.F(coords[0, node],
+                                                       coords[1, node]),
+                                           places=12)
+
+    def test_a_supplied_gradient_overrides_the_property_s(self):
+        mesh = self._fan()
+        coords = array(mesh.coords)
+        point = (coords[:, 0] + coords[:, 1] + coords[:, 2]) / 3.0
+        exact = self.gradient_of(coords)
+        with_estimate = float(asarray(mesh.prop(
+            'f', at=point.reshape(2, 1), interp=2))[0])
+        with_exact = float(asarray(mesh.prop(
+            'f', at=point.reshape(2, 1), interp=2, gradient=exact))[0])
+        with_zero = float(asarray(mesh.prop(
+            'f', at=point.reshape(2, 1), interp=2, gradient=zeros((2, 6))))[0])
+        self.assertAlmostEqual(with_estimate, with_exact, places=12)
+        self.assertAlmostEqual(with_exact, self.F(point[0], point[1]),
+                               places=12)
+        # A wrong gradient gives a different answer, which is what shows the
+        # argument is the one used.
+        self.assertNotAlmostEqual(with_zero, with_exact, places=3)
+
+    def test_a_gradient_of_the_wrong_dimension_is_refused(self):
+        mesh = self._fan()
+        with self.assertRaises(ValueError):
+            mesh.prop('f', at=array([[0.], [0.]]), interp=2,
+                      gradient=zeros((3, 6)))
+
+    def test_a_mask_poisons_the_triangles_that_draw_on_it(self):
+        # A triangle's fit draws on all three corners, so masking one makes
+        # every triangle that touches it answer with the null value --- which
+        # includes every position nearest that node, the rule's requirement.
+        coords = array([[0., 1., 0., 1.], [0., 0., 1., 1.]])
+        mesh = TriMesh(coords, TriTopology([[0, 0], [1, 3], [3, 2]]))
+        mesh = mesh.withprop('f', self.F(coords[0], coords[1]),
+                             gradient=self.gradient_of(coords),
+                             mask=array([False, True, False, False]))
+        for order in (2, 3):
+            with self.subTest(order=order):
+                # A position inside the triangle that has the masked corner,
+                # and one inside the other triangle, which does not.
+                self.assertTrue(isnan(float(asarray(mesh.prop(
+                    'f', at=array([[0.2], [0.2]]), interp=order))[0])))
+                self.assertTrue(isnan(float(asarray(mesh.prop(
+                    'f', at=array([[0.8], [0.8]]), interp=order))[0])))
 
 
 class TestPointCloudInterpolation(TestCase):

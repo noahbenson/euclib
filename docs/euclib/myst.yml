@@ -58,6 +58,7 @@ project:
           children:
             - file: examples/properties/point-clouds.md
             - file: examples/properties/interpolation.md
+            - file: examples/properties/bezier-triangle.md
             - file: examples/properties/transfer.md
             - file: examples/properties/immutability.md
         - title: Grids and Images
