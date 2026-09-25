@@ -50,9 +50,10 @@ from __future__ import annotations
 from heapq import heappop, heappush, heapreplace
 
 from numpy import (
-    arange, asarray, concatenate, maximum, sqrt, stack, where, zeros)
+    arange, ascontiguousarray, asarray, concatenate, intp, maximum, sqrt,
+    stack, where, zeros)
 
-from ._core import split_cells
+from ._core import c_spatial, split_cells
 
 
 # The tree ###################################################################
@@ -163,6 +164,51 @@ class SpatialTree:
         excess = maximum(maximum(below, above), 0.0)
         return float(sqrt((excess * excess).sum()))
 
+    # The flattened tree ####################################################
+
+    def _flattened(self, /):
+        '''The tree as the arrays the C queries read, built once.
+
+        A node's items, and its children, become runs of a flat array, with one
+        offset per node saying where each run begins; and the node indexes
+        themselves, so that a run of children needs no further indirection.
+
+        Returns
+        -------
+        tuple
+            The nine arrays the compiled queries take, in their order.
+        '''
+        if getattr(self, '_flat', None) is None:
+            nodes = len(self._low)
+            (item_start, child_start) = (zeros(nodes + 1, dtype=intp),
+                                         zeros(nodes + 1, dtype=intp))
+            items = []
+            children = []
+            for i in range(nodes):
+                item_start[i] = len(items)
+                child_start[i] = len(children)
+                if self._items[i] is not None:
+                    items.extend(int(j) for j in self._items[i])
+                else:
+                    children.extend(int(c) for c in self._child[i] if c >= 0)
+            item_start[nodes] = len(items)
+            child_start[nodes] = len(children)
+            # Each array is made contiguous here, once. The compiled queries
+            # read their arguments through the buffer protocol and copy anything
+            # that is not contiguous, and a mesh's centers are usually a strided
+            # view into a larger array --- so a copy per call of what can be
+            # copies once is the difference between a query taking microseconds
+            # and taking half a millisecond.
+            self._flat = (
+                ascontiguousarray(self._low, dtype='float64'),
+                ascontiguousarray(self._high, dtype='float64'),
+                ascontiguousarray(self._maxr, dtype='float64'),
+                item_start, asarray(items, dtype=intp),
+                child_start, asarray(children, dtype=intp),
+                ascontiguousarray(self.centers, dtype='float64'),
+                ascontiguousarray(self.radii, dtype='float64'))
+        return self._flat
+
     # Queries ###############################################################
 
     def candidates(self, query, radius, /):
@@ -192,6 +238,16 @@ class SpatialTree:
             raise ValueError(
                 f"this tree subdivides {self.dim}-dimensional space, but the"
                 f" query has dimension {query.shape[0]}")
+        if c_spatial is not None:
+            (counts, found) = c_spatial.candidates(
+                *(self._flattened()), ascontiguousarray(query, dtype='float64'),
+                float(radius))
+            res = []
+            at = 0
+            for count in counts:
+                res.append(found[at:at + count])
+                at += count
+            return res
         return [self._candidates_one(query[:, q], float(radius))
                 for q in range(query.shape[1])]
 
@@ -238,6 +294,10 @@ class SpatialTree:
         query = asarray(query)
         if query.ndim == 1:
             query = query.reshape(-1, 1)
+        if c_spatial is not None:
+            return c_spatial.nearest(
+                *(self._flattened()), ascontiguousarray(query, dtype='float64'),
+                int(k))
         indices = []
         distances = []
         for q in range(query.shape[1]):

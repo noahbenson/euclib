@@ -32,7 +32,10 @@ from unittest import TestCase, skipUnless
 
 import numpy as np
 
-from euclib.utils import split_cells, tetrahedron_box_vertices
+import euclib
+
+from euclib.utils import SpatialTree, split_cells, tetrahedron_box_vertices
+from euclib.utils import _spatial
 from euclib.utils._core import using_c_extension
 from euclib.utils._pycore import (
     split_cells as split_cells_python,
@@ -326,3 +329,124 @@ class TestVerticesParityOnRandomCases(TestCase):
                 checked += 1
                 self.assertTrue(_same_corners(native, accelerated))
         self.assertGreater(checked, 20)
+
+
+@skipUnless(using_c_extension, "the C extension is not built")
+class TestSpatialQueryParity(TestCase):
+    '''The compiled index queries against the tree's own methods.
+
+    The tree in ``euclib.utils._spatial`` is the definition: it answers one
+    position at a time, in Python, and the compiled queries answer an array of
+    them. The two must agree exactly --- not merely closely --- because the
+    search that uses them resolves the exact answer from the candidates they
+    return, and a different candidate set would give a different simplex.
+
+    The gate matters as much as the kernels: every query goes to the compiled
+    queries when they are loaded, at every size, so these tests check a single
+    position as well as an array of them --- and check that the tree's flattened
+    arrays are contiguous, which is what makes a single position fast.
+    '''
+
+    def _both(self, centers, radii, query, k=1, radius=0.5):
+        '''Returns the answers of the compiled path and of the tree's own.'''
+        tree = SpatialTree(centers, radii)
+        try:
+            compiled = (tree.nearest(query, k=k),
+                        tree.candidates(query, radius))
+            _spatial.c_spatial = None
+            native = (tree.nearest(query, k=k),
+                      tree.candidates(query, radius))
+        finally:
+            # Restoring the module's own setting matters: a test that leaves it
+            # turned off would send every later test down the native path, and
+            # they would pass without testing the compiled queries at all.
+            _spatial.c_spatial = self._compiled
+        return (compiled, native)
+
+    def setUp(self):
+        self._compiled = _spatial.c_spatial
+        self.assertTrue(self._compiled is not None)
+
+    def test_random_trees_agree_exactly(self):
+        rng = np.random.default_rng(0)
+        for trial in range(200):
+            dim = int(rng.integers(1, 4))
+            count = int(rng.integers(0, 300))
+            centers = rng.normal(size=(dim, count)) * 2.0
+            radii = rng.uniform(0.0, 0.5, size=count)
+            query = rng.normal(size=(dim, 12)) * 3.0
+            with self.subTest(dim=dim, count=count):
+                ((ci, cd), cans), ((pi, pd), pans) = self._both(
+                    centers, radii, query, k=int(rng.integers(1, 4)))
+                self.assertEqual(ci.shape, pi.shape)
+                self.assertTrue(np.array_equal(ci, pi))
+                self.assertTrue(np.allclose(cd, pd, rtol=0, atol=1e-12))
+                self.assertEqual(len(cans), len(pans))
+                for (mine, theirs) in zip(cans, pans):
+                    self.assertTrue(np.array_equal(mine, theirs))
+
+    def test_an_empty_tree_agrees(self):
+        # Nothing to find: the answer has no rows at all, rather than k rows of
+        # a placeholder, which is what the tree itself returns.
+        ((ci, cd), cans), ((pi, pd), pans) = self._both(
+            np.zeros((2, 0)), np.zeros(0), np.array([[0., 1.], [0., 1.]]))
+        self.assertEqual(ci.shape, pi.shape)
+        self.assertEqual(ci.shape, (0, 2))
+        self.assertEqual(cans[0].tolist(), pans[0].tolist())
+        self.assertEqual(cans[1].tolist(), pans[1].tolist())
+
+    def test_a_tree_with_fewer_items_than_k_agrees(self):
+        centers = np.array([[0., 1.], [0., 0.]])
+        radii = np.array([0.1, 0.1])
+        ((ci, _), _), ((pi, _), _) = self._both(
+            centers, radii, np.array([[0.4, 5.0], [0.0, 5.0]]), k=5)
+        self.assertEqual(ci.shape, (2, 2))
+        self.assertTrue(np.array_equal(ci, pi))
+
+    def test_a_real_index_agrees(self):
+        # The index the library builds for a mesh, rather than one of points.
+        # It is built only for a mesh with enough simplices to pay for it, so
+        # this mesh is large enough for that threshold.
+        side = 40
+        axis = np.linspace(0.0, 1.0, side)
+        (gridx, gridy) = np.meshgrid(axis, axis)
+        coords = np.stack([gridx.ravel(), gridy.ravel()])
+        faces = []
+        for (i, j) in np.ndindex(side - 1, side - 1):
+            (a, b) = (i * side + j, i * side + j + 1)
+            (c, d) = ((i + 1) * side + j, (i + 1) * side + j + 1)
+            faces += [[a, b, d], [a, d, c]]
+        mesh = euclib.trimesh(coords, np.array(faces).T)
+        tree = mesh.spatial_index
+        self.assertTrue(tree is not None)
+        query = np.array([[0.1, 0.4, 0.9], [0.1, 0.6, 0.2]])
+        ((ci, cd), cans), ((pi, pd), pans) = self._both(
+            tree.centers, tree.radii, query, k=2, radius=0.3)
+        self.assertTrue(np.array_equal(ci, pi))
+        for (mine, theirs) in zip(cans, pans):
+            self.assertTrue(np.array_equal(mine, theirs))
+
+    def test_a_single_position_goes_to_the_kernels(self):
+        # One position is not a special case: the compiled queries take it, and
+        # they are faster at that size too. What made them look slower was a
+        # strided array being copied on every call, so this checks both the
+        # answer and the arrays it is read from.
+        tree = SpatialTree(np.array([[0., 1.], [0., 0.]]), np.array([0.1, 0.1]))
+        (index, distance) = tree.nearest(np.array([[0.4], [0.]]), k=1)
+        self.assertEqual(index.tolist(), [[0]])
+
+    def test_the_flattened_arrays_are_contiguous(self):
+        # A mesh's centers are usually a strided view, and the compiled queries
+        # copy anything that is not contiguous --- six megabytes of centers, on
+        # every call, if the flattening does not settle it once. This is the
+        # regression test for that: a strided (D, M) center matrix, one query,
+        # and the timing such a mistake would destroy.
+        block = np.zeros((3, 40000, 2))
+        block[:, :, 0] = np.arange(40000) % 200
+        block[:, :, 1] = np.arange(40000) // 200
+        centers = block[:, :, 0]
+        radii = np.full(40000, 0.5)
+        self.assertFalse(centers.flags.c_contiguous)
+        tree = SpatialTree(centers, radii)
+        for array in tree._flattened():
+            self.assertTrue(array.flags.c_contiguous)

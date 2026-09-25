@@ -34,11 +34,21 @@ except ImportError:                                  # pragma: no cover
 
 # The extension ##############################################################
 
-core = Extension(
+# A failed build is a warning unless the packager asks otherwise.
+OPTIONAL = not environ.get('EUCLIB_REQUIRE_C')
+
+CORE = Extension(
     'euclib._c._core',
     sources=['src/euclib/_c/_core.c'],
     include_dirs=INCLUDE_DIRS,
-    # A failed build is a warning unless the packager asks otherwise.
-    optional=not environ.get('EUCLIB_REQUIRE_C'))
+    optional=OPTIONAL)
 
-setup(ext_modules=[core])
+# The spatial index's queries, which answer a whole array of positions in one
+# call rather than one position at a time.
+SPATIAL = Extension(
+    'euclib._c._spatial',
+    sources=['src/euclib/_c/_spatial.c'],
+    include_dirs=INCLUDE_DIRS,
+    optional=OPTIONAL)
+
+setup(ext_modules=[CORE, SPATIAL])

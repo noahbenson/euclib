@@ -47,6 +47,7 @@ if _is_true(environ.get('EUCLIB_NO_C_EXTENSIONS')):
 else:
     try:
         from .._c import _core as _c
+        from .._c import _spatial as _c_spatial
         using_c_extension = True
     except Exception as exc:  # pragma: no cover - depends on the build
         backend_error = exc
@@ -55,6 +56,14 @@ if _is_true(environ.get('EUCLIB_REQUIRE_C')) and not using_c_extension:
     raise ImportError(
         "EUCLIB_REQUIRE_C is set but the euclib C extension could not be"
         " loaded") from backend_error
+
+
+#: The compiled spatial-index queries, or ``None`` when the extension is not
+#: loaded. Unlike the kernels below, these are not registered against a
+#: Pure-Python counterpart in ``utils._dispatch``: the tree is a Python class
+#: whose own methods are the definition, and euclib.utils._spatial calls these
+#: from inside them when they are there.
+c_spatial = _c_spatial if using_c_extension else None
 
 
 # Kernels ####################################################################

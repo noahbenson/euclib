@@ -346,11 +346,15 @@ def _closest_simplex_indexed(coords, indices, query, tree):
     total = query.shape[1]
     out_index = zeros(total, dtype=int)
     out_weight = zeros((count, total))
+    # The nearest sphere is a lower bound on the nearest position, so it makes a
+    # good radius to start each search from. Asking for all of them at once is
+    # one call to the index rather than one per position, which is the
+    # difference between the array of positions being the unit of work and each
+    # position being it.
+    starts = maximum(asarray(tree.nearest(query, k=1)[1])[0], _TOLERANCE)
     for i in range(total):
         point = query[:, i:i + 1]
-        # The nearest sphere is a lower bound on the nearest position, so it
-        # makes a good radius to start from.
-        radius = max(float(tree.nearest(point, k=1)[1][0, 0]), _TOLERANCE)
+        radius = float(starts[i])
         selected = None
         for _ in range(40):
             nearby = tree.candidates(point, radius)[0]

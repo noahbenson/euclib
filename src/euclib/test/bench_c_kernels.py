@@ -26,7 +26,7 @@ from time import perf_counter
 
 import numpy as np
 
-from euclib import grid, ops, tetmesh
+from euclib import grid, ops, tetmesh, trimesh
 from euclib.utils import split_cells, tetrahedron_box_vertices
 from euclib.utils._core import using_c_extension
 
@@ -185,11 +185,101 @@ def bench_voxel_intersections():
 
 # Main #######################################################################
 
+def _sheet(side):
+    '''A triangulated sheet, as a mesh and its coordinates.'''
+    axis = np.linspace(0.0, 1.0, side)
+    (gridx, gridy) = np.meshgrid(axis, axis)
+    coords = np.stack([gridx.ravel(), gridy.ravel()])
+    faces = []
+    for (i, j) in np.ndindex(side - 1, side - 1):
+        (a, b) = (i * side + j, i * side + j + 1)
+        (c, d) = ((i + 1) * side + j, (i + 1) * side + j + 1)
+        faces += [[a, b, d], [a, d, c]]
+    mesh = trimesh(coords, np.array(faces).T)
+    values = np.sin(coords[0] * 12.0) * np.cos(coords[1] * 12.0)
+    gradient = np.stack([12.0 * np.cos(coords[0] * 12.0)
+                         * np.cos(coords[1] * 12.0),
+                         -12.0 * np.sin(coords[0] * 12.0)
+                         * np.sin(coords[1] * 12.0)])
+    return (mesh, coords, values, gradient)
+
+
+def bench_index_queries():
+    '''Times the index queries one position at a time and as one array.
+
+    The compiled queries answer a whole array of positions in a call, and they
+    win at every size --- including one position, once the tree's arrays are
+    contiguous when they reach them. The one-position row is what the search
+    does today, once per position; the batched rows are what it would do if it
+    advanced its queries together, which is the work the plan lists next.
+    '''
+    print("the spatial index's queries (per position, and batched)")
+    from euclib.utils import _spatial
+    (mesh, coords, values, gradient) = _sheet(40)
+    mesh = mesh.withprop('f', values, gradient=gradient)
+    tree = mesh.spatial_index
+    if tree is None:
+        print("  no index was built for this mesh")
+        return
+    rng = np.random.default_rng(0)
+    where = coords[:, rng.choice(coords.shape[1], 200)]
+    fast = _spatial.c_spatial
+    for count in (1, 10, 100, 200):
+        one = np.ascontiguousarray(where[:, :count])
+        _spatial.c_spatial = None
+        start = perf_counter()
+        for i in range(count):
+            tree.nearest(one[:, i:i + 1], k=1)
+            tree.candidates(one[:, i:i + 1], 0.02)
+        slow = perf_counter() - start
+        _spatial.c_spatial = fast
+        start = perf_counter()
+        tree.nearest(one, k=1)
+        tree.candidates(one, 0.02)
+        quick = perf_counter() - start
+        ratio = slow / quick if quick else float('inf')
+        print(f"  {count:5d} positions  python {slow * 1e6:9.1f} us"
+              f"   compiled {quick * 1e6:9.1f} us   {ratio:6.2f}x")
+    _spatial.c_spatial = fast
+    print()
+
+
+def bench_interpolation():
+    '''Times interpolation with a supplied gradient and with an estimated one.
+
+    Nothing caches the estimate, so a property that carries no gradient pays for
+    one on every call; these two rows are what that costs, and are the reason
+    the plan records caching as an open item rather than a solved one.
+    '''
+    print("interpolating a property (the cost of not caching the estimate)")
+    (mesh, coords, values, gradient) = _sheet(40)
+    supplied = mesh.withprop('f', values, gradient=gradient)
+    estimated = mesh.withprop('f', values)
+    rng = np.random.default_rng(0)
+    where = np.ascontiguousarray(coords[:, rng.choice(coords.shape[1], 200)])
+    nodes = coords.shape[1]
+    for order in (1, 2, 3):
+        taken = {}
+        for (label, geom) in (("supplied", supplied), ("estimated", estimated)):
+            start = perf_counter()
+            geom.prop('f', at=where, interp=order)
+            taken[label] = perf_counter() - start
+        extra = taken['estimated'] - taken['supplied']
+        print(f"  order {order}: with a gradient {taken['supplied'] * 1e3:7.1f} ms"
+              f"   estimated {taken['estimated'] * 1e3:7.1f} ms"
+              f"   the estimate adds {extra * 1e3:7.1f} ms")
+    print(f"  ({nodes} vertices in this mesh; the estimate is made once per"
+          f" call, for every vertex, and cached nowhere)")
+    print()
+
+
 def main():
     '''Prints the timings.'''
     print(f"using the C extension: {using_c_extension}\n")
     bench_split_cells()
     bench_vertices()
+    bench_index_queries()
+    bench_interpolation()
     bench_voxel_intersections()
 
 
