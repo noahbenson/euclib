@@ -517,6 +517,18 @@ class TestTrianglePolynomial(TestCase):
                                        2.0 * self.F(point[0], point[1]),
                                        places=12)
 
+    def test_a_position_of_the_wrong_dimension_is_refused(self):
+        # Without the check the query reaches the spatial index and fails inside
+        # it with a broadcasting error about shapes, which tells the caller
+        # nothing about what they did wrong.
+        mesh = TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
+                       TriTopology([[0], [1], [2]]))
+        mesh = mesh.withprop('f', array([1., 2., 3.]))
+        for bad in (zeros((3, 2)), array([0., 0., 0.])):
+            with self.subTest(shape=bad.shape):
+                with self.assertRaises(ValueError):
+                    mesh.prop('f', at=bad)
+
     def test_the_values_at_the_corners_are_interpolated(self):
         mesh = self._fan()
         coords = array(mesh.coords)

@@ -142,6 +142,14 @@ def to_loc(geom, at, /):
     if is_local_at(at, geom.topo):
         return (geom.topo.check_loc(at), None)
     query = to_query(at)
+    # A position of the wrong dimension is refused here rather than left to fail
+    # inside the search, where a caller cannot tell what went wrong: it reaches
+    # the spatial index and comes back as a broadcasting error about shapes.
+    if query.ndim != 2 or query.shape[0] != geom.dim:
+        raise ValueError(
+            f"a position in this geometry has {geom.dim} dimensions, so `at`"
+            f" must be a ({geom.dim}, Q) matrix; found shape"
+            f" {tuple(query.shape)}")
     loc = geom.to_local(query)
     return (loc, _outside(geom, query, loc))
 
