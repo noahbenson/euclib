@@ -224,6 +224,19 @@ def bench_index_queries():
     rng = np.random.default_rng(0)
     where = coords[:, rng.choice(coords.shape[1], 200)]
     fast = _spatial.c_spatial
+    # The compiled queries read the tree through arrays flattened the first time
+    # they are asked for something. That is a cost of the tree, and charging it
+    # to the first row would read as the kernels being slow on one position ---
+    # which is the mistake the contiguous-array fix was about, so it is settled
+    # here rather than in the numbers.
+    flat = tree._flattened()
+    for (label, kernel) in (("python tree", None), ("compiled", fast)):
+        if kernel is None:
+            continue
+        _spatial.c_spatial = kernel
+        tree.nearest(where[:, :1], k=1)
+        tree.candidates(where[:, :1], 0.02)
+    _spatial.c_spatial = fast
     for count in (1, 10, 100, 200):
         one = np.ascontiguousarray(where[:, :count])
         _spatial.c_spatial = None
@@ -258,6 +271,11 @@ def bench_interpolation():
     rng = np.random.default_rng(0)
     where = np.ascontiguousarray(coords[:, rng.choice(coords.shape[1], 200)])
     nodes = coords.shape[1]
+    # The index is built on the first call that locates a position, which the
+    # "supplied" row would otherwise pay and the "estimated" row would not ---
+    # reading as an estimate that is *faster* than no estimate at all, which is
+    # how this row first came out.
+    supplied.prop('f', at=where[:, :1], interp=1)
     for order in (1, 2, 3):
         taken = {}
         for (label, geom) in (("supplied", supplied), ("estimated", estimated)):
