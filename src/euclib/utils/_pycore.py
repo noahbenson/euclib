@@ -1096,7 +1096,10 @@ def tetrahedron_box_intersection(tet, bounds, tolerance=0.0):
     triangles on an interior plane were held by one tetrahedron rather than two.
 
     A region with exactly four corners is a tetrahedron already and is returned
-    as one; the point inside is only added to a region that has to be cut up.
+    as one. The fan is over the faces that do not carry the region\'s smallest
+    corner; a face that does carry it comes out cut as a fan from that corner,
+    which is the face\'s own smallest, so the piece on the other side of it cuts
+    it the same way.
 
     Parameters
     ----------
@@ -1163,16 +1166,27 @@ def tetrahedron_box_intersection(tet, bounds, tolerance=0.0):
     if not faces:
         # Every corner in one plane, or one point: no volume to fill.
         return (vertices, zeros((dim + 1, 0), dtype=int))
-    # One point strictly inside, which each face's triangles are joined to. It is
-    # the average of the corners, which is inside a convex solid, and it is not
-    # on any face, so it cannot interrupt one.
-    inside = len(points)
-    points.append(tuple(sum(p[i] for p in points) / count for i in range(dim)))
+    # The filling is a fan: every face that does not carry the region's smallest
+    # corner is cut into triangles, and each triangle with that corner makes a
+    # tetrahedron. No corner is added, and the fan over the faces that do not
+    # carry it covers the region.
+    #
+    # A face that *does* carry that corner is not cut here. It is covered by the
+    # sides of the fan instead, and it comes out cut as a fan from the same
+    # corner --- which is the face's own smallest, since a corner of the region is
+    # below every corner of a face it belongs to. So the piece on the other side
+    # of it, which cuts that face as one of its own, cuts it the same way. That
+    # is the same argument as for the faces themselves, one dimension down.
+    first = min(range(count), key=lambda i: points[i])
     filled = []
     for face in faces:
+        if first in face:
+            continue
         for k in range(1, len(face) - 1):
-            filled.append((face[0], face[k], face[k + 1], inside))
-    return (asarray(points, dtype='float64').T, asarray(filled, dtype=int).T)
+            filled.append((first, face[0], face[k], face[k + 1]))
+    if not filled:
+        return (vertices, zeros((dim + 1, 0), dtype=int))
+    return (vertices, asarray(filled, dtype=int).T)
 
 
 def _tetrahedron_volume(corners, /):

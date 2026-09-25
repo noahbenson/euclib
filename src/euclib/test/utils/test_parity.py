@@ -313,10 +313,8 @@ class TestVerticesParityOnRandomCases(TestCase):
 
     def test_the_decomposition_agrees_too(self):
         # The intersection the operations call goes through the same corner
-        # search, so it is held to the same standard. The decomposition adds a
-        # corner *inside* the region when the region has to be cut up --- it is
-        # what the faces of the filling are joined to --- so the corners of the
-        # region are the ones that lie on it, and the extra one is not.
+        # search, so it is held to the same standard --- and it adds no corner
+        # of its own, so its corners are exactly the kernel's.
         from euclib.utils import _pycore
         rng = np.random.default_rng(12)
         checked = 0
@@ -328,28 +326,9 @@ class TestVerticesParityOnRandomCases(TestCase):
             (native, native_tets) = _pycore.tetrahedron_box_intersection(
                 tet, bounds)
             accelerated = self.core.tetrahedron_box_vertices(tet, bounds)
-            if not native.size:
-                continue
-            checked += 1
-            from euclib.utils._pycore import _half_spaces, _dot
-            (normals, offsets) = _half_spaces(np.asarray(tet), np.asarray(bounds))
-            slack = 1e-9 * max(1.0, float(np.abs(native).max()))
-            on_boundary = []
-            inside_only = []
-            for column in range(native.shape[1]):
-                point = native[:, column].tolist()
-                if any(abs(_dot(tuple(float(v) for v in normals[:, c]),
-                                point) - float(offsets[c])) <= slack
-                       for c in range(normals.shape[1])):
-                    on_boundary.append(native[:, column])
-                else:
-                    inside_only.append(native[:, column])
-            boundaries = (np.stack(on_boundary, axis=1) if on_boundary
-                          else np.zeros((3, 0)))
-            self.assertTrue(_same_corners(boundaries, accelerated))
-            # Whatever is not a corner of the region is inside it: it is what
-            # the faces were joined to, and it lies on none of the planes.
-            self.assertEqual(len(inside_only), 0 if native.shape[1] < 5 else 1)
+            if native.size:
+                checked += 1
+                self.assertTrue(_same_corners(native, accelerated))
         self.assertGreater(checked, 20)
 
 
