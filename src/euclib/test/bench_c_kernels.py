@@ -27,7 +27,8 @@ from time import perf_counter
 import numpy as np
 
 from euclib import grid, ops, tetmesh, trimesh
-from euclib.utils import split_cells, tetrahedron_box_vertices
+from euclib.utils import (
+    split_cells, tetrahedron_box_intersection, tetrahedron_box_vertices)
 from euclib.utils._core import using_c_extension
 
 
@@ -146,6 +147,43 @@ def _tet_block(count, /):
                     second = low + (1 << a) + (1 << b)
                     tets.append([low, first, second, high])
     return (np.array(corners, dtype=float).T, np.array(tets, dtype=int).T)
+
+
+def bench_regions():
+    """Times filling the region a tetrahedron and a box share."""
+    print("tetrahedron_box_intersection (the region, filled)")
+    native = tetrahedron_box_intersection.native
+    accelerated = tetrahedron_box_intersection.accelerated
+    if accelerated is None:
+        print("  the C extension is not built")
+        return
+    rng = np.random.default_rng(2)
+    for count in (1, 1000):
+        pairs = []
+        for _ in range(count):
+            tet = np.ascontiguousarray(rng.normal(size=(3, 4)), dtype='float64')
+            center = rng.normal(size=3) * 0.6
+            half = rng.uniform(0.2, 1.5, size=3)
+            pairs.append((tet, np.ascontiguousarray(
+                np.stack([center - half, center + half], axis=1))))
+        (tet, bounds) = pairs[0]
+        label = "one pair" if count == 1 else f"{count} pairs"
+        slow = timeit(native, tet, bounds)
+        fast = timeit(accelerated, tet, bounds)
+        print(f"  {label:<34} {slow * 1e6:>9.3f} us {fast * 1e6:>9.3f} us"
+              f" {slow / fast:>7.2f}x")
+        if count > 1:
+            def all_python():
+                return [native(t, b) for (t, b) in pairs]
+
+            def all_c():
+                return [accelerated(t, b) for (t, b) in pairs]
+
+            slow = timeit(all_python, repeat=3)
+            fast = timeit(all_c, repeat=3)
+            print(f"  {'(as a batch)':<34} {slow * 1e3:>9.3f} ms"
+                  f" {fast * 1e3:>9.3f} ms {slow / fast:>7.2f}x")
+    print()
 
 
 def bench_voxel_intersections():
@@ -328,6 +366,7 @@ def main():
     bench_index_queries()
     bench_interpolation()
     bench_search()
+    bench_regions()
     bench_voxel_intersections()
 
 

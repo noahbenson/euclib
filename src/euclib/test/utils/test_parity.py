@@ -34,11 +34,14 @@ import numpy as np
 
 import euclib
 
-from euclib.utils import SpatialTree, split_cells, tetrahedron_box_vertices
+from euclib.utils import (
+    SpatialTree, split_cells, tetrahedron_box_intersection,
+    tetrahedron_box_vertices)
 from euclib.utils import _spatial
 from euclib.utils._core import using_c_extension
 from euclib.utils._pycore import (
     split_cells as split_cells_python,
+    tetrahedron_box_intersection as intersection_python,
     tetrahedron_box_vertices as vertices_python)
 
 
@@ -451,3 +454,77 @@ class TestSpatialQueryParity(TestCase):
         tree = SpatialTree(centers, radii)
         for array in tree._flattened():
             self.assertTrue(array.flags.c_contiguous)
+
+
+@skipUnless(using_c_extension, "the C extension is not built")
+class TestRegionParity(TestCase):
+    '''The C region filling against the pure-Python one, exactly.
+
+    The two must agree not merely on the region they fill --- which the corner
+    tests already hold --- but on the tetrahedra, down to the order of the four
+    corners of each and the order of the tetrahedra themselves. A caller reads
+    the fills as a mesh, and two of them that differ in how a face is cut would
+    differ between a machine with a compiler and one without.
+    '''
+
+    def setUp(self):
+        from euclib._c import _core
+        self.core = _core
+
+    def _check(self, tet, bounds, tolerance=0.0):
+        tet = np.ascontiguousarray(tet, dtype='float64')
+        bounds = np.ascontiguousarray(bounds, dtype='float64')
+        (nverts, ntets) = intersection_python(tet, bounds, tolerance)
+        (cverts, ctets) = self.core.tetrahedron_box_region(tet, bounds,
+                                                           tolerance)
+        self.assertEqual(nverts.shape, cverts.shape)
+        self.assertTrue(np.array_equal(nverts, cverts),
+                        f"\nnative:\n{nverts}\naccelerated:\n{cverts}")
+        self.assertEqual(ntets.shape, ctets.shape)
+        self.assertTrue(np.array_equal(ntets, ctets),
+                        f"\nnative:\n{ntets}\naccelerated:\n{ctets}")
+
+    def test_a_tetrahedron_inside_the_cube(self):
+        self._check(UNIT_TET, UNIT_BOX)
+
+    def test_the_two_tetrahedra_that_fill_the_cube(self):
+        self._check(OTHER_TET, UNIT_BOX)
+
+    def test_a_cut_tetrahedron(self):
+        # The ordinary case: the box slices the tetrahedron, so the region has
+        # faces the tetrahedron does not.
+        self._check(np.array([[0.2, 1.4, 0.6, 0.4],
+                              [0.3, 0.5, 1.3, 0.7],
+                              [0.4, 0.6, 0.5, 1.2]]), UNIT_BOX)
+
+    def test_a_box_that_misses_it(self):
+        self._check(UNIT_TET, np.array([[4., 5.], [4., 5.], [4., 5.]]))
+
+    def test_a_box_that_touches_one_face(self):
+        self._check(UNIT_TET, np.array([[-1., 0.], [-1., 0.], [-1., 0.]]))
+
+    def test_a_tolerances_are_passed_through(self):
+        tet = np.array([[0.2, 1.4, 0.6, 0.4],
+                        [0.3, 0.5, 1.3, 0.7],
+                        [0.4, 0.6, 0.5, 1.2]])
+        for tolerance in (0.0, 1e-9, 1e-3, 0.01, 0.1):
+            with self.subTest(tolerance=tolerance):
+                self._check(tet, UNIT_BOX, tolerance)
+
+    def test_a_tetrahedron_far_from_the_origin(self):
+        self._check(UNIT_TET * 1000.0 + np.array([[500.], [200.], [-700.]]),
+                    np.array([[500., 1001.], [200., 201.], [-700., -699.]]))
+
+    def test_random_pairs_agree(self):
+        rng = np.random.default_rng(31)
+        checked = 0
+        for _ in range(400):
+            tet = rng.normal(size=(3, 4)) * rng.uniform(0.2, 2.0)
+            center = rng.normal(size=3) * 0.6
+            half = rng.uniform(0.2, 1.5, size=3)
+            bounds = np.stack([center - half, center + half], axis=1)
+            tolerance = float(rng.choice([0.0, 1e-12, 1e-9, 1e-3, 0.01]))
+            with self.subTest(trial=checked):
+                self._check(tet, bounds, tolerance)
+            checked += 1
+        self.assertEqual(checked, 400)

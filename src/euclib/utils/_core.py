@@ -91,9 +91,13 @@ if using_c_extension:
     split_cells = _kernel(_python.split_cells, _c.split_cells)
     tetrahedron_box_vertices = _kernel(
         _python.tetrahedron_box_vertices, _c.tetrahedron_box_vertices)
+    tetrahedron_box_intersection = _kernel(
+        _python.tetrahedron_box_intersection, _c.tetrahedron_box_region)
 else:
     split_cells = _kernel(_python.split_cells)
     tetrahedron_box_vertices = _kernel(_python.tetrahedron_box_vertices)
+    tetrahedron_box_intersection = _kernel(
+        _python.tetrahedron_box_intersection)
 
 # ``tetrahedron_box_intersection`` builds its region from a corner search, and
 # takes that search from a name in its own module rather than calling it

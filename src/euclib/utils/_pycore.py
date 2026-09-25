@@ -996,8 +996,13 @@ _vertices_kernel = tetrahedron_box_vertices
 
 
 def _dot(u, v, /):
-    '''The inner product of two vectors, as tuples of numbers.'''
-    return sum(a * b for (a, b) in zip(u, v))
+    '''The inner product of two three-dimensional vectors, as plain tuples.
+
+    Written out rather than summed over: this is called about fifty times per
+    region by the filling below, where it was a third of the time spent --- a
+    generator expression and a ``sum`` to add up three products.
+    '''
+    return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
 
 
 def _frame_of_plane(normal, /):
@@ -1008,7 +1013,8 @@ def _frame_of_plane(normal, /):
     across = (normal[1] * seed[2] - normal[2] * seed[1],
               normal[2] * seed[0] - normal[0] * seed[2],
               normal[0] * seed[1] - normal[1] * seed[0])
-    size = _dot(across, across) ** 0.5
+    size = (across[0] * across[0] + across[1] * across[1]
+            + across[2] * across[2]) ** 0.5
     across = tuple(v / size for v in across)
     along = (normal[1] * across[2] - normal[2] * across[1],
              normal[2] * across[0] - normal[0] * across[2],
@@ -1026,10 +1032,11 @@ def _face_order(corners, normal, /):
     corner.
     '''
     (across, along) = _frame_of_plane(normal)
-    middle = tuple(sum(c[i] for c in corners) / len(corners) for i in range(3))
+    count = len(corners)
+    middle = [sum(c[i] for c in corners) / count for i in range(3)]
     angles = []
     for (i, c) in enumerate(corners):
-        step = tuple(c[k] - middle[k] for k in range(3))
+        step = (c[0] - middle[0], c[1] - middle[1], c[2] - middle[2])
         angles.append((atan2(_dot(step, along), _dot(step, across)), i))
     angles.sort()
     order = [i for (_, i) in angles]
