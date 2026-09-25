@@ -331,3 +331,72 @@ class TestBatchedClosestSimplex(TestCase):
             _pycore._MAX_SLOTS = saved
         self.assertTrue((index == want_index).all())
         self.assertTrue(allclose(weight, want_weight, atol=1e-12))
+
+
+class TestVoxelPiecesJoin(TestCase):
+    '''The pieces a voxelized mesh is cut into meet along whole faces.
+
+    Two neighbouring voxels cut the same tetrahedron and share a face, and the
+    pieces that meet along it have to cut it into the same triangles. A pair of
+    pieces that disagree leaves a seam: a triangle on the shared face that only
+    one of them holds. This is what the filling has to get right, and it is a
+    property of the *positions* of the triangles rather than of the mesh's
+    index, since the pieces are laid end to end with a corner repeated wherever
+    two of them meet rather than shared.
+    '''
+
+    def _pieces(self, cubes, side):
+        from euclib import grid, ops, tetmesh
+        coords = []
+        tets = []
+        for i in range(cubes):
+            for j in range(cubes):
+                for k in range(cubes):
+                    base = len(coords)
+                    for x in range(2):
+                        for y in range(2):
+                            for z in range(2):
+                                coords.append((i + x, j + y, k + z))
+                    high = base + 7
+                    for (a, b) in ((0, 1), (0, 2), (1, 0),
+                                   (1, 2), (2, 0), (2, 1)):
+                        tets.append([base, base + (1 << a),
+                                     base + (1 << a) + (1 << b), high])
+        mesh = tetmesh(array(coords, dtype=float).T,
+                       array(tets, dtype=int).T)
+        cells = grid((side, side, side),
+                     affine=array([[0.5, 0., 0., 0.],
+                                   [0., 0.5, 0., 0.],
+                                   [0., 0., 0.5, 0.],
+                                   [0., 0., 0., 1.]]))
+        (pieces, _, _) = ops.voxel_intersections(mesh, cells)
+        return pieces
+
+    def test_every_face_of_an_inner_plane_is_held_twice(self):
+        from collections import Counter
+        for (cubes, side) in ((2, 4), (3, 6)):
+            with self.subTest(cubes=cubes):
+                pieces = self._pieces(cubes, side)
+                tets = np.asarray(pieces.topo.indices)
+                where = np.round(np.asarray(pieces.coords).T, 9)
+                faces = Counter()
+                for t in tets.T:
+                    for c in ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)):
+                        faces[tuple(sorted(map(tuple, where[list(t[list(c)])])))] += 1
+                # Every plane between two columns of voxels is interior to the
+                # grid, so a triangle on it belongs to the piece on each side of
+                # it and to no other. A plane through the middle of the mesh's
+                # own tetrahedra carries none, and is passed over: the test is
+                # about the faces there are, not about how many planes there are.
+                checked = 0
+                for step in range(1, 2 * cubes):
+                    plane = 0.25 * step
+                    on = [f for f in faces
+                          if all(abs(q[0] - plane) < 1e-9 for q in f)]
+                    held_once = [f for f in on if faces[f] != 2]
+                    self.assertFalse(
+                        held_once,
+                        f"{len(held_once)} of {len(on)} triangles on the plane"
+                        f" x = {plane} are held by one piece rather than two")
+                    checked += len(on)
+                self.assertGreaterEqual(checked, 100)

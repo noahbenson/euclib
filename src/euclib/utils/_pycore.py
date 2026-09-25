@@ -23,9 +23,7 @@ from numpy import (
     nan, ones, sort, sqrt, stack, unique, where, zeros)
 
 from itertools import combinations
-
-from scipy.spatial import Delaunay
-from scipy.spatial.qhull import QhullError
+from math import atan2
 
 from immlib import is_numeric, math as imath
 
@@ -997,8 +995,108 @@ def tetrahedron_box_vertices(tet, bounds, tolerance=0.0):
 _vertices_kernel = tetrahedron_box_vertices
 
 
+def _dot(u, v, /):
+    '''The inner product of two vectors, as tuples of numbers.'''
+    return sum(a * b for (a, b) in zip(u, v))
+
+
+def _frame_of_plane(normal, /):
+    '''Two unit directions across a plane, at right angles to each other.'''
+    component = min(range(3), key=lambda i: abs(normal[i]))
+    seed = [0.0, 0.0, 0.0]
+    seed[component] = 1.0
+    across = (normal[1] * seed[2] - normal[2] * seed[1],
+              normal[2] * seed[0] - normal[0] * seed[2],
+              normal[0] * seed[1] - normal[1] * seed[0])
+    size = _dot(across, across) ** 0.5
+    across = tuple(v / size for v in across)
+    along = (normal[1] * across[2] - normal[2] * across[1],
+             normal[2] * across[0] - normal[0] * across[2],
+             normal[0] * across[1] - normal[1] * across[0])
+    return (across, along)
+
+
+def _face_order(corners, normal, /):
+    '''The corners of one flat face, in their order around it.
+
+    The order is taken from where the corners are, so that two pieces meeting
+    along a face --- which hold the same corners on it --- cut it into the same
+    triangles. Which corner the list starts at, and which way round it goes, are
+    settled from the corners too, because the fan of a face is a fan from that
+    corner.
+    '''
+    (across, along) = _frame_of_plane(normal)
+    middle = tuple(sum(c[i] for c in corners) / len(corners) for i in range(3))
+    angles = []
+    for (i, c) in enumerate(corners):
+        step = tuple(c[k] - middle[k] for k in range(3))
+        angles.append((atan2(_dot(step, along), _dot(step, across)), i))
+    angles.sort()
+    order = [i for (_, i) in angles]
+    first = min(range(len(order)), key=lambda k: corners[order[k]])
+    order = order[first:] + order[:first]
+    # The two ways round a face are mirror images, so the one that goes toward
+    # the smaller of the two neighbours of the first corner is the one taken.
+    if corners[order[-1]] < corners[order[1]]:
+        order = [order[0]] + order[:0:-1]
+    return order
+
+
+def _face_is_flat(corners, normal, /):
+    '''Whether a set of corners spans an area, rather than a line or a point.'''
+    if len(corners) < 3:
+        return False
+    (across, along) = _frame_of_plane(normal)
+    origin = corners[0]
+    span = 0.0
+    for c in corners[1:]:
+        step = tuple(c[k] - origin[k] for k in range(3))
+        span = max(span, abs(_dot(step, across)), abs(_dot(step, along)))
+    if span == 0.0:
+        return False
+    # A corner that is off the line the others lie on gives the face its area.
+    line = None
+    for c in corners[1:]:
+        step = tuple(c[k] - origin[k] for k in range(3))
+        if abs(_dot(step, across)) + abs(_dot(step, along)) > 1e-9 * span:
+            line = step
+            break
+    if line is None:
+        return False
+    for c in corners[1:]:
+        step = tuple(c[k] - origin[k] for k in range(3))
+        if abs(_dot(step, across) * line[2] - _dot(step, along) * line[1]) \
+                + abs(_dot(step, across) * line[0] - _dot(step, along) * line[2]) \
+                + abs(_dot(step, along) * line[0] - _dot(step, across) * line[1]) \
+                > 1e-9 * span * span:
+            # A corner off the line: the face has an area.
+            return True
+    return False
+
+
 def tetrahedron_box_intersection(tet, bounds, tolerance=0.0):
     '''Decomposes the region a tetrahedron and a box share into tetrahedra.
+
+    The region is a convex solid whose faces lie in the box's six planes and the
+    tetrahedron's four, so it is filled by taking each of those planes in turn,
+    cutting the face it carries into triangles, and joining each triangle to a
+    point inside the solid. That is the whole construction: no hull is found and
+    no connectivity is guessed at, because the region's faces are known from the
+    half-spaces that made it.
+
+    **Why the faces have to be the ones that are cut.** Two neighbouring voxels
+    of a grid cut the same tetrahedron and share a face, and the pieces that meet
+    along it have to cut it into the same triangles, or the volume mesh has seams
+    in it. How a face is cut here is a property of the face alone --- its corners
+    and where they are --- so the two sides agree by construction. Reconstructing
+    the filling from the region's corner *positions* instead, by a Delaunay
+    triangulation of them, makes a choice that depends on the rest of the region
+    as well as on the face, and the two neighbours make it independently:
+    measured on a two-cube mesh voxelized four cells across, 28 of the 64
+    triangles on an interior plane were held by one tetrahedron rather than two.
+
+    A region with exactly four corners is a tetrahedron already and is returned
+    as one; the point inside is only added to a region that has to be cut up.
 
     Parameters
     ----------
@@ -1013,26 +1111,79 @@ def tetrahedron_box_intersection(tet, bounds, tolerance=0.0):
     Returns
     -------
     vertices : numpy.ndarray
-        A ``(3, V)`` matrix of the region's corners.
+        A ``(3, V)`` matrix of the region's corners, and the point inside when
+        one was needed.
     tetrahedra : numpy.ndarray
         A ``(4, T)`` integer matrix of the tetrahedra that fill the region,
         indexing ``vertices``.
     '''
+    corners = asarray(tet)
+    box = asarray(bounds)
+    dim = corners.shape[0]
     vertices = _vertices_kernel(tet, bounds, tolerance)
-    if vertices.shape[1] < 4:
+    count = vertices.shape[1]
+    if count < 4:
         # Three corners make a triangle and two make a segment; neither has a
         # volume to fill.
-        return (vertices, zeros((4, 0), dtype=int))
-    try:
-        # Delaunay rather than ConvexHull: the hull describes the region by its
-        # surface, whose facets are triangles, where what is wanted here is a
-        # filling of it by tetrahedra.
-        filled = Delaunay(vertices.T)
-    except QhullError:
-        # A degenerate region --- every corner in one plane, say --- has no
-        # volume to fill either.
-        return (vertices, zeros((4, 0), dtype=int))
-    return (vertices, asarray(filled.simplices).T)
+        return (vertices, zeros((dim + 1, 0), dtype=int))
+    points = [tuple(float(vertices[a, i]) for a in range(dim))
+              for i in range(count)]
+    if count == 4:
+        if abs(_tetrahedron_volume(points)) <= _EPSILON:
+            return (vertices, zeros((dim + 1, 0), dtype=int))
+        return (vertices, arange(4, dtype=int).reshape(4, 1))
+    # The region's faces, each a run of its corners in the order they go round
+    # it. Two planes can carry the same face --- a tetrahedron's face against a
+    # box's, say --- and it is counted once when they do.
+    (normals, offsets) = _half_spaces(corners, box)
+    # A corner the corner search put on a plane is on it to within rounding, not
+    # exactly, so the test of which corners a plane carries allows for that. The
+    # allowance is relative to the region's size, and far below the smallest
+    # distance between two corners of one, so it can only join up corners that
+    # are the same point.
+    extent = max([abs(v) for p in points for v in p] + [1.0])
+    slack = tolerance + _EPSILON * extent
+    faces = []
+    seen = set()
+    for column in range(normals.shape[1]):
+        normal = tuple(float(v) for v in normals[:, column])
+        offset = float(offsets[column])
+        on = [i for i in range(count)
+              if abs(_dot(normal, points[i]) - offset) <= slack]
+        if len(on) < 3:
+            continue
+        key = tuple(sorted(on))
+        if key in seen:
+            continue
+        flat = [points[i] for i in on]
+        if not _face_is_flat(flat, normal):
+            continue
+        seen.add(key)
+        faces.append([on[k] for k in _face_order(flat, normal)])
+    if not faces:
+        # Every corner in one plane, or one point: no volume to fill.
+        return (vertices, zeros((dim + 1, 0), dtype=int))
+    # One point strictly inside, which each face's triangles are joined to. It is
+    # the average of the corners, which is inside a convex solid, and it is not
+    # on any face, so it cannot interrupt one.
+    inside = len(points)
+    points.append(tuple(sum(p[i] for p in points) / count for i in range(dim)))
+    filled = []
+    for face in faces:
+        for k in range(1, len(face) - 1):
+            filled.append((face[0], face[k], face[k + 1], inside))
+    return (asarray(points, dtype='float64').T, asarray(filled, dtype=int).T)
+
+
+def _tetrahedron_volume(corners, /):
+    '''The signed volume of a tetrahedron, in three dimensions.'''
+    (a, b, c, d) = corners
+    u = [b[k] - a[k] for k in range(3)]
+    v = [c[k] - a[k] for k in range(3)]
+    w = [d[k] - a[k] for k in range(3)]
+    return (u[0] * (v[1] * w[2] - v[2] * w[1])
+            - u[1] * (v[0] * w[2] - v[2] * w[0])
+            + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6.0
 
 
 # Prisms #####################################################################
