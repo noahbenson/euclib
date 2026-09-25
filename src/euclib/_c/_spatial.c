@@ -284,19 +284,22 @@ field(PyObject *obj, int typenum, int ndim, const char *name)
 static int
 read_tree(PyObject *args, int *dim_out, PyArrayObject **keep,
           PyArrayObject **query_out, npy_intp *k_out, double *radius_out,
-          tree *out, int want_radius)
+          PyArrayObject **radial_out, tree *out, int want_radius)
 {
     PyObject *low = NULL, *high = NULL, *maxr = NULL, *istart = NULL,
              *items = NULL, *cstart = NULL, *children = NULL, *centers = NULL,
-             *radii = NULL, *query = NULL;
+             *radii = NULL, *query = NULL, *reach = NULL;
     double radius = 0.0;
     npy_intp k = 1;
     int dim = 0;
 
+    if (radial_out != NULL) {
+        *radial_out = NULL;
+    }
     if (want_radius) {
-        if (!PyArg_ParseTuple(args, "OOOOOOOOOOd", &low, &high, &maxr,
+        if (!PyArg_ParseTuple(args, "OOOOOOOOOOO", &low, &high, &maxr,
                               &istart, &items, &cstart, &children, &centers,
-                              &radii, &query, &radius)) {
+                              &radii, &query, &reach)) {
             return -1;
         }
     } else {
@@ -366,6 +369,37 @@ read_tree(PyObject *args, int *dim_out, PyArrayObject **keep,
     *dim_out = dim;
     *query_out = keep[9];
     *k_out = k;
+    if (want_radius) {
+        /* The radius can be one number for every position, or one number per
+         * position. A mesh's triangles reach as far as their own corners, so a
+         * caller that asks about all of them at once has a different radius for
+         * each and cannot use a single one without taking in, for the small
+         * ones, triangles they cannot reach. */
+        if (PyArray_Check(reach) || PySequence_Check(reach)) {
+            PyArrayObject *radial = field(reach, NPY_DOUBLE, 1, "radius");
+            if (radial == NULL) {
+                return -1;
+            }
+            if (PyArray_DIM(radial, 0) != PyArray_DIM(keep[9], 1)) {
+                PyErr_SetString(PyExc_ValueError,
+                                "radius must have one entry per position");
+                Py_DECREF(radial);
+                return -1;
+            }
+            keep[10] = radial;
+            if (radial_out != NULL) {
+                *radial_out = radial;
+            }
+        } else {
+            radius = PyFloat_AsDouble(reach);
+            if (PyErr_Occurred()) {
+                PyErr_SetString(PyExc_TypeError,
+                                "radius must be a number or a length-Q array"
+                                " of numbers");
+                return -1;
+            }
+        }
+    }
     if (radius_out != NULL) {
         *radius_out = radius;
     }
@@ -422,7 +456,7 @@ distance : numpy.ndarray\n\
 static PyObject *
 core_nearest(PyObject *self, PyObject *args)
 {
-    PyArrayObject *keep[TREE_FIELDS + 1];
+    PyArrayObject *keep[TREE_FIELDS + 2];
     PyArrayObject *query = NULL;
     PyArrayObject *index_out = NULL;
     PyArrayObject *distance_out = NULL;
@@ -436,10 +470,10 @@ core_nearest(PyObject *self, PyObject *args)
     int i;
     npy_intp position;
 
-    for (i = 0; i <= TREE_FIELDS; ++i) {
+    for (i = 0; i <= TREE_FIELDS + 1; ++i) {
         keep[i] = NULL;
     }
-    if (read_tree(args, &dim, keep, &query, &k, NULL, &tree_data, 0) != 0) {
+    if (read_tree(args, &dim, keep, &query, &k, NULL, NULL, &tree_data, 0) != 0) {
         goto done;
     }
     if (k < 1) {
@@ -575,7 +609,7 @@ core_nearest(PyObject *self, PyObject *args)
     distance_out = NULL;
 
 done:
-    for (i = 0; i <= TREE_FIELDS; ++i) {
+    for (i = 0; i <= TREE_FIELDS + 1; ++i) {
         Py_XDECREF(keep[i]);
     }
     Py_XDECREF(index_out);
@@ -639,7 +673,7 @@ indices : numpy.ndarray\n\
 static PyObject *
 core_candidates(PyObject *self, PyObject *args)
 {
-    PyArrayObject *keep[TREE_FIELDS + 1];
+    PyArrayObject *keep[TREE_FIELDS + 2];
     PyArrayObject *query = NULL;
     PyArrayObject *counts_out = NULL;
     PyArrayObject *indices_out = NULL;
@@ -649,6 +683,8 @@ core_candidates(PyObject *self, PyObject *args)
     npy_intp *collected = NULL;
     npy_intp capacity = 0;
     npy_intp total = 0;
+    PyArrayObject *radial = NULL;
+    const double *reach = NULL;
     double radius = 0.0;
     npy_intp k = 1;
     npy_intp q = 0;
@@ -656,11 +692,15 @@ core_candidates(PyObject *self, PyObject *args)
     int i;
     npy_intp position;
 
-    for (i = 0; i <= TREE_FIELDS; ++i) {
+    for (i = 0; i <= TREE_FIELDS + 1; ++i) {
         keep[i] = NULL;
     }
-    if (read_tree(args, &dim, keep, &query, &k, &radius, &tree_data, 1) != 0) {
+    if (read_tree(args, &dim, keep, &query, &k, &radius, &radial,
+                  &tree_data, 1) != 0) {
         goto done;
+    }
+    if (radial != NULL) {
+        reach = (const double *)PyArray_DATA(radial);
     }
     q = PyArray_DIM(query, 1);
     {
@@ -675,6 +715,7 @@ core_candidates(PyObject *self, PyObject *args)
      * count of each position's run is written as it is finished. */
     for (position = 0; position < q; ++position) {
         double point[MAX_DIM];
+        double here = reach != NULL ? reach[position] : radius;
         npy_intp start = total;
         npy_intp *count = (npy_intp *)PyArray_DATA(counts_out) + position;
         for (i = 0; i < dim; ++i) {
@@ -691,7 +732,7 @@ core_candidates(PyObject *self, PyObject *args)
             npy_intp node = nodelist_pop(&nodes);
             if (box_distance(tree_data.low + node * dim,
                              tree_data.high + node * dim, dim, point)
-                    > radius + tree_data.maxr[node]) {
+                    > here + tree_data.maxr[node]) {
                 continue;
             }
             if (tree_data.item_start[node + 1] > tree_data.item_start[node]) {
@@ -701,7 +742,7 @@ core_candidates(PyObject *self, PyObject *args)
                     npy_intp item = tree_data.items[at];
                     if (sphere_distance(tree_data.centers, tree_data.radii,
                                         dim, tree_data.item_count, item, point)
-                            <= radius) {
+                            <= here) {
                         if (total >= capacity) {
                             npy_intp grown = capacity ? capacity * 2 : 64;
                             npy_intp *bigger = (npy_intp *)realloc(
@@ -748,7 +789,7 @@ core_candidates(PyObject *self, PyObject *args)
     indices_out = NULL;
 
 done:
-    for (i = 0; i <= TREE_FIELDS; ++i) {
+    for (i = 0; i <= TREE_FIELDS + 1; ++i) {
         Py_XDECREF(keep[i]);
     }
     Py_XDECREF(counts_out);

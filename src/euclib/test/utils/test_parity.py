@@ -430,6 +430,33 @@ class TestSpatialQueryParity(TestCase):
         for (mine, theirs) in zip(cans, pans):
             self.assertTrue(np.array_equal(mine, theirs))
 
+    def test_a_radius_per_position_agrees(self):
+        # A mesh's triangles are not all the same size, so an operation that
+        # asks about all of them at once gives one radius for each. The answer
+        # must be the same as asking about each with its own radius alone.
+        rng = np.random.default_rng(9)
+        for trial in range(60):
+            dim = int(rng.integers(1, 4))
+            count = int(rng.integers(1, 200))
+            centers = rng.normal(size=(dim, count)) * 2.0
+            radii = rng.uniform(0.0, 0.5, size=count)
+            query = rng.normal(size=(dim, 8)) * 3.0
+            reaches = rng.uniform(0.05, 1.0, size=8)
+            tree = SpatialTree(centers, radii)
+            (counts, found) = tree.candidate_runs(query, reaches)
+            at = 0
+            for q in range(8):
+                want = tree.candidates(query[:, q:q + 1], reaches[q])[0]
+                got = found[at:at + counts[q]]
+                at += counts[q]
+                with self.subTest(trial=trial, position=q):
+                    self.assertTrue(np.array_equal(got, want))
+
+    def test_a_radius_per_position_checks_its_length(self):
+        tree = SpatialTree(np.zeros((2, 4)), np.zeros(4))
+        with self.assertRaises(ValueError):
+            tree.candidate_runs(np.zeros((2, 3)), np.ones(2))
+
     def test_a_single_position_goes_to_the_kernels(self):
         # One position is not a special case: the compiled queries take it, and
         # they are faster at that size too. What made them look slower was a

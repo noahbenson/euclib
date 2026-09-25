@@ -23,8 +23,8 @@ from __future__ import annotations
 from itertools import product
 
 from numpy import (
-    arange, asarray, ceil, concatenate, floor, full, ones, repeat, sqrt,
-    stack, zeros)
+    arange, asarray, ceil, concatenate, floor, full, intp, ones, repeat, sqrt,
+    stack, tile, zeros)
 
 from ..abc import Geometry, as_query
 from ..types import Grid, SegPath, TriMesh
@@ -82,6 +82,39 @@ def _nearby(geom, center, radius, /):
     return index.candidates(center, radius)[0]
 
 
+def _nearby_runs(geom, centers, radii, /):
+    '''The elements a sphere around each of several positions reaches.
+
+    This is ``_nearby`` for a whole array of positions at once, which is what an
+    operation that walks its own elements wants: the query is one call rather
+    than one per element, and the answers come back flattened into runs with a
+    count for each position.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry.
+    centers : numpy.ndarray
+        A ``(D, Q)`` matrix of positions.
+    radii : numpy.ndarray
+        A length-``Q`` vector of the radius around each.
+
+    Returns
+    -------
+    counts : numpy.ndarray
+        A length-``Q`` vector of the number of elements per position.
+    found : numpy.ndarray
+        The elements, one run after another.
+    '''
+    index = geom.spatial_index
+    if index is None:
+        total = geom.topo.simplex_count[geom.order]
+        counts = [total] * centers.shape[1]
+        return (asarray(counts, dtype=intp),
+                tile(arange(total), centers.shape[1]))
+    return index.candidate_runs(centers, radii)
+
+
 # Intersections ##############################################################
 
 def path_crossings(path, mesh, /, tolerance=None):
@@ -129,33 +162,28 @@ def path_crossings(path, mesh, /, tolerance=None):
             "a path crosses a triangle mesh in three-dimensional space;"
             f" found dimensions {path.dim} and {mesh.dim}")
     tol = tolerance_of(mesh) if tolerance is None else float(tolerance)
-    found_points = []
-    found_segments = []
-    found_triangles = []
     indices = path.topo.indices
-    for i in range(indices.shape[1]):
-        start = path.coords[:, indices[0, i]][:, None]
-        stop = path.coords[:, indices[1, i]][:, None]
-        middle = (start + stop) / 2.0
-        # A crossing lies on the segment, so a triangle it crosses is within
-        # half the segment's length of the segment's middle.
-        reach = float(sqrt(((stop - start) ** 2).sum())) / 2.0
-        near = _nearby(mesh, middle, reach)
-        if near.size == 0:
-            continue
-        corners = mesh.coords[:, mesh.topo.indices[:, near]]
-        (hit, point, _) = segments_triangles_intersect(
-            repeat(start, near.size, axis=1), repeat(stop, near.size, axis=1),
-            corners[:, 0], corners[:, 1], corners[:, 2], tolerance=tol)
-        if hit.any():
-            found_points.append(point[:, hit])
-            found_segments.append(full(int(hit.sum()), i))
-            found_triangles.append(near[hit])
-    if not found_points:
+    starts = path.coords[:, indices[0]]                    # (3, M)
+    stops = path.coords[:, indices[1]]
+    middles = (starts + stops) / 2.0
+    # A crossing lies on the segment, so a triangle it crosses is within half
+    # the segment's length of the segment's middle. The segments are of
+    # different lengths, so each asks with its own reach.
+    reaches = sqrt(((stops - starts) ** 2).sum(axis=0)) / 2.0
+    (counts, near) = _nearby_runs(mesh, middles, reaches)
+    if counts.size == 0 or near.size == 0:
         return (zeros((3, 0)), zeros(0, dtype=int), zeros(0, dtype=int))
-    return (concatenate(found_points, axis=1),
-            concatenate(found_segments),
-            concatenate(found_triangles))
+    # One flat list of (segment, triangle) pairs: the run counts say how many
+    # triangles belong to each segment, so a segment's index repeated as many
+    # times as it has candidates names the segment each pair comes from.
+    here = repeat(arange(indices.shape[1]), counts)
+    corners = mesh.coords[:, mesh.topo.indices[:, near]]
+    (hit, point, _) = segments_triangles_intersect(
+        starts[:, here], stops[:, here], corners[:, 0], corners[:, 1],
+        corners[:, 2], tolerance=tol)
+    if not hit.any():
+        return (zeros((3, 0)), zeros(0, dtype=int), zeros(0, dtype=int))
+    return (point[:, hit], here[hit], near[hit])
 
 
 def path_intersections(first, second, /, tolerance=None):
@@ -414,42 +442,40 @@ def mesh_intersections(first, second, /, tolerance=None):
             "triangle meshes meet along segments in three-dimensional space;"
             f" found dimensions {first.dim} and {second.dim}")
     tol = tolerance_of(first) if tolerance is None else float(tolerance)
-    found = []
-    for i in range(first.topo.simplex_count[2]):
-        corners = first.coords[:, first.topo.indices[:, i]]
-        # The triangle reaches no further than its own radius from its middle.
-        middle = corners.mean(axis=1)[:, None]
-        reach = float(sqrt(((corners - middle) ** 2).sum(axis=0)).max())
-        near = _nearby(second, middle, reach)
-        if near.size == 0:
-            continue
-        others = second.coords[:, second.topo.indices[:, near]]
-        (hit, start, stop) = triangles_segments_intersect(
-            repeat(corners[:, 0][:, None], near.size, axis=1),
-            repeat(corners[:, 1][:, None], near.size, axis=1),
-            repeat(corners[:, 2][:, None], near.size, axis=1),
-            others[:, 0], others[:, 1], others[:, 2], tolerance=tol)
-        if not hit.any():
-            continue
-        (start, stop) = (start[:, hit], stop[:, hit])
-        # A pair that meets at a single point contributes no length to the
-        # intersection *curve*: two surfaces that touch are not crossing there.
-        apart = sqrt(((stop - start) ** 2).sum(axis=0))
-        if not (apart > tol).any():
-            continue
-        found.append((start[:, apart > tol], stop[:, apart > tol]))
-    if not found:
-        empty = _SegPath(zeros((3, 0)),
-                         _SegTopology(zeros((2, 0), dtype=int), coord_count=0))
-        return empty
+    count = first.topo.simplex_count[2]
+    corners = first.coords[:, first.topo.indices]        # (3, 3, M)
+    middles = corners.mean(axis=1)                       # (3, M)
+    # A triangle reaches no further than its own radius from its middle. Every
+    # triangle's reach is its own --- a mesh on a sphere has small ones and
+    # large ones side by side --- so the index is asked with one radius per
+    # triangle rather than one for all of them.
+    reaches = sqrt(((corners - middles[:, None, :]) ** 2).sum(axis=0)).max(
+        axis=0)
+    (counts, found) = _nearby_runs(second, middles, reaches)
+    # Every candidate of every triangle, as one flat list of pairs: the run
+    # counts say how many belong to each triangle, so an index repeated as many
+    # times as it has candidates names the triangle each pair starts from.
+    if counts.size == 0 or found.size == 0:
+        return _SegPath(zeros((3, 0)),
+                        _SegTopology(zeros((2, 0), dtype=int), coord_count=0))
+    here = repeat(arange(count), counts)
+    others = second.coords[:, second.topo.indices[:, found]]
+    (hit, start, stop) = triangles_segments_intersect(
+        corners[:, 0][:, here], corners[:, 1][:, here], corners[:, 2][:, here],
+        others[:, 0], others[:, 1], others[:, 2], tolerance=tol)
+    # A pair that meets at a single point contributes no length to the
+    # intersection *curve*: two surfaces that touch are not crossing there.
+    keep = hit & (sqrt(((stop - start) ** 2).sum(axis=0)) > tol)
+    (start, stop) = (start[:, keep], stop[:, keep])
+    if start.shape[1] == 0:
+        return _SegPath(zeros((3, 0)),
+                        _SegTopology(zeros((2, 0), dtype=int), coord_count=0))
     # Lay the ends of every segment out, and pair them up as segments.
-    coords = concatenate([concatenate([s for (s, _) in found], axis=1),
-                          concatenate([t for (_, t) in found], axis=1)],
-                         axis=1)
-    count = coords.shape[1] // 2
-    return _SegPath(coords, _SegTopology([list(range(count)),
-                                          list(range(count, 2 * count))],
-                                         coord_count=2 * count))
+    coords = concatenate([start, stop], axis=1)
+    each = coords.shape[1] // 2
+    return _SegPath(coords, _SegTopology([list(range(each)),
+                                          list(range(each, 2 * each))],
+                                         coord_count=2 * each))
 
 
 # Exports ####################################################################

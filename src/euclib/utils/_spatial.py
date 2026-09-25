@@ -56,6 +56,19 @@ from numpy import (
 from ._core import c_spatial, split_cells
 
 
+def _is_number(value, /):
+    '''Determines whether a value is a single number rather than an array.
+
+    A NumPy scalar answers to ``shape`` --- it is an array of no dimensions ---
+    so asking whether the attribute is there is not enough; what separates it
+    from an array is that its shape has nothing in it.
+    '''
+    ndim = getattr(value, 'ndim', None)
+    if ndim is not None:
+        return ndim == 0
+    return not hasattr(value, '__len__')
+
+
 # The tree ###################################################################
 
 class SpatialTree:
@@ -225,8 +238,12 @@ class SpatialTree:
         ----------
         query : numpy.ndarray
             A ``(D, Q)`` matrix of query positions.
-        radius : float
-            The radius to search within.
+        radius : float or numpy.ndarray
+            The radius to search within: one for every position, or one per
+            position. The items a position can reach differ from one position
+            to the next --- a mesh's triangles are not all the same size --- so
+            a caller asking about all of them at once gives one radius for
+            each.
 
         Returns
         -------
@@ -245,11 +262,21 @@ class SpatialTree:
                 f" query has dimension {query.shape[0]}")
         if query.shape[1] == 0:
             return (zeros(0, dtype=intp), zeros(0, dtype=intp))
+        single = float(radius) if _is_number(radius) else None
+        if single is None:
+            radii = asarray(radius, dtype='float64')
+            if radii.shape != (query.shape[1],):
+                raise ValueError(
+                    f"a radius per position takes one entry per position:"
+                    f" {query.shape[1]}, not {radii.shape}")
         if c_spatial is not None:
             return c_spatial.candidates(
                 *(self._flattened()), ascontiguousarray(query, dtype='float64'),
-                float(radius))
-        runs = [self._candidates_one(query[:, q], float(radius))
+                (single if single is not None
+                 else ascontiguousarray(radii, dtype='float64')))
+        runs = [self._candidates_one(query[:, q],
+                                     single if single is not None
+                                     else float(radii[q]))
                 for q in range(query.shape[1])]
         return (asarray([run.size for run in runs], dtype=intp),
                 concatenate(runs))

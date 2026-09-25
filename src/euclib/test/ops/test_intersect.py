@@ -9,8 +9,12 @@ from __future__ import annotations
 
 from unittest import TestCase
 
+import numpy as np
+
 from numpy import allclose, array, eye, sort
 
+from euclib.utils import (segments_triangles_intersect,
+                          triangles_segments_intersect)
 from euclib.ops import (
     contains, mesh_intersections, path_crossings, path_intersections,
     tolerance_of, voxel_intersections)
@@ -312,3 +316,138 @@ class TestMeshIntersections(TestCase):
                        TriTopology([[0], [1], [2]]))
         with self.assertRaises(ValueError):
             mesh_intersections(flat, first)
+
+
+class TestMeshIntersectionsAreExhaustive(TestCase):
+    '''The mesh-to-mesh intersection against examining every pair.
+
+    The operation finds its pairs through the spatial index, which is what makes
+    it pay for a mesh of any size, and the index is conservative: it reports the
+    triangles that could meet, not the ones that do. The answer must therefore
+    be the same as testing every pair of triangles, one against another, and
+    that is what this holds it to --- on meshes that cross, and on meshes that
+    barely do.
+    '''
+
+    def _grid(self, n, tilt):
+        '''A square grid, turned by ``tilt`` about the x axis at its middle.'''
+        from euclib import trimesh
+        axis = np.linspace(0.0, 1.0, n)
+        gridx, gridy = np.meshgrid(axis, axis)
+        points = np.stack([gridx.ravel(), gridy.ravel(), np.zeros(n * n)])
+        faces = []
+        for (i, j) in np.ndindex(n - 1, n - 1):
+            (a, b) = (i * n + j, i * n + j + 1)
+            (c, d) = ((i + 1) * n + j, (i + 1) * n + j + 1)
+            faces += [[a, b, d], [a, d, c]]
+        points = points - np.array([[0.5], [0.5], [0.0]])
+        turn = np.array([[1., 0., 0.],
+                         [0., np.cos(tilt), -np.sin(tilt)],
+                         [0., np.sin(tilt), np.cos(tilt)]])
+        return trimesh(turn @ points + np.array([[0.5], [0.5], [0.5]]),
+                       np.array(faces).T)
+
+    def _segments(self, found):
+        '''The segments of a path, as a set that does not depend on order.'''
+        coords = np.asarray(found.coords)
+        count = found.topo.simplex_count[1]
+        out = set()
+        for k in range(count):
+            (start, stop) = (coords[:, k], coords[:, k + count])
+            out.add(tuple(sorted([tuple(np.round(start, 9)),
+                                  tuple(np.round(stop, 9))])))
+        return out
+
+    def _every_pair(self, first, second, tolerance):
+        '''The segments found by testing every pair of triangles.'''
+        out = set()
+        for i in range(first.topo.simplex_count[2]):
+            a = first.coords[:, first.topo.indices[:, i]]
+            for j in range(second.topo.simplex_count[2]):
+                b = second.coords[:, second.topo.indices[:, j]]
+                (hit, start, stop) = triangles_segments_intersect(
+                    a[:, 0:1], a[:, 1:2], a[:, 2:3],
+                    b[:, 0:1], b[:, 1:2], b[:, 2:3], tolerance=tolerance)
+                if hit[0] and np.sqrt(
+                        ((stop[:, 0] - start[:, 0]) ** 2).sum()) > tolerance:
+                    out.add(tuple(sorted([
+                        tuple(np.round(start[:, 0], 9)),
+                        tuple(np.round(stop[:, 0], 9))])))
+        return out
+
+    def test_it_finds_what_every_pair_finds(self):
+        from euclib.ops import mesh_intersections
+        from euclib.ops._intersect import tolerance_of
+        for (n, tilt) in ((6, 0.9), (6, 0.05), (8, 1.3)):
+            with self.subTest(triangles=n, tilt=tilt):
+                first = self._grid(n, 0.0)
+                second = self._grid(n, tilt)
+                found = mesh_intersections(first, second)
+                want = self._every_pair(first, second, tolerance_of(first))
+                self.assertTrue(want, "the meshes do not cross at all")
+                self.assertEqual(self._segments(found), want)
+
+
+class TestPathCrossingsAreExhaustive(TestCase):
+    '''The path-to-mesh crossing against examining every pair.
+
+    As with the meshes, the pairs come from the spatial index and the answer has
+    to be what testing every (segment, triangle) pair gives. The segments of a
+    path are of different lengths and so reach different distances, which is
+    what the index is asked with one radius per segment for.
+    '''
+
+    def _grid(self, n, z):
+        from euclib import trimesh
+        axis = np.linspace(0.0, 1.0, n)
+        gridx, gridy = np.meshgrid(axis, axis)
+        points = np.stack([gridx.ravel(), gridy.ravel(),
+                           np.full(n * n, z)])
+        faces = []
+        for (i, j) in np.ndindex(n - 1, n - 1):
+            (a, b) = (i * n + j, i * n + j + 1)
+            (c, d) = ((i + 1) * n + j, (i + 1) * n + j + 1)
+            faces += [[a, b, d], [a, d, c]]
+        return trimesh(points, np.array(faces).T)
+
+    def test_it_finds_what_every_pair_finds(self):
+        from euclib.ops import path_crossings
+        from euclib.ops._intersect import tolerance_of
+        from euclib.types import SegTopology
+        from euclib import SegPath
+        # A path that rises through a stack of grids, so that some segments
+        # cross several, and with segments of very different lengths.
+        rng = np.random.default_rng(4)
+        for step in (0.02, 0.3):
+            with self.subTest(step=step):
+                mesh = self._grid(8, 0.5)
+                along = np.arange(0.0, 1.0, step)
+                points = np.stack([along + 0.05 * rng.normal(size=len(along)),
+                                   along * 0.9 + 0.1,
+                                   np.full(len(along), 0.2)])
+                extra = (points[:, -1]
+                         + np.array([0.05 * step, -0.2 * step, 0.6]))[:, None]
+                points = np.concatenate([points, extra], axis=1)
+                path = SegPath(points, SegTopology([
+                    list(range(points.shape[1] - 1)),
+                    list(range(1, points.shape[1]))]))
+                tolerance = tolerance_of(mesh)
+                (got_points, got_segments, got_triangles) = path_crossings(
+                    path, mesh)
+                want = set()
+                for i in range(path.topo.indices.shape[1]):
+                    a = path.coords[:, path.topo.indices[0, i]][:, None]
+                    b = path.coords[:, path.topo.indices[1, i]][:, None]
+                    for j in range(mesh.topo.simplex_count[2]):
+                        c = mesh.coords[:, mesh.topo.indices[:, j]]
+                        (hit, point, _) = segments_triangles_intersect(
+                            a, b, c[:, 0:1], c[:, 1:2], c[:, 2:3],
+                            tolerance=tolerance)
+                        if hit[0]:
+                            want.add((i, j, tuple(np.round(point[:, 0], 9))))
+                self.assertTrue(want, "the path does not cross the mesh")
+                mine = set()
+                for k in range(got_points.shape[1]):
+                    mine.add((int(got_segments[k]), int(got_triangles[k]),
+                              tuple(np.round(got_points[:, k], 9))))
+                self.assertEqual(mine, want)
