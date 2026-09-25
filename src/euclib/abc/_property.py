@@ -88,12 +88,21 @@ INTERP_ORDERS = (0, 1, 2, 3)
 #: use.
 INTERP_QUALITATIVE = ('nearest', 0)
 
-#: The interpolation combinations that are implemented today. A combination
-#: outside this set is recognized --- so the caller is told what is missing
-#: rather than that they misspelled something --- but raises
-#: ``NotImplementedError``. As each remaining method is built, its combinations
-#: are added here and begin to work.
+#: The interpolations that the element-wise engine implements for every element
+#: it can be asked about. A property's ``interp`` is *recognized* whatever it
+#: names, and it is a geometry that decides what it can honour: see
+#: ``supported_interp``. This is the set that applies to the elements whose
+#: higher orders have not been built, so a triangle and a tetrahedron support
+#: it as it stands, and a segment supports more.
 INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1))
+
+#: The interpolations a *segment* supports. The higher orders of the polynomial
+#: method are built one dimension at a time, and a segment's are the ones that
+#: exist: a cubic fit is exactly determined by the values and slopes at a
+#: segment's two ends, and a quadratic's one free coefficient is settled by the
+#: two slopes by least squares. Triangles and tetrahedra come next.
+INTERP_SUPPORTED_SEGMENT = (('nearest', 0), ('polynomial', 1),
+                            ('polynomial', 2), ('polynomial', 3))
 
 #: The valid extrapolation orders. Only 0 (nearest point on the object) is
 #: supported; ``None`` means "no extrapolation".
@@ -242,10 +251,10 @@ def normalize_interp(interp, vartype, /):
         raise ValueError(
             f"qualitative properties can only use {INTERP_QUALITATIVE}; found"
             f" {res}")
-    if res not in INTERP_SUPPORTED:
-        raise NotImplementedError(
-            f"the interpolation {res} is not implemented yet; supported today:"
-            f" {INTERP_SUPPORTED}")
+    # What a geometry can honour is not decided here: a property does not know
+    # what it will be attached to, and the same combination may be built for one
+    # element and not another. `supported_interp` answers for a geometry, and
+    # `check_property_interp` asks it when the property is attached.
     return res
 
 
@@ -296,6 +305,81 @@ def normalize_mask(mask, spatial_shape, /):
             f"mask shape {marr.shape} is not broadcastable to spatial shape"
             f" {tuple(spatial_shape)}") from exc
     return marr
+
+
+#: The numbers of dimensions a gradient or a hessian may be taken in. A
+#: derivative is taken with respect to a position in the space the geometry
+#: occupies, so it has as many axes as that space has dimensions. A property
+#: cannot know which of the two its geometry lives in --- the same property may
+#: be attached to a 2-D and a 3-D geometry --- so both are accepted here, and the
+#: geometry checks that the derivative is the size of its own dimension.
+DERIVATIVE_DIMS = (2, 3)
+
+
+def normalize_derivative(deriv, value, spatial_shape, order, name, /):
+    '''Normalizes a property's gradient or hessian.
+
+    A derivative is data rather than metadata: it says how a value changes away
+    from the component it belongs to, which is what a higher-order
+    interpolation fits through when the values alone do not determine the
+    polynomial.
+
+    Its shape is the value's channel dimensions, then one axis per order of
+    derivative, then the value's spatial shape --- ``(C..., D, N)`` for a
+    gradient and ``(C..., D, D, N)`` for a hessian. The derivative axes go at
+    the end of the channel block so that the spatial dimensions stay last, as
+    the ``(C..., X...)`` ordering requires, and the same value may be described
+    at every order because the channel dimensions do not move.
+
+    Parameters
+    ----------
+    deriv : array-like or None
+        The derivative to normalize. ``None`` means the property carries none.
+    value : array-like
+        The value the derivative belongs to; its shape says what channel
+        dimensions the derivative must have and where its spatial dimensions
+        begin.
+    spatial_shape : tuple of int
+        The property's spatial shape.
+    order : int
+        ``1`` for a gradient and ``2`` for a hessian.
+    name : str
+        The name of the field, for the error message.
+
+    Returns
+    -------
+    array-like or None
+        The derivative, or ``None`` when none was given.
+
+    Raises
+    ------
+    ValueError
+        If the derivative is not the shape of a derivative of that order for
+        this value.
+    '''
+    if deriv is None:
+        return None
+    n = len(spatial_shape)
+    channel = tuple(value.shape)[:len(value.shape) - n]
+    sh = tuple(deriv.shape)
+    axes = 'axis' if order == 1 else 'axes'
+
+    def wrong():
+        return ValueError(
+            f"{name} must be the shape of a derivative of order {order} for a"
+            f" value of shape {tuple(value.shape)}: the value's channel"
+            f" dimensions {channel}, then {order} {axes} of size 2 or 3, then"
+            f" its spatial shape {tuple(spatial_shape)}; found {sh}")
+
+    if len(sh) != len(channel) + order + n:
+        raise wrong()
+    dims = sh[len(channel):len(channel) + order]
+    if (sh[:len(channel)] != channel
+            or sh[len(channel) + order:] != tuple(spatial_shape)
+            or len(set(dims)) != 1
+            or dims[0] not in DERIVATIVE_DIMS):
+        raise wrong()
+    return deriv
 
 
 def normalize_null(null, dtype, value, /):
@@ -475,6 +559,16 @@ class Property(planobject):
     detach : bool, optional
         Whether to detach a PyTorch tensor's gradient when converting it to
         NumPy. The default is ``True``.
+    gradient : array-like or None, optional
+        How the value changes with position, for the interpolations that fit a
+        polynomial through more than the values alone. Its shape is
+        ``(C..., D, N)``: the value's channel dimensions, one axis of size 2 or
+        3, and the value's spatial dimensions. The default, ``None``, means the
+        property does not carry one, and a geometry that needs one estimates it
+        from the values.
+    hessian : array-like or None, optional
+        The second derivative, shaped ``(C..., D, D, N)`` in the same way. The
+        default, ``None``, means the property does not carry one.
 
     Attributes
     ----------
@@ -486,11 +580,15 @@ class Property(planobject):
         Whether the property is quantitative.
     is_masked : bool
         Whether the property has a mask.
+    gradient : array-like or None
+        The gradient, if the property carries one.
+    hessian : array-like or None
+        The hessian, if the property carries one.
     '''
 
     def __init__(self, value, spatial_shape, backend=None, vartype=None,
                  interp=UNSET, extrap=None, dtype=None, mask=None, null=UNSET,
-                 unit=None, detach=True):
+                 unit=None, detach=True, gradient=None, hessian=None):
         # Every field is assigned exactly as given; the filters below normalize
         # and validate it, and re-run whenever an input changes.
         self.value = value
@@ -504,6 +602,8 @@ class Property(planobject):
         self.null = null
         self.unit = unit
         self.detach = detach
+        self.gradient = gradient
+        self.hessian = hessian
 
     @calc('backend', lazy=False)
     def proc_backend(backend):
@@ -537,6 +637,38 @@ class Property(planobject):
             The converted value.
         '''
         return convert_value(value, backend, dtype, detach)
+
+    @calc('gradient', lazy=False)
+    def proc_gradient(gradient, value, spatial_shape, backend, dtype, detach):
+        '''Validates the property's gradient, if it has one.
+
+        Returns
+        -------
+        gradient : array-like or None
+            The gradient, converted to the property's backend and dtype, or
+            ``None`` when the property carries none.
+        '''
+        if gradient is None:
+            return None
+        return normalize_derivative(
+            convert_value(gradient, backend, dtype, detach),
+            value, spatial_shape, 1, 'gradient')
+
+    @calc('hessian', lazy=False)
+    def proc_hessian(hessian, value, spatial_shape, backend, dtype, detach):
+        '''Validates the property's hessian, if it has one.
+
+        Returns
+        -------
+        hessian : array-like or None
+            The hessian, converted to the property's backend and dtype, or
+            ``None`` when the property carries none.
+        '''
+        if hessian is None:
+            return None
+        return normalize_derivative(
+            convert_value(hessian, backend, dtype, detach),
+            value, spatial_shape, 2, 'hessian')
 
     @calc('vartype', lazy=False)
     def proc_vartype(vartype, value):

@@ -332,22 +332,27 @@ class TestPropertyMetadata(TestCase):
 
     def test_interpolation_orders_are_recognized(self):
         # README 334-338: 'None, 0, 1, 2, and 3' for no interpolation through
-        # cubic. Orders 0 and 1 work; 2 and 3 are recognized and refuse to run,
-        # which is what INTERP_SUPPORTED records. An order outside the range is
-        # a different error, because it is a mistake rather than a gap.
+        # cubic. Every one of them is *recognized* here. What is built is not a
+        # property's business --- it does not know what it will be attached to,
+        # and the same combination may be built for one element and not another
+        # --- so a geometry is what refuses one it cannot honour, and it does so
+        # when the property is attached.
         self.assertEqual(Property(np.ones(4), (4,), interp=0).interp,
                          ('nearest', 0))
         self.assertEqual(Property(np.ones(4), (4,), interp=1).interp,
                          ('polynomial', 1))
         for order in (2, 3):
             with self.subTest(order=order):
+                self.assertEqual(
+                    Property(np.ones(4), (4,), interp=order).interp,
+                    ('polynomial', order))
+        # An order outside the range, or a method euclib does not define, is a
+        # mistake rather than a gap, and is a `ValueError`.
+        for bad in (5, 'cubic-spline'):
+            with self.subTest(bad=bad):
                 self.assertIsInstance(
-                    _innermost(lambda: Property(np.ones(4), (4,),
-                                                interp=order)),
-                    NotImplementedError)
-        self.assertIsInstance(
-            _innermost(lambda: Property(np.ones(4), (4,), interp=5)),
-            ValueError)
+                    _innermost(lambda: Property(np.ones(4), (4,), interp=bad)),
+                    ValueError)
 
     def test_the_default_interpolation_is_the_one_the_readme_promises(self):
         # README 339-341 says Ellipsis means nearest-neighbor for a

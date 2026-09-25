@@ -41,7 +41,8 @@ from ._core import MetaObject, calc, normalize_backend, plantypeABC
 from ..utils import (
     SpatialTree, content_hash, simplex_boxes, values_equal, simplex_measures)
 from ._property import (
-    INTERP_QUALITATIVE, INTERP_SUPPORTED, Property, UNSET, is_property)
+    INTERP_QUALITATIVE, INTERP_SUPPORTED, INTERP_SUPPORTED_SEGMENT, Property,
+    UNSET, is_property)
 from ._topo import Topology, SimplexTopology
 
 
@@ -93,6 +94,13 @@ def supported_interp(topo, /):
     no position *within* the cloud at which a value could be interpolated, and
     the only thing its local coordinate can say is which point is nearest.
 
+    Otherwise the answer depends on the *element*, because the higher-order
+    polynomial fits are built one dimension at a time. A segment is the first:
+    a cubic through it is exactly determined by the values and slopes at its two
+    ends, and a quadratic's free coefficient follows from the same slopes by
+    least squares. A triangle and a tetrahedron support the element-wise
+    methods that every element has, until their own higher orders are built.
+
     Parameters
     ----------
     topo : Topology
@@ -103,8 +111,11 @@ def supported_interp(topo, /):
     tuple of (str, int)
         The interpolation method and order pairs that are valid.
     '''
-    if getattr(topo, 'order', None) == 0:
+    order = getattr(topo, 'order', None)
+    if order == 0:
         return (INTERP_QUALITATIVE,)
+    if order == 1:
+        return INTERP_SUPPORTED_SEGMENT
     return INTERP_SUPPORTED
 
 
@@ -724,7 +735,8 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         props.update(changes)
         return self._install_props(order, props)
 
-    def withprop(self, name=UNSET, values=UNSET, **meta):
+    def withprop(self, name=UNSET, values=UNSET, gradient=None, hessian=None,
+                 **meta):
         '''Returns a copy of the object with a property added or altered.
 
         Given values, the property is created (or replaced) with the supplied
@@ -738,6 +750,12 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         metadata will be read as metadata, and the metadata keywords are not
         where a value goes.
 
+        A gradient or a hessian is data rather than metadata, and is given as
+        its own argument. Either may be supplied with the values or on its own,
+        which is what attaches derivative data to a property that already has
+        values: the interpolation methods above linear need it, and estimate it
+        from the values when it is absent.
+
         Parameters
         ----------
         name : hashable or tuple
@@ -745,6 +763,14 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         values : array-like or Ellipsis, optional
             The property's new values. The default, ``Ellipsis``, keeps the
             existing values and updates only the metadata.
+        gradient : array-like or None, optional
+            The gradient of the values, shaped ``(C..., D, N)``. The default,
+            ``None``, attaches none: a property's derivative data describes its
+            values, so replacing the values replaces the derivatives with them,
+            and a fit that needs one and is given none estimates it.
+        hessian : array-like or None, optional
+            The hessian of the values, shaped ``(C..., D, D, N)``, on the same
+            terms.
         **meta
             Metadata for the property, named as in ``Property``.
 
@@ -777,9 +803,18 @@ class Geometry(MetaObject, metaclass=plantypeABC):
                 raise KeyError(
                     f"cannot update the metadata of {pname!r}: no such"
                     f" property; supply values to create it.{hint}")
-            new = existing.withmeta(**meta)
+            changes = dict(meta)
+            if gradient is not None:
+                changes['gradient'] = gradient
+            if hessian is not None:
+                changes['hessian'] = hessian
+            # `copy` rather than `withmeta`, because a gradient is data and
+            # `withmeta` accepts only metadata fields. Both validate what they
+            # are given the same way.
+            new = existing.copy(**changes) if changes else existing
         else:
-            new = Property(values, self._prop_spatial_shape(order), **meta)
+            new = Property(values, self._prop_spatial_shape(order),
+                           gradient=gradient, hessian=hessian, **meta)
         return self.copy(**self._props_updated(order, {pname: new}))
 
     def dropprop(self, name=UNSET, error=False):

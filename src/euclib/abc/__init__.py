@@ -31,12 +31,14 @@ from ._geom import (
     Geometry, SimplexGeometry,
     is_geometry, is_simplex_geometry,
     normalize_properties, split_property_name,
-    as_coords, COORD_NAMES, as_query, check_coordinfo)
+    supported_interp, as_coords, COORD_NAMES, as_query,
+    check_coordinfo)
 from ._property import (
     Property,
     is_property,
     QUANTITATIVE, QUALITATIVE, VARTYPES,
     INTERP_METHODS, INTERP_ORDERS, INTERP_QUALITATIVE, INTERP_SUPPORTED,
+    INTERP_SUPPORTED_SEGMENT,
     EXTRAP_ORDERS, UNSET, default_interp,
     normalize_backend, normalize_vartype, normalize_interp, normalize_extrap,
     normalize_dtype, normalize_null, normalize_mask, normalize_unit,
@@ -52,7 +54,8 @@ __all__ = (
     'Property', 'is_property',
     'QUANTITATIVE', 'QUALITATIVE', 'VARTYPES',
     'INTERP_METHODS', 'INTERP_ORDERS', 'INTERP_QUALITATIVE',
-    'INTERP_SUPPORTED', 'EXTRAP_ORDERS', 'UNSET', 'default_interp',
+    'INTERP_SUPPORTED', 'INTERP_SUPPORTED_SEGMENT', 'EXTRAP_ORDERS',
+    'UNSET', 'default_interp',
     'normalize_backend', 'normalize_vartype', 'normalize_interp',
     'normalize_extrap', 'normalize_dtype', 'normalize_null', 'normalize_mask',
     'normalize_unit', 'convert_value',
@@ -64,4 +67,5 @@ __all__ = (
     'Geometry', 'SimplexGeometry',
     'is_geometry', 'is_simplex_geometry',
     'normalize_properties', 'split_property_name',
-    'as_coords', 'COORD_NAMES', 'as_query', 'check_coordinfo')
+    'supported_interp', 'as_coords', 'COORD_NAMES', 'as_query',
+    'check_coordinfo')

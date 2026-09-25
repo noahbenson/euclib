@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from unittest import TestCase
 
-from numpy import allclose, arange, array, eye, isnan, nan, zeros
+from numpy import (allclose, arange, array, asarray, eye, isfinite,
+                   isnan, nan, zeros)
 
 from euclib.types import (
     Grid, GridTopology, SegPath, SegTopology, TriMesh, TriTopology, VertexSet,
@@ -207,10 +208,169 @@ class TestGridInterpolation(TestCase):
 class TestUnimplementedOrders(TestCase):
     '''Orders 2 and 3 are refused rather than approximated.'''
 
-    def test_a_higher_order_raises(self):
+    def test_a_higher_order_is_built_for_a_segment(self):
+        # The polynomial method's higher orders are built one element at a time
+        # and a segment's are done, so a path interpolates quadratically and
+        # cubically; see TestSegmentPolynomial for what they compute.
         for order in (2, 3):
-            with self.assertRaises(NotImplementedError):
-                _path().prop('t', at=array([[0.5], [0.]]), interp=order)
+            with self.subTest(order=order):
+                self.assertTrue(
+                    isfinite(float(_path().prop('t', at=array([[0.5], [0.]]),
+                                                interp=order)[0])))
+
+    def test_a_higher_order_is_not_built_for_a_triangle_yet(self):
+        mesh = TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
+                       TriTopology([[0], [1], [2]])).withprop(
+                           't', array([1., 2., 3.]))
+        for order in (2, 3):
+            with self.subTest(order=order):
+                with self.assertRaises(NotImplementedError):
+                    mesh.prop('t', at=array([[0.25], [0.25]]), interp=order)
+
+
+class TestSegmentPolynomial(TestCase):
+    '''The polynomial method above linear, which a segment is the first to have.
+
+    A segment's two values cannot determine a quadratic or a cubic: two
+    conditions against three or four coefficients. The slopes at the ends supply
+    the rest, and they come from the property when it carries them and are
+    estimated from the values when it does not. The values themselves are always
+    interpolated, so the field stays continuous where two segments meet.
+    '''
+
+    #: The three nodes of a path along the x axis, and the values that an
+    #: analytic field takes there.
+    COORDS = array([[0., 1., 2.], [0., 0., 0.]])
+
+    def _path(self, values, gradient=None):
+        '''A one-segment path from x=0 to x=1 carrying ``values``.'''
+        path = SegPath(self.COORDS[:, :2], SegTopology([[0], [1]]))
+        return path.withprop('t', values[:2], gradient=gradient)
+
+    def _path3(self, values, gradient=None):
+        '''A two-segment path over all three nodes.'''
+        path = SegPath(self.COORDS, SegTopology([[0, 1], [1, 2]]))
+        return path.withprop('t', values, gradient=gradient)
+
+    def _at(self, path, x, order, y=0., **kw):
+        return float(asarray(path.prop('t', at=array([[x], [y]]),
+                                       interp=order, **kw))[0])
+
+    def test_order_three_reproduces_a_cubic_from_supplied_slopes(self):
+        # f(x) = x^3 on the nodes, with its exact derivative. A cubic has four
+        # coefficients and value and slope at each end are four conditions, so
+        # the fit is exact between them.
+        values = array([0., 1.])
+        gradient = array([[0., 3.], [0., 0.]])          # d/dx, d/dy
+        path = self._path(values, gradient)
+        for x in (0.25, 0.5, 0.75):
+            with self.subTest(x=x):
+                self.assertAlmostEqual(self._at(path, x, 3), x ** 3, places=12)
+
+    def test_order_two_reproduces_a_quadratic_from_supplied_slopes(self):
+        # f(x) = x^2, whose slopes are 0 and 2: the quadratic's free coefficient
+        # is settled by them exactly, because the requested slopes straddle the
+        # segment's own average slope by equal amounts.
+        values = array([0., 1.])
+        gradient = array([[0., 2.], [0., 0.]])
+        path = self._path(values, gradient)
+        for x in (0.25, 0.5, 0.75):
+            with self.subTest(x=x):
+                self.assertAlmostEqual(self._at(path, x, 2), x ** 2, places=12)
+
+    def test_the_fit_passes_through_the_node_values(self):
+        # The values are interpolated rather than merely fitted, whatever the
+        # slopes say: this is what keeps the field continuous at a shared node,
+        # where the two segments on either side must agree.
+        path = self._path3(array([2., 5., 11.]))
+        for order in (2, 3):
+            with self.subTest(order=order):
+                for (node, x) in ((0, 0.), (1, 1.), (2, 2.)):
+                    self.assertAlmostEqual(
+                        self._at(path, x, order), (2., 5., 11.)[node],
+                        places=12)
+
+    def test_the_estimate_reproduces_the_polynomial(self):
+        # The stencil grows until it can determine a polynomial of the
+        # interpolation's own order, so an estimate from values alone reproduces
+        # a field of that order exactly --- on the end segments as much as the
+        # interior ones. A one-ring estimate could not: it would be one-sided at
+        # an end node and read 0.375 where x^2 is 0.25.
+        path = self._path3(array([0., 1., 4.]))                # f(x) = x^2
+        for order in (2, 3):
+            with self.subTest(order=order):
+                for x in (0.25, 0.5, 1.0, 1.5, 1.75):
+                    self.assertAlmostEqual(self._at(path, x, order), x ** 2,
+                                           places=12)
+
+    def test_the_estimate_reproduces_a_cubic_when_the_order_needs_one(self):
+        # A cubic fit needs slopes that come from a cubic estimate, which takes
+        # four nodes; the stencil reaches that far on a four-node path.
+        coords = array([[0., 1., 2., 3.], [0., 0., 0., 0.]])
+        path = SegPath(coords, SegTopology([[0, 1, 2], [1, 2, 3]]))
+        path = path.withprop('t', array([0., 1., 8., 27.]))    # f(x) = x^3
+        for x in (0.25, 1.5, 2.75):
+            self.assertAlmostEqual(self._at(path, x, 3), x ** 3, places=12)
+
+    def test_the_gradient_components_come_back_in_axis_order(self):
+        # The linear monomials are not ordered by axis, so picking the gradient
+        # out of them has to be: getting it wrong transposes the components, and
+        # a fit along a diagonal is where that shows.
+        coords = array([[0., 1., 2., 3.], [0., 1., 2., 3.]])
+        path = SegPath(coords, SegTopology([[0, 1, 2], [1, 2, 3]]))
+        path = path.withprop('t', array([0., 2., 8., 18.]))   # 2 t^2 on t = x = y
+        for t in (0.75, 1.5, 2.5):
+            with self.subTest(t=t):
+                self.assertAlmostEqual(self._at(path, t, 2, y=t), 2 * t * t,
+                                       places=12)
+
+    def test_a_geometry_with_too_few_nodes_still_answers(self):
+        # The stencil cannot outgrow the geometry. With three nodes no estimate
+        # can know what a cubic was, and the answer is the shortest fit through
+        # the values there are; a field of an order the data *can* determine is
+        # still reproduced.
+        path = self._path3(array([0., 1., 2.]))                # a straight line
+        for x in (0.5, 1.5):
+            with self.subTest(x=x):
+                self.assertAlmostEqual(self._at(path, x, 3), x, places=12)
+
+    def test_a_supplied_gradient_is_used_instead_of_the_property_s(self):
+        # f(x) = x^2 on three nodes. The estimate reproduces it, so asking with
+        # the exact slopes changes nothing; asking with wrong ones changes the
+        # answer, which is what shows the argument is the one that is used.
+        path = self._path3(array([0., 1., 4.]))
+        exact = array([[0., 2., 4.], [0., 0., 0.]])
+        self.assertAlmostEqual(self._at(path, 0.5, 2), 0.25, places=12)
+        self.assertAlmostEqual(self._at(path, 0.5, 2, gradient=exact), 0.25,
+                               places=12)
+        # Zero slopes leave the straight line the values anchor, which reads
+        # 0.5 at the midpoint rather than 0.25.
+        self.assertAlmostEqual(self._at(path, 0.5, 2, gradient=zeros((2, 3))),
+                               0.5, places=12)
+        # ...and the property is unchanged by the call.
+        self.assertAlmostEqual(self._at(path, 0.5, 2), 0.25, places=12)
+
+    def test_a_gradient_of_the_wrong_dimension_is_refused(self):
+        path = self._path(array([0., 1.]))
+        with self.assertRaises(ValueError):
+            self._at(path, 0.5, 3, gradient=zeros((3, 2)))
+
+    def test_a_mask_poisons_the_segments_that_draw_on_it(self):
+        # A fit draws on both of its corners' values and slopes, so a masked
+        # node makes every segment that touches it answer with the null value.
+        # That is wider than linear interpolation's reach and it is allowed:
+        # the rule is that a position nearest a masked node must be null, not
+        # that nothing else may be.
+        path = SegPath(self.COORDS, SegTopology([[0, 1], [1, 2]]))
+        path = path.withprop('t', array([0., 1., 4.]),
+                             mask=array([False, True, False]))
+        self.assertTrue(isnan(self._at(path, 0.5, 2)))
+        self.assertTrue(isnan(self._at(path, 1.5, 2)))
+        # A node nothing masks still answers.
+        path = path.withprop('t', array([0., 1., 4.]),
+                             mask=array([False, False, True]))
+        self.assertFalse(isnan(self._at(path, 0.5, 2)))
+        self.assertTrue(isnan(self._at(path, 1.5, 2)))
 
 
 class TestPointCloudInterpolation(TestCase):

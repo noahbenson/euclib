@@ -9,8 +9,24 @@ from __future__ import annotations
 
 from unittest import TestCase, skipUnless
 
-from numpy import array, dtype as npdtype, isnan, ones, zeros
+from numpy import allclose, array, dtype as npdtype, isnan, ones, zeros
 from immlib.workflow import PlanError
+
+def _innermost(call, /):
+    '''Returns the innermost exception a call raises, or ``None``.
+
+    A property's fields are validated by ``calc``s, and ``immlib`` reports a
+    failure in one of those as a ``PlanError`` that wraps the error the caller
+    caused. The error the caller caused is the one that says what is wrong.
+    '''
+    try:
+        call()
+    except Exception as exc:
+        while exc.__cause__ is not None:
+            exc = exc.__cause__
+        return exc
+    return None
+
 
 from euclib.abc import (
     Property, is_property,
@@ -78,12 +94,21 @@ class TestNormalizers(TestCase):
         with self.assertRaises(ValueError):
             normalize_interp([1], QUANTITATIVE)
 
-    def test_normalize_interp_rejects_unsupported_combinations(self):
-        # A method that euclib defines but has not built yet.
-        with self.assertRaises(NotImplementedError):
-            normalize_interp(('bezier', 2), QUANTITATIVE)
-        with self.assertRaises(NotImplementedError):
-            normalize_interp(('clough-tocher', 3), QUANTITATIVE)
+    def test_normalize_interp_recognizes_what_is_not_built_yet(self):
+        # A method euclib defines but has not built is *recognized* here: a
+        # property does not know what it will be attached to, and the same
+        # combination may be built for one element and not another. The geometry
+        # is what refuses it, through `supported_interp`.
+        self.assertEqual(normalize_interp(('bezier', 2), QUANTITATIVE),
+                         ('bezier', 2))
+        self.assertEqual(normalize_interp(('clough-tocher', 3), QUANTITATIVE),
+                         ('clough-tocher', 3))
+        # A method euclib does not define, or an order outside the range, is a
+        # mistake rather than a gap.
+        with self.assertRaises(ValueError):
+            normalize_interp(('cubic-spline', 2), QUANTITATIVE)
+        with self.assertRaises(ValueError):
+            normalize_interp(('polynomial', 4), QUANTITATIVE)
         # 'nearest' is only meaningful at order 0.
         with self.assertRaises(ValueError):
             normalize_interp(('nearest', 1), QUANTITATIVE)
@@ -295,8 +320,66 @@ class TestProperty(TestCase):
         self.assertNotEqual(a, c)
         self.assertNotEqual(a, d)
 
+    def test_derivatives_are_optional(self):
+        # A property need not carry derivative data: the fits that need it
+        # estimate it from the values when it is absent.
+        p = Property(zeros(4), (4,))
+        self.assertIsNone(p.gradient)
+        self.assertIsNone(p.hessian)
+
+    def test_derivative_shapes_are_checked_against_the_value(self):
+        # A gradient is (C..., D, N) and a hessian (C..., D, D, N): the value's
+        # channel dimensions, one axis per order of derivative, then the value's
+        # spatial dimensions.
+        p = Property(zeros(4), (4,), gradient=zeros((2, 4)),
+                     hessian=zeros((2, 2, 4)))
+        self.assertEqual(tuple(p.gradient.shape), (2, 4))
+        self.assertEqual(tuple(p.hessian.shape), (2, 2, 4))
+        # Channel dimensions have to agree with the value's.
+        channelled = Property(zeros((3, 4)), (4,), gradient=zeros((3, 2, 4)))
+        self.assertEqual(tuple(channelled.gradient.shape), (3, 2, 4))
+        for bad in (zeros((4, 4)),         # a dimension of 4 is neither 2 nor 3
+                    zeros((2, 3)),         # the spatial shape is (4,), not (3,)
+                    zeros((2,)),           # a gradient has an axis per order
+                    zeros((2, 2, 3, 4))):  # one too many
+            with self.subTest(shape=bad.shape):
+                self.assertIsInstance(
+                    _innermost(lambda: Property(zeros(4), (4,),
+                                                gradient=bad)), ValueError)
+        # A hessian's two derivative axes must be the same size.
+        self.assertIsInstance(
+            _innermost(lambda: Property(zeros(4), (4,),
+                                        hessian=zeros((2, 3, 4)))), ValueError)
+        # ...and a gradient for a channelled value must have its channels.
+        self.assertIsInstance(
+            _innermost(lambda: Property(zeros((3, 4)), (4,),
+                                        gradient=zeros((2, 2, 4)))), ValueError)
+
+    def test_withprop_attaches_a_gradient_and_replaces_it(self):
+        # A path, because a metadata-only update to ``interp=1`` below is one
+        # that a path can honour: a point cloud has no interior to interpolate
+        # in, and refuses even linear interpolation when it is asked for.
+        from euclib.types import SegPath, SegTopology
+        cloud = SegPath(zeros((2, 4)), SegTopology([[0, 1, 2], [1, 2, 3]]))
+        c = cloud.withprop('a', zeros(4), gradient=zeros((2, 4)))
+        self.assertEqual(tuple(c.propinfo('a').gradient.shape), (2, 4))
+        # A gradient may be given on its own, which leaves the values alone.
+        c2 = c.withprop('a', gradient=ones((2, 4)))
+        self.assertEqual(c2['a'].tolist(), c['a'].tolist())
+        self.assertTrue(allclose(c2.propinfo('a').gradient, ones((2, 4))))
+        # Giving values without a gradient drops it: derivative data describes
+        # the values, so replacing them replaces it, and a fit that needs one
+        # estimates it from the new values.
+        c3 = c.withprop('a', ones(4))
+        self.assertIsNone(c3.propinfo('a').gradient)
+        # A metadata-only update, though, leaves the gradient alone.
+        c4 = c.withprop('a', interp=1)
+        self.assertTrue(allclose(c4.propinfo('a').gradient, zeros((2, 4))))
+        # The original is untouched throughout.
+        self.assertTrue(allclose(c.propinfo('a').gradient, zeros((2, 4))))
+
     def test_plan_inputs_are_the_constructor_arguments(self):
         self.assertEqual(
             set(Property.plan.inputs),
             {'value', 'spatial_shape', 'backend', 'vartype', 'interp', 'extrap',
-             'dtype', 'mask', 'null', 'unit', 'detach'})
+             'dtype', 'mask', 'null', 'unit', 'detach', 'gradient', 'hessian'})

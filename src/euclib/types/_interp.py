@@ -14,10 +14,11 @@ property carries metadata at all:
 
 ``interp``
     How to combine the values of the components around a position. Order 0
-    takes the value of the nearest; order 1 blends them linearly by distance.
-    Orders 2 and 3 --- quadratic and cubic --- need more than one value per
-    component to be determined at all, and are not yet implemented; see the
-    note at the end of this module.
+    takes the value of the nearest; order 1 blends them linearly by distance;
+    orders 2 and 3 fit a polynomial of that degree, which needs derivative data
+    because an element's values alone do not determine it. Those fits are built
+    one element at a time: a segment's are done, and triangles, tetrahedra, and
+    the rest follow.
 ``mask``
     Which components' values are missing. A masked component poisons any blend
     that would have drawn on it, so that a value is never invented from data
@@ -39,10 +40,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from numpy import (
-    arange, asarray, concatenate, floor, ones, ravel_multi_index, where,
-    zeros)
+    arange, asarray, concatenate, einsum, floor, linalg, moveaxis, ones,
+    ravel_multi_index, sqrt, where, zeros)
 
-from ..abc import SimplexGeometry, as_coords, is_loc
+from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
     INTERP_SUPPORTED, UNSET, normalize_interp)
 from ._geom import Grid
@@ -53,6 +54,11 @@ TOLERANCE = 1e-9
 
 #: Tolerance, in cells, for a grid position that lies within the grid.
 GRID_TOLERANCE = 1e-9
+
+#: The relative size below which a direction a stencil spans counts as not
+#: spanned at all, when the gradient estimate decides how many dimensions its
+#: fit can rely on.
+_RANK_TOLERANCE = 1e-9
 
 
 # Positions ##################################################################
@@ -179,7 +185,7 @@ def _flat(x, /):
 # Interpolation ##############################################################
 
 def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
-                mask=UNSET):
+                mask=UNSET, gradient=UNSET, hessian=UNSET):
     '''Reads a property at a set of positions.
 
     Parameters
@@ -200,6 +206,14 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         own.
     mask : array-like or None, optional
         A mask, overriding the property's own.
+    gradient : array-like or None, optional
+        The gradient the fit should use, overriding any the property carries.
+        An explicit ``None``, like leaving the argument out, means the property's
+        own is not used and one is estimated from the values. Only the fits that
+        need derivative data consult it.
+    hessian : array-like or None, optional
+        The hessian, on the same terms. No method uses one yet --- the cubic
+        fit of a tetrahedron will --- so this is accepted and ignored.
 
     Returns
     -------
@@ -220,19 +234,32 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         # meaning: whatever the property asked for, a position can only be
         # answered with the value of the nearest point.
         (method, order) = ('nearest', 0)
-    if (method, order) not in INTERP_SUPPORTED:
+    supported = supported_interp(geom.topo)
+    if (method, order) not in supported:
         raise NotImplementedError(
-            f"the interpolation ({method!r}, {order}) is not implemented yet;"
-            f" supported today: {INTERP_SUPPORTED}")
+            f"the interpolation ({method!r}, {order}) is not implemented for"
+            f" this geometry; it supports {' and '.join(map(str, supported))}")
     extrap = prop.extrap if extrap is UNSET else extrap
     null = prop.null if null is UNSET else null
     mask = prop.mask if mask is UNSET else mask
+    # The fits above linear need derivative data: a segment's values alone do
+    # not determine a quadratic or a cubic. A caller's gradient overrides the
+    # property's, and a property that carries none has one estimated from the
+    # values around the geometry.
+    fitted = None
+    if order >= 2 and geom.order == 1:
+        if gradient is not UNSET and gradient is not None:
+            fitted = asarray(gradient)
+        elif prop.gradient is not None:
+            fitted = asarray(prop.gradient)
+        else:
+            fitted = estimate_gradient(geom, prop, order)
     (loc, outside) = to_loc(geom, at)
     if isinstance(geom, Grid):
         (res, drawn) = _interp_grid(geom, prop, loc, order)
         missed = _masked_grid(mask, drawn)
     else:
-        (res, corners, drawn) = _interp_simplex(geom, prop, loc, order)
+        (res, corners, drawn) = _interp_simplex(geom, prop, loc, order, fitted)
         missed = _masked_corners(mask, corners, drawn)
     # A position outside the object has no answer unless extrapolation was
     # asked for. Extrapolation of order 0 is the value at the nearest position
@@ -255,8 +282,22 @@ def _substitute_null(res, missed, null, /):
     return res
 
 
-def _interp_simplex(geom, prop, loc, order, /):
+def _interp_simplex(geom, prop, loc, order, gradient=None, /):
     '''Interpolates a simplex geometry's property at local coordinates.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry the property belongs to.
+    prop : Property
+        The property being read.
+    loc : LocMixin
+        The local coordinates to read it at.
+    order : int
+        The order of the interpolation being asked for.
+    gradient : array-like or None, optional
+        The gradient to fit through, when one is needed and one was found. The
+        default, ``None``, means the fit has none to use.
 
     Returns
     -------
@@ -278,6 +319,11 @@ def _interp_simplex(geom, prop, loc, order, /):
         # A point has neither interior nor weights, so a local coordinate is
         # just a point index and that point's value is the whole answer.
         return (values[..., 0, :], corners, ones(corners.shape, dtype=bool))
+    if order >= 2:
+        # The higher orders are built one element at a time, and a segment's
+        # are the ones that exist.
+        return (segment_fit(geom, loc, values, corners, gradient, order),
+                corners, ones(corners.shape, dtype=bool))
     weight = asarray(loc.weight)
     # A local coordinate stores the first K barycentric weights; the last
     # corner's weight is what they leave of the unit sum.
@@ -295,6 +341,249 @@ def _interp_simplex(geom, prop, loc, order, /):
         drawn = full > 0
         res = where(drawn, values * full, zeros(1)).sum(axis=-2)
     return (res, corners, drawn)
+
+
+def segment_fit(geom, loc, values, corners, gradient, order, /):
+    '''Fits a polynomial of the given order through one segment's data.
+
+    A segment's polynomial has more coefficients than its two endpoints have
+    values, so the values alone cannot determine it: the slopes at the ends are
+    what settles the rest. The values are *interpolated* --- the fit passes
+    through them, which is what keeps the field continuous where two segments
+    meet, as linear interpolation already is --- and the slopes fill in whatever
+    freedom is left.
+
+    At order 3 that freedom is exactly filled: a cubic has four coefficients and
+    value and slope at each end are four conditions, so the fit is the classical
+    cubic Hermite and there is nothing to choose. At order 2 the cubic's four
+    conditions over-determine a quadratic's three coefficients, and the
+    remaining one is settled by least squares over the two slopes. Writing the
+    quadratic as a straight line plus a bump that vanishes at both ends,
+
+        ``p(s) = v0 + (v1 - v0) s + c s (1 - s)``,
+
+    makes the values exact whatever ``c`` is, and the least-squares answer is
+    ``c = (a - b) / 2``: the slopes it achieves are the requested ones split
+    evenly about the segment's own average slope.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry the segment belongs to.
+    loc : LocMixin
+        The local coordinates: a segment index and the weight of its first
+        corner, which is 1 at that corner and 0 at the other.
+    values : numpy.ndarray
+        A ``(C..., 2, Q)`` array of the two corners' values at each position.
+    corners : numpy.ndarray
+        The ``(2, Q)`` matrix of the corners each position draws on.
+    gradient : array-like
+        A ``(C..., D, N)`` gradient over the geometry's coordinates.
+    order : int
+        ``2`` or ``3``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The fitted values, with the property's channel dimensions and one value
+        per position.
+    '''
+    coords = asarray(geom.coords)
+    d = coords.shape[0]
+    gradient = asarray(gradient)
+    if gradient.shape[-2] != d:
+        raise ValueError(
+            f"the gradient has {gradient.shape[-2]} dimensions, but this"
+            f" geometry occupies {d} of them")
+    # The slope each corner asks for is the gradient's component along the
+    # segment, scaled by the segment's length, because the fit's parameter runs
+    # from 0 to 1 along the segment rather than over its length.
+    ends = coords[:, corners]                          # (D, 2, Q)
+    step = ends[:, 1, :] - ends[:, 0, :]               # (D, Q)
+    length = sqrt((step * step).sum(axis=0))           # (Q,)
+    unit = step / where(length > 0, length, 1.0)
+    # The gradient at each corner, projected onto the segment's direction.
+    slopes = (gradient[(Ellipsis, corners)]            # (C..., D, 2, Q)
+              * unit[:, None, :]).sum(axis=-3) * length[None, :]
+    s = 1.0 - asarray(loc.weight)[0]                   # (Q,) from corner 0 to 1
+    (v0, v1) = (values[..., 0, :], values[..., 1, :])
+    (a, b) = (slopes[..., 0, :], slopes[..., 1, :])
+    if order == 2:
+        return v0 + (v1 - v0) * s + ((a - b) / 2.0) * (s * (1.0 - s))
+    (s2, s3) = (s * s, s * s * s)
+    return ((2 * s3 - 3 * s2 + 1) * v0 + (s3 - 2 * s2 + s) * a
+            + (-2 * s3 + 3 * s2) * v1 + (s3 - s2) * b)
+
+
+def monomial_exponents(dim, order, /):
+    '''Returns the exponent of every monomial in ``dim`` variables to ``order``.
+
+    The exponents are ordered by the size of the first variable's exponent, so
+    the constant monomial comes first and the linear ones --- which are the
+    gradient --- come next, before the terms of higher degree.
+
+    Parameters
+    ----------
+    dim : int
+        The number of variables, which for a geometry is the number of
+        dimensions it occupies.
+    order : int
+        The greatest total degree to include.
+
+    Returns
+    -------
+    list of tuple of int
+        One exponent tuple per monomial, of length ``dim``, each summing to at
+        most ``order``.
+    '''
+    if dim == 1:
+        return [(power,) for power in range(order + 1)]
+    res = []
+    for power in range(order + 1):
+        for tail in monomial_exponents(dim - 1, order - power):
+            res.append((power,) + tail)
+    return res
+
+
+def _neighbours(edges, count, /):
+    '''Returns each coordinate's neighbours in a geometry's edge matrix.'''
+    res = [set() for _ in range(count)]
+    for (a, b) in zip(edges[0], edges[1]):
+        (a, b) = (int(a), int(b))
+        if a != b:
+            res[a].add(b)
+            res[b].add(a)
+    return res
+
+
+def _stencil(neighbours, node, wanted, /):
+    '''Returns the nodes within a growing graph distance of one node.
+
+    The distance grows until the stencil holds ``wanted`` nodes or the geometry
+    runs out of them, so that a node with few neighbours is estimated from a
+    wider set than its immediate ring rather than from too little data.
+
+    Parameters
+    ----------
+    neighbours : sequence of set
+        One set of neighbours per node.
+    node : int
+        The node whose stencil is wanted.
+    wanted : int
+        How many nodes the stencil should hold if the geometry has them.
+
+    Returns
+    -------
+    list of int
+        The stencil's nodes, sorted, so that the fit through them is the same
+        every time.
+    '''
+    seen = {node}
+    frontier = [node]
+    while len(seen) < wanted and frontier:
+        following = []
+        for j in frontier:
+            for k in neighbours[j]:
+                if k not in seen:
+                    seen.add(k)
+                    following.append(k)
+        frontier = following
+    return sorted(seen)
+
+
+def estimate_gradient(geom, prop, order, /):
+    '''Estimates each coordinate's gradient from the values around it.
+
+    A property need not carry derivative data, and a fit above linear needs it.
+    When it does not, it comes from here: a least-squares fit of a polynomial of
+    the interpolation's own order through each coordinate's neighbourhood,
+    whose linear coefficients are that coordinate's gradient.
+
+    **The estimate reproduces the polynomial.** The neighbourhood is every
+    coordinate within a graph distance of the one being estimated, and the
+    distance grows until the stencil holds at least as many coordinates as a
+    polynomial of that order has coefficients. A value that a polynomial of the
+    order could have produced therefore gives back that polynomial's own
+    derivative, and the fit that uses it reproduces the polynomial exactly ---
+    which is the point: the two ways of getting derivative data, supplied and
+    estimated, should agree on the fields that the fit is meant to represent.
+
+    Two limits are worth knowing. A geometry with fewer coordinates within reach
+    than the order needs cannot say what the polynomial was, and the estimate is
+    then the shortest one that fits what there is --- the same graceful answer as
+    a node whose neighbours leave a direction unmeasured, such as the nodes of a
+    straight path, which say nothing about the gradient across it. And the
+    stencil's size is fixed by the order rather than offered to the caller;
+    a future version may expose it.
+
+    A masked value is estimated like any other, and poisons the fit that uses it,
+    which is the rule for the engine as a whole.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry the property belongs to.
+    prop : Property
+        The property to estimate a gradient for.
+    order : int
+        The order of the interpolation that needs the gradient, which is also
+        the degree of the polynomial the estimate reproduces.
+
+    Returns
+    -------
+    numpy.ndarray
+        A ``(C..., D, N)`` gradient: the value's channel dimensions, the ``D``
+        dimensions of the space, and one gradient per coordinate.
+    '''
+    coords = asarray(geom.coords)
+    values = asarray(prop.value)
+    (dim, count) = (coords.shape[0], coords.shape[1])
+    powers = monomial_exponents(dim, order)
+    neighbours = _neighbours(asarray(geom.topo.simplices[1]), count)
+    res = zeros(tuple(values.shape[:-1]) + (dim, count))
+    for i in range(count):
+        stencil = _stencil(neighbours, i, len(powers))
+        # The displacement of each stencil node from the one being estimated,
+        # which is what the polynomial is written in terms of.
+        step = (coords[:, stencil] - coords[:, i:i + 1]).T        # (M, D)
+        # How many dimensions the stencil actually spans. A path's nodes lie on
+        # a line *whatever* it is placed in --- a diagonal path in the plane no
+        # less than an axis-aligned one --- so a fit of the line's own dimension
+        # is determined where a fit of the plane's is not. The frame's columns
+        # are the directions the stencil measures; the rest count for nothing,
+        # which is the same as treating them as flat.
+        (_, sizes, frame) = linalg.svd(step, full_matrices=False)
+        room = (sizes > _RANK_TOLERANCE * sizes[0]).sum() if sizes.size else 0
+        room = max(room, 1)
+        # Fit the highest degree those dimensions can determine, up to the order
+        # asked for: the stencil cannot outgrow the geometry either, and
+        # reproducing a lower-order polynomial exactly is better than
+        # reproducing none.
+        degree = order
+        while degree > 1 and \
+                len(monomial_exponents(room, degree)) > len(stencil):
+            degree -= 1
+        basis = monomial_exponents(room, degree)
+        # The gradient's components are the coefficients of the linear
+        # monomials, taken one axis at a time: the monomials are ordered by
+        # their exponents rather than by axis, so they have to be picked out in
+        # the axes' own order or the components come back transposed.
+        linear = [basis.index(tuple(1 if b == a else 0 for b in range(room)))
+                  for a in range(room)]
+        exponents = asarray(basis)
+        # `frame`'s rows are the directions the stencil spans; taking its
+        # columns would project onto the wrong ones.
+        local = step @ frame[:room].T                             # (M, room)
+        design = (local[:, None, :] ** exponents[None, :, :]).prod(axis=-1)
+        # The values of the stencil, one row per node and the channels after, so
+        # that one solve answers for every channel at once.
+        rhs = moveaxis(values[..., stencil], -1, 0)               # (M, C...)
+        coeffs = linalg.lstsq(design, rhs)[0]                     # (W, C...)
+        # The gradient the fit found is in the stencil's frame; the caller wants
+        # it in the geometry's own axes.
+        hull = moveaxis(coeffs[linear], 0, -1) @ frame[:room]      # (C..., D)
+        res[..., :, i] = hull
+    return res
 
 
 def _interp_grid(geom, prop, loc, order, /):
