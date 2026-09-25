@@ -712,23 +712,40 @@ def estimate_gradient(geom, prop, order, /):
         # number more than the monomials of an order and still not span them, so
         # the test is the rank of the fit's design matrix, not its row count.
         stencil = [i]
+        settled = False
         while True:
-            (step, frame, room) = _stencil_frame(coords, stencil, i)
-            (basis, linear, design) = _monomial_design(step, frame, room, order)
-            if (len(basis) <= len(stencil)
-                    and linalg.matrix_rank(design) == len(basis)):
-                break
+            # A polynomial of the order has at least ``order + 1`` monomials
+            # whatever it spans --- one direction gives its degree plus one --- so
+            # a stencil smaller than that cannot determine one however it is
+            # placed, and neither the frame nor the rank has to be found to know
+            # it. Most of the frame's work is skipped this way, since the first
+            # stencil that passes this test is usually the one that settles.
+            taken = None
+            if len(stencil) >= order + 1:
+                taken = _stencil_frame(coords, stencil, i)
+                (step, frame, room) = taken
+                (basis, linear, design) = _monomial_design(step, frame, room,
+                                                           order)
+                settled = (len(basis) <= len(stencil)
+                           and linalg.matrix_rank(design) == len(basis))
+                if settled:
+                    break
             wider = _stencil(neighbours, i, len(stencil) + 1)
             if len(wider) == len(stencil):
                 # The whole neighbourhood is here and the order asked for is
                 # still not determined by it; fit the highest degree that is.
+                if taken is None:
+                    (step, frame, room) = _stencil_frame(coords, stencil, i)
+                    (basis, linear, design) = _monomial_design(
+                        step, frame, room, order)
                 break
             stencil = wider
         degree = order
-        while degree > 1 and (len(basis) > len(stencil)
-                              or linalg.matrix_rank(design) < len(basis)):
+        while degree > 1 and not settled:
             degree -= 1
             (basis, linear, design) = _monomial_design(step, frame, room, degree)
+            settled = (len(basis) <= len(stencil)
+                       and linalg.matrix_rank(design) == len(basis))
         # The values of the stencil, one row per node and the channels after, so
         # that one solve answers for every channel at once.
         rhs = moveaxis(values[..., stencil], -1, 0)               # (M, C...)
