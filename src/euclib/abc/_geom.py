@@ -1070,7 +1070,7 @@ class SimplexGeometry(Geometry):
         '''
         # Imported here rather than at the top of the module: the types layer is
         # built on this one, so this module cannot import it at module scope.
-        from ..types._interp import _neighbours
+        from ..types._interp import _gradient_operator, _neighbours
         count = coords.shape[1]
         edges = asarray(topo.simplices[1])
         entries = {
@@ -1078,6 +1078,12 @@ class SimplexGeometry(Geometry):
             # is the same for every property.
             'neighbours': lazy(_neighbours, edges, count),
         }
+        # One gradient operator per order, and they are the whole of what an
+        # estimate costs: applying one is a sparse matrix product, so the
+        # seconds an estimate used to take per call are paid once per mesh.
+        for order in (2, 3):
+            entries[f'gradient_{order}'] = lazy(
+                _gradient_operator, coords, edges, order)
         return ldict(entries)
 
     @calc('spatial_index')

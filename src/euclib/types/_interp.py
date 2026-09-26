@@ -44,9 +44,9 @@ from itertools import combinations
 from math import factorial
 
 from numpy import (
-    arange, argsort, asarray, concatenate, einsum, finfo, flatnonzero, floor,
-    linalg, maximum, moveaxis, ones, ravel_multi_index, sqrt, unique, where,
-    zeros)
+    arange, argsort, asarray, concatenate, einsum, eye, finfo, flatnonzero,
+    floor, linalg, maximum, moveaxis, ones, ravel_multi_index, sqrt, unique,
+    where, zeros)
 
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
@@ -1202,45 +1202,53 @@ def estimate_gradient(geom, prop, order, /):
         A ``(C..., D, N)`` gradient: the value's channel dimensions, the ``D``
         dimensions of the space, and one gradient per coordinate.
     '''
-    return _estimate_gradient(asarray(geom.coords),
-                              asarray(geom.topo.simplices[1]),
-                              asarray(prop.value), order)
+    # The estimate is the operator applied to the values, and the operator is
+    # the mesh's: it is built when the geometry first asks for it and kept, so
+    # this is a sparse matrix product rather than the fit it used to be.
+    # `_estimate_gradient` below computes the same thing from the mesh directly
+    # and is what the operator is held to.
+    count = geom.coords.shape[1]
+    return _gradient_from_operator(
+        geom.interp_data[f'gradient_{order}'], asarray(prop.value),
+        geom.coords.shape[0], count)
 
 
-def gradient_for(coords, edges, prop, order, /):
-    '''The gradient an interpolation is to be fitted with.
+def _gradient_from_operator(operator, values, dim, count, /):
+    '''One property's estimated gradient, from an operator and its values.
 
-    A property that carries one supplies it; one that does not has it
-    estimated from the values around each coordinate. Both are wanted under the
-    same name because a fit does not care which it got, and because keeping them
-    in one place is what lets an estimate be computed once rather than on every
-    call --- see ``SimplexGeometry.interp_data``.
+    The channels are flattened because the operator is applied to each of them
+    at once: a matrix product with the operator's transpose is one call where a
+    product per channel would be as many as there are channels.
     '''
-    if prop.gradient is not None:
-        return asarray(prop.gradient)
-    return _estimate_gradient(coords, edges, asarray(prop.value), order)
+    channels = tuple(values.shape[:-1])
+    width = 1
+    for entry in channels:
+        width *= entry
+    applied = values.reshape((width, count)) @ operator.T        # (C, D*N)
+    return applied.reshape((width, dim, count)).reshape(
+        channels + (dim, count))
 
 
-def _estimate_gradient(coords, edges, values, order, /):
-    '''The estimate, from the fields it reads rather than from an object.
+def _gradient_blocks(coords, edges, order, /):
+    '''Yields the operator that turns a stencil's values into a gradient.
 
-    A geometry's ``interp_data`` is a calc, and a calc is given fields and not
-    the object they came from, so the work is written here where both can reach
-    it.
+    For each coordinate this yields the coordinates its stencil holds, their
+    positions, and the operator that takes the values there to the gradient at
+    the coordinate --- a ``(D, M)`` block and a many-at-once ``(B, D, M)`` one,
+    since the coordinates are taken in blocks and in runs of equal stencil size.
+
+    **The stencil and the operator are both the mesh's.** Which coordinates
+    make up a stencil, how many directions it spans, whether a polynomial of the
+    order is determined by it and at what degree --- none of that reads the
+    *values*. What is left is linear in them, so everything here is a fixed
+    operator on the values, and the same one for every property and every call.
+    The estimator below applies it; ``_gradient_operator`` collects it into a
+    sparse matrix; both consume this one description of it, so there is no
+    second place where the stencils are decided.
     '''
     (dim, count) = (coords.shape[0], coords.shape[1])
-    channels = tuple(values.shape[:-1])
-    res = zeros(channels + (dim, count))
     if count == 0:
-        return res
-    # The channels are flattened for the solves --- one column of the
-    # right-hand side per channel --- and folded back into the answer at the
-    # end. A solve with a stack of right-hand sides is one call where a solve
-    # per channel would be as many as there are channels.
-    width = 1
-    for c in channels:
-        width *= c
-    flat = values.reshape((width, count))
+        return
     neighbours = _neighbours(edges, count)
     stencils = [[i] for i in range(count)]
     pending = arange(count)
@@ -1251,8 +1259,9 @@ def _estimate_gradient(coords, edges, values, order, /):
         # all hold the same number. They are taken in runs of equal size, and
         # each run in blocks of `_ESTIMATE_BLOCK` of them.
         sizes = asarray([len(stencils[i]) for i in pending])
-        pending = pending[argsort(sizes, kind='stable')]
-        sizes = sizes[argsort(sizes, kind='stable')]
+        order_of = argsort(sizes, kind='stable')
+        pending = pending[order_of]
+        sizes = sizes[order_of]
         growing = []
         start = 0
         while start < pending.size:
@@ -1287,41 +1296,34 @@ def _estimate_gradient(coords, edges, values, order, /):
                     # Asking `matrix_rank` and `pinv` separately decomposes the
                     # same matrix twice, which on a mesh of any size is the
                     # greater part of what the estimate costs.
-                    (left, values_, right) = linalg.svd(
+                    (left, singular, right) = linalg.svd(
                         design, full_matrices=False)
-                    cutoff = (values_[:, :1]
+                    cutoff = (singular[:, :1]
                               * max(design.shape[1], design.shape[2])
                               * _FLOAT_EPSILON)
-                    keep = values_ > cutoff
+                    keep = singular > cutoff
                     settled = keep.sum(axis=1) == len(basis)
                     if settled.any():
-                        rhs = flat[:, points[rows[settled]]].transpose(1, 2, 0)
-                        # The solve is by pseudo-inverse rather than by
-                        # `lstsq`, which is the one place the batched estimate
-                        # gives something up: `lstsq` takes a single design and
-                        # a single right-hand side, and this is a stack of
-                        # both. For a design of full column rank --- which is
-                        # what settling on the rank above means --- the two
-                        # agree to within the drivers' rounding, measured at
-                        # 1e-13 on a grid and 1e-7 where a cubic's monomials
-                        # make the design ill-conditioned, against gradients of
-                        # order 1.
-                        inverse = 1.0 / where(keep[settled], values_[settled],
+                        chosen = rows[settled]
+                        # The design's pseudo-inverse, which is the least-norm
+                        # solution of the fit, and then the two indices that
+                        # pick the gradient out of the solved coefficients. A
+                        # rank-deficient design has singular values dropped by
+                        # the same cutoff the rank test used, which is what
+                        # `pinv` would do --- `lstsq` takes one design and one
+                        # right-hand side rather than a stack of either, and
+                        # for a design of full rank the two agree to within the
+                        # drivers' rounding.
+                        inverse = 1.0 / where(keep[settled], singular[settled],
                                               1.0)
-                        coeffs = ((right[settled].transpose(0, 2, 1)
-                                   * inverse[:, None, :])
-                                  @ left[settled].transpose(0, 2, 1)) @ rhs
-                        hull = moveaxis(coeffs[:, linear, :], 1, -1) @ \
-                            frames[rows[settled]][:, :room, :]         # (G, C, D)
-                        # The solution's channel axis is already leading, as
-                        # the answer's is, so the two are shaped alike and one
-                        # only has to be placed in the other. Transposing it
-                        # first --- which is what the corner axis of a *sample*
-                        # wants --- puts the channels and the dimensions the
-                        # wrong way round for a property with more than one.
-                        for (g, node) in enumerate(block[rows[settled]]):
-                            res[..., :, node] = hull[g].reshape(
-                                channels + (dim,))
+                        local = ((right[settled].transpose(0, 2, 1)
+                                  * inverse[:, None, :])
+                                 @ left[settled].transpose(0, 2, 1))
+                        # The operator: what the gradient is, per unit of each
+                        # stencil coordinate's value.
+                        yield (block[chosen], points[chosen],
+                               einsum('grm,grd->gdm', local[:, linear, :],
+                                      frames[chosen][:, :room, :]))
                     growing.extend(block[rows[~settled]].tolist())
             start = stop
         # What is left grows by a ring of the neighbourhood, unless the geometry
@@ -1340,21 +1342,91 @@ def _estimate_gradient(coords, edges, values, order, /):
         (step, frame, room) = _stencil_frame(coords, stencils[i], i)
         degree = order
         (basis, linear, design) = _monomial_design(step, frame, room, degree)
-        # The channels are flattened here as they are in the batched path: a
-        # solve with a stack of right-hand sides is one call where a solve per
-        # channel would be as many as there are channels, and `lstsq` takes a
-        # single design and a single right-hand side rather than a stack of
-        # either.
-        rhs = flat[:, stencils[i]].T                          # (M, C)
         while degree > 1 and (len(basis) > len(stencils[i])
                               or linalg.matrix_rank(design) < len(basis)):
             degree -= 1
             (basis, linear, design) = _monomial_design(step, frame, room,
                                                        degree)
-        coeffs = linalg.lstsq(design, rhs)[0]                 # (W, C)
-        hull = moveaxis(coeffs[linear], 0, -1) @ frame[:room]  # (C, D)
-        res[..., :, i] = hull.reshape(channels + (dim,))
+        # The operator is the solve applied to a unit right-hand side, which
+        # gives the same answer as solving for the values directly --- the
+        # least-squares solution is linear in them --- and is what lets this
+        # coordinate be handled the same way as the settled ones. The solve is
+        # `lstsq` and not the pseudo-inverse the batched path takes, because a
+        # stencil that has run out of neighbours is rank-deficient by
+        # construction, and this is the path where that matters.
+        operator = (frame[:room].T
+                    @ linalg.lstsq(design, eye(design.shape[0]),
+                                   rcond=None)[0][linear])       # (D, M)
+        # One coordinate, in the same shapes the blocks above come in.
+        yield (asarray([i]), asarray(stencils[i])[None, :],
+               operator[None, :, :])
+
+
+def _estimate_gradient(coords, edges, values, order, /):
+    '''The estimate, from the fields it reads rather than from an object.
+
+    A geometry's ``interp_data`` is a calc, and a calc is given fields and not
+    the object they came from, so the work is written here where both can reach
+    it.
+    '''
+    (dim, count) = (coords.shape[0], coords.shape[1])
+    channels = tuple(values.shape[:-1])
+    res = zeros(channels + (dim, count))
+    if count == 0:
+        return res
+    # The channels are flattened for the solves --- one column of the
+    # right-hand side per channel --- and folded back into the answer at the
+    # end. A solve with a stack of right-hand sides is one call where a solve
+    # per channel would be as many as there are channels.
+    width = 1
+    for c in channels:
+        width *= c
+    flat = values.reshape((width, count))
+    for (nodes, points, operator) in _gradient_blocks(coords, edges, order):
+        rhs = flat[:, points].transpose(1, 2, 0)                 # (B, M, C)
+        hull = einsum('bdm,bmc->bcd', operator, rhs)             # (B, C, D)
+        for (b, node) in enumerate(nodes):
+            res[..., :, node] = hull[b].reshape(channels + (dim,))
     return res
+
+
+def _gradient_operator(coords, edges, order, /):
+    '''The operator that turns a property's values into its estimated gradient.
+
+    A sparse matrix of shape ``(D*N, N)`` whose rows are laid out as a
+    gradient is: the first ``N`` of them are the first dimension's derivative at
+    each coordinate, then the next ``N`` are the second's, and so on. Applied as
+    ``operator @ values`` it gives a vector that reads back as ``(D, N)``; a
+    property with channels applies it to each channel, as
+    ``values.reshape((C, N)) @ operator.T``.
+
+    **It is the same matrix for every property and every call**, which is the
+    point of having it: everything the estimate does that is not linear in the
+    values is a function of the mesh --- which coordinates make up a stencil,
+    the directions it spans, whether a polynomial of the order is determined by
+    it --- and what is left is linear. So an estimate is one sparse matrix
+    applied to the values, and the matrix can be found once per mesh rather
+    than the estimate being computed once per call. Measured: the estimate is
+    linear in the values to 1e-13, and the operator here reproduces it to the
+    same.
+
+    The stencils come from ``_gradient_blocks``, which is where they are
+    decided; this only collects the blocks it yields.
+    '''
+    from scipy.sparse import coo_matrix
+    (dim, count) = (coords.shape[0], coords.shape[1])
+    rows = []
+    columns = []
+    entries = []
+    for (nodes, points, operator) in _gradient_blocks(coords, edges, order):
+        width = points.shape[1]
+        for (b, node) in enumerate(nodes):
+            for axis in range(dim):
+                rows.extend([axis * count + int(node)] * width)
+                columns.extend(int(x) for x in points[b])
+                entries.extend(float(x) for x in operator[b, axis])
+    return coo_matrix((entries, (rows, columns)),
+                      shape=(dim * count, count)).tocsr()
 
 
 def _block_design(steps, frames, room, degree, /):

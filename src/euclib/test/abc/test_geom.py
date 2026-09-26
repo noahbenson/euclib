@@ -459,17 +459,27 @@ class TestInterpData(TestCase):
     values, and an operator is the same for every property.
     '''
 
+    #: What a geometry's own interpolation data is: the adjacency every
+    #: estimate reads, and one gradient operator per order. None of it is named
+    #: after a property, because none of it depends on one.
+    KEYS = ['neighbours', 'gradient_2', 'gradient_3']
+
     def test_it_holds_the_geometrys_data_and_nothing_else(self):
-        self.assertEqual(list(_mesh().interp_data.keys()), ['neighbours'])
+        self.assertEqual(sorted(_mesh().interp_data.keys()), sorted(self.KEYS))
 
     def test_a_property_changes_nothing_about_it(self):
         # The point of keeping property-derived data out: attach one, attach
-        # another, and the geometry's own data is what it was.
+        # another, and the geometry's own data is what it was --- neither the
+        # entries nor the operators behind them.
         mesh = _mesh()
+        before = mesh.interp_data['gradient_2']
         one = mesh.withprop('f', array([[1.0, 4.0, 9.0, 16.0]]))
         both = one.withprop('g', array([[2.0, 3.0, 5.0, 7.0]]),
                             gradient=ones((1, 2, 4)))
-        self.assertEqual(list(both.interp_data.keys()), ['neighbours'])
+        self.assertEqual(sorted(both.interp_data.keys()), sorted(self.KEYS))
+        after = both.interp_data['gradient_2']
+        self.assertEqual(before.shape, after.shape)
+        self.assertTrue(allclose(before.toarray(), after.toarray()))
 
     def test_nothing_is_computed_until_it_is_read(self):
         data = _mesh().interp_data
