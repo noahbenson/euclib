@@ -422,6 +422,9 @@ the surface is free here, and continuity of its *slope* is not.
 :::
 
 :::{seealso}
+- [Bézier interpolation on a tetrahedron](bezier-tetrahedron.md) for the same
+  construction one dimension up, where a cubic's control values also sit on the
+  faces.
 - [Interpolating a Property within a Geometry](interpolation.md) for the
   metadata that chooses an order, and for what happens outside the object.
 - [Transferring Properties between Representations](transfer.md) for what
