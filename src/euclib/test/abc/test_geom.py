@@ -452,61 +452,41 @@ class TestNameSplitting(TestCase):
 class TestInterpData(TestCase):
     '''The data interpolation needs, kept on the geometry.
 
-    Interpolating above linear needs derivatives a Property may not carry, and
-    estimating them costs more than the interpolation does. They are kept on the
-    geometry, in a dictionary whose values are computed when a method first asks
-    for one: the adjacency, which every estimate reads and which is the same for
-    every property, and a gradient per property and order.
+    It holds what is a function of the *geometry* --- the coordinates and the
+    topology --- and nothing that depends on a property's values, so that adding
+    or changing a property does not touch it and no entry has to be named after
+    one. What the methods need from a property is an operator to apply to its
+    values, and an operator is the same for every property.
     '''
 
-    def _with_a_property(self, gradient=None, name='f'):
-        mesh = _mesh()
-        values = array([[1.0, 4.0, 9.0, 16.0]])
-        return mesh.withprop(name, values, gradient=gradient)
-
-    def test_the_geometrys_own_data_is_there_without_a_property(self):
-        # The adjacency belongs to the geometry, and is there whether or not
-        # anything has been attached to it.
+    def test_it_holds_the_geometrys_data_and_nothing_else(self):
         self.assertEqual(list(_mesh().interp_data.keys()), ['neighbours'])
 
-    def test_a_property_adds_a_gradient_for_each_order(self):
-        self.assertEqual(
-            sorted(self._with_a_property().interp_data.keys()),
-            ['f:gradient:2', 'f:gradient:3', 'neighbours'])
+    def test_a_property_changes_nothing_about_it(self):
+        # The point of keeping property-derived data out: attach one, attach
+        # another, and the geometry's own data is what it was.
+        mesh = _mesh()
+        one = mesh.withprop('f', array([[1.0, 4.0, 9.0, 16.0]]))
+        both = one.withprop('g', array([[2.0, 3.0, 5.0, 7.0]]),
+                            gradient=ones((1, 2, 4)))
+        self.assertEqual(list(both.interp_data.keys()), ['neighbours'])
 
     def test_nothing_is_computed_until_it_is_read(self):
-        data = self._with_a_property(gradient=ones((1, 2, 4))).interp_data
-        for key in ('neighbours', 'f:gradient:2', 'f:gradient:3'):
-            with self.subTest(key=key):
-                self.assertFalse(data.is_ready(key))
-        data['f:gradient:2']
-        self.assertTrue(data.is_ready('f:gradient:2'))
-        # ...and reading it did not compute the others.
-        self.assertFalse(data.is_ready('f:gradient:3'))
+        data = _mesh().interp_data
+        self.assertFalse(data.is_ready('neighbours'))
+        data['neighbours']
+        self.assertTrue(data.is_ready('neighbours'))
 
-    def test_a_gradient_the_property_has_is_the_one_kept(self):
-        gradient = ones((1, 2, 4))
-        data = self._with_a_property(gradient=gradient).interp_data
-        self.assertTrue(array_equal(data['f:gradient:2'],
-                                    array(gradient)))
-        self.assertTrue(array_equal(data['f:gradient:3'],
-                                    array(gradient)))
-
-    def test_a_gradient_the_property_lacks_is_estimated(self):
-        # ...and the estimate is the one the engine computes when it is asked
-        # directly, so keeping it changes when the work happens and not what it
-        # gives.
-        from euclib.types._interp import estimate_gradient
-        mesh = self._with_a_property()
-        kept = mesh.interp_data['f:gradient:2']
-        direct = estimate_gradient(mesh, mesh._prop_for('f', None), 2)
-        self.assertTrue(allclose(kept, direct))
+    def test_the_adjacency_is_the_mesh_s(self):
+        # The mesh is the two triangles (0, 1, 2) and (0, 2, 3), so its edges
+        # are (0, 1), (1, 2), (0, 2), (2, 3) and (0, 3): vertex 0 meets all
+        # three of the others, and vertex 3 meets 0 and 2.
+        found = _mesh().interp_data['neighbours']
+        self.assertEqual(sorted(found[0]), [1, 2, 3])
+        self.assertEqual(sorted(found[3]), [0, 2])
 
     def test_the_same_dictionary_serves_every_read(self):
-        # The member is a calc, so it is computed once and the same object is
-        # returned; that is what makes the values inside it a cache rather than
-        # a computation repeated on every look.
-        mesh = self._with_a_property()
-        first = mesh.interp_data['f:gradient:2']
-        second = mesh.interp_data['f:gradient:2']
-        self.assertTrue(array_equal(first, second))
+        # The member is a calc, so it is computed once and the same object comes
+        # back; that is what makes the values inside it a cache.
+        mesh = _mesh()
+        self.assertIs(mesh.interp_data, mesh.interp_data)
