@@ -60,6 +60,7 @@ project:
             - file: examples/properties/interpolation.md
             - file: examples/properties/bezier-triangle.md
             - file: examples/properties/bezier-tetrahedron.md
+            - file: examples/properties/clough-tocher-triangle.md
             - file: examples/properties/transfer.md
             - file: examples/properties/immutability.md
         - title: Grids and Images

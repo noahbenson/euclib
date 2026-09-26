@@ -422,6 +422,9 @@ the surface is free here, and continuity of its *slope* is not.
 :::
 
 :::{seealso}
+- [Clough–Tocher interpolation on a triangle](clough-tocher-triangle.md) for the
+  scheme that splits the triangle into three so that the field's *slope* is
+  continuous across an edge and not only its value.
 - [Bézier interpolation on a tetrahedron](bezier-tetrahedron.md) for the same
   construction one dimension up, where a cubic's control values also sit on the
   faces.

@@ -410,6 +410,10 @@ and are not built yet; see the roadmap.
 :::
 
 :::{seealso}
+- [Clough–Tocher interpolation on a triangle](clough-tocher-triangle.md) for the
+  scheme that splits a triangle into three so that the field's slope is
+  continuous across an edge, which a cubic patch on the whole triangle cannot
+  give.
 - [Bézier interpolation on a triangle](bezier-triangle.md) for the derivation of
   the edge rules this page takes as given.
 - [Interpolating a Property within a Geometry](interpolation.md) for the
