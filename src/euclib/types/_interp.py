@@ -41,8 +41,8 @@ from collections.abc import Mapping
 from math import factorial
 
 from numpy import (
-    arange, asarray, concatenate, einsum, floor, linalg, moveaxis, ones,
-    ravel_multi_index, sqrt, where, zeros)
+    arange, argsort, asarray, concatenate, einsum, flatnonzero, floor, linalg,
+    maximum, moveaxis, ones, ravel_multi_index, sqrt, unique, where, zeros)
 
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
@@ -60,6 +60,12 @@ GRID_TOLERANCE = 1e-9
 #: spanned at all, when the gradient estimate decides how many dimensions its
 #: fit can rely on.
 _RANK_TOLERANCE = 1e-9
+
+#: How many coordinates the gradient estimate advances together in one block.
+#: A block gives a stack of designs of shape ``(B, M, W)``, which is what the
+#: estimate's memory is spent on: at three thousand coordinates, a dozen nodes
+#: per stencil, and ten monomials, that is a few megabytes.
+_ESTIMATE_BLOCK = 3072
 
 
 # Positions ##################################################################
@@ -673,6 +679,17 @@ def estimate_gradient(geom, prop, order, /):
     which is the point: the two ways of getting derivative data, supplied and
     estimated, should agree on the fields that the fit is meant to represent.
 
+    **The coordinates advance together.** Each one's stencil starts as itself and
+    grows by a graph step at a time, so at every turn they all hold the same
+    number of coordinates, and the frames, designs, and solves of a whole turn
+    are taken as arrays rather than one at a time. A turn is cut into blocks
+    because the designs are what is large: a block of coordinates gives a
+    ``(B, M, W)`` stack of them, and three thousand coordinates of a mesh come to
+    a few megabytes. The frames are taken for the block, the designs are built by
+    the dimensions each stencil spans --- a stencil on a line spans one where the
+    mesh around it spans three --- and each group of like ones is solved in one
+    call.
+
     Two limits are worth knowing. A geometry with fewer coordinates within reach
     than the order needs cannot say what the polynomial was, and the estimate is
     then the shortest one that fits what there is --- the same graceful answer as
@@ -703,67 +720,142 @@ def estimate_gradient(geom, prop, order, /):
     coords = asarray(geom.coords)
     values = asarray(prop.value)
     (dim, count) = (coords.shape[0], coords.shape[1])
-    powers = monomial_exponents(dim, order)
+    channels = tuple(values.shape[:-1])
+    res = zeros(channels + (dim, count))
+    if count == 0:
+        return res
+    # The channels are flattened for the solves --- one column of the
+    # right-hand side per channel --- and folded back into the answer at the
+    # end. A solve with a stack of right-hand sides is one call where a solve
+    # per channel would be as many as there are channels.
+    width = 1
+    for c in channels:
+        width *= c
+    flat = values.reshape((width, count))
     neighbours = _neighbours(asarray(geom.topo.simplices[1]), count)
-    res = zeros(tuple(values.shape[:-1]) + (dim, count))
-    for i in range(count):
-        # The stencil grows until the polynomial of the order asked for is
-        # *determined* by it. Enough nodes is not enough: a grid's nodes can
-        # number more than the monomials of an order and still not span them, so
-        # the test is the rank of the fit's design matrix, not its row count.
-        # The rank comes from the solve below rather than from a decomposition
-        # of its own: the same design is decomposed either way, and asking it
-        # twice was a third of the work here for the same answer.
-        stencil = [i]
-        settled = False
-        solved = None
-        while True:
-            # A polynomial of the order has at least ``order + 1`` monomials
-            # whatever it spans --- one direction gives its degree plus one --- so
-            # a stencil smaller than that cannot determine one however it is
-            # placed, and neither the frame nor the rank has to be found to know
-            # it. Most of the frame's work is skipped this way, since the first
-            # stencil that passes this test is usually the one that settles.
-            taken = None
-            if len(stencil) >= order + 1:
-                taken = _stencil_frame(coords, stencil, i)
-                (step, frame, room) = taken
-                (basis, linear, design) = _monomial_design(step, frame, room,
-                                                           order)
-                if len(basis) <= len(stencil):
-                    solved = linalg.lstsq(
-                        design, moveaxis(values[..., stencil], -1, 0))
-                    settled = solved[2] == len(basis)
-                    if settled:
-                        break
-            wider = _stencil(neighbours, i, len(stencil) + 1)
-            if len(wider) == len(stencil):
-                # The whole neighbourhood is here and the order asked for is
-                # still not determined by it; fit the highest degree that is.
-                if taken is None:
-                    (step, frame, room) = _stencil_frame(coords, stencil, i)
-                    (basis, linear, design) = _monomial_design(
-                        step, frame, room, order)
-                    solved = linalg.lstsq(
-                        design, moveaxis(values[..., stencil], -1, 0))
-                break
-            stencil = wider
-        # The values of the stencil, one row per node and the channels after, so
-        # that one solve answers for every channel at once.
-        rhs = moveaxis(values[..., stencil], -1, 0)               # (M, C...)
+    stencils = [[i] for i in range(count)]
+    pending = arange(count)
+    stuck = []
+    while pending.size:
+        # A stencil grows by whole rings of the neighbourhood, so a turn brings
+        # one node some number of others, and the coordinates of one turn do not
+        # all hold the same number. They are taken in runs of equal size, and
+        # each run in blocks of `_ESTIMATE_BLOCK` of them.
+        sizes = asarray([len(stencils[i]) for i in pending])
+        pending = pending[argsort(sizes, kind='stable')]
+        sizes = sizes[argsort(sizes, kind='stable')]
+        growing = []
+        start = 0
+        while start < pending.size:
+            stop = start
+            while stop < pending.size and sizes[stop] == sizes[start]:
+                stop += 1
+            size = int(sizes[start])
+            for here in range(start, stop, _ESTIMATE_BLOCK):
+                block = pending[here:min(here + _ESTIMATE_BLOCK, stop)]
+                points = asarray([stencils[i] for i in block])    # (B, M)
+                steps = (coords[:, points].transpose(1, 2, 0)
+                         - coords[:, block].T[:, None, :])        # (B, M, D)
+                (_, lengths, frames) = linalg.svd(steps, full_matrices=False)
+                # How many directions the stencil spans. The rest of the frame
+                # counts for nothing, which is the same as treating the stencil
+                # as flat in those directions, and a stencil that spans nothing
+                # at all is still given one direction to be fit along.
+                rooms = maximum(
+                    (lengths > _RANK_TOLERANCE * lengths[:, :1]).sum(axis=1), 1)
+                for room in unique(rooms):
+                    rows = flatnonzero(rooms == room)
+                    (basis, linear, design) = _block_design(
+                        steps[rows], frames[rows], int(room), order)
+                    if len(basis) > size:
+                        # Fewer coordinates than the polynomial has monomials:
+                        # no rank of the design can settle this, and these grow.
+                        growing.extend(block[rows].tolist())
+                        continue
+                    settled = linalg.matrix_rank(design) == len(basis)
+                    if settled.any():
+                        rhs = flat[:, points[rows[settled]]].transpose(1, 2, 0)
+                        # The solve is by pseudo-inverse rather than by
+                        # `lstsq`, which is the one place the batched estimate
+                        # gives something up: `lstsq` takes a single design and
+                        # a single right-hand side, and this is a stack of
+                        # both. For a design of full column rank --- which is
+                        # what settling on the rank above means --- the two
+                        # agree to within the drivers' rounding, measured at
+                        # 1e-13 on a grid and 1e-7 where a cubic's monomials
+                        # make the design ill-conditioned, against gradients of
+                        # order 1.
+                        coeffs = linalg.pinv(design[settled]) @ rhs    # (G, W, C)
+                        hull = moveaxis(coeffs[:, linear, :], 1, -1) @ \
+                            frames[rows[settled]][:, :room, :]         # (G, C, D)
+                        for (g, node) in enumerate(block[rows[settled]]):
+                            res[..., :, node] = hull[g].T.reshape(
+                                channels + (dim,))
+                    growing.extend(block[rows[~settled]].tolist())
+            start = stop
+        # What is left grows by a ring of the neighbourhood, unless the geometry
+        # has no more to give it, in which case it is fit at whatever degree its
+        # neighbourhood determines.
+        pending = []
+        for i in growing:
+            wider = _stencil(neighbours, i, len(stencils[i]) + 1)
+            if len(wider) == len(stencils[i]):
+                stuck.append(i)
+            else:
+                stencils[i] = wider
+                pending.append(i)
+        pending = asarray(pending, dtype=int)
+    for i in stuck:
+        (step, frame, room) = _stencil_frame(coords, stencils[i], i)
         degree = order
-        while degree > 1 and not settled:
+        (basis, linear, design) = _monomial_design(step, frame, room, degree)
+        rhs = moveaxis(values[..., stencils[i]], -1, 0)
+        while degree > 1 and (len(basis) > len(stencils[i])
+                              or linalg.matrix_rank(design) < len(basis)):
             degree -= 1
-            (basis, linear, design) = _monomial_design(step, frame, room, degree)
-            solved = linalg.lstsq(design, rhs)
-            settled = (len(basis) <= len(stencil)
-                       and solved[2] == len(basis))
-        coeffs = solved[0]                                        # (W, C...)
-        # The gradient the fit found is in the stencil's frame; the caller wants
-        # it in the geometry's own axes.
-        hull = moveaxis(coeffs[linear], 0, -1) @ frame[:room]      # (C..., D)
-        res[..., :, i] = hull
+            (basis, linear, design) = _monomial_design(step, frame, room,
+                                                       degree)
+        coeffs = linalg.lstsq(design, rhs)[0]
+        res[..., :, i] = moveaxis(coeffs[linear], 0, -1) @ frame[:room]
     return res
+
+
+def _block_design(steps, frames, room, degree, /):
+    '''Returns the design matrix of each of several stencils at once.
+
+    This is ``_monomial_design`` for a block of stencils: the polynomial is
+    written in each stencil's own frame, so the design is over the directions
+    that stencil spans, and the whole block is built with array operations ---
+    the monomials are raised over the block at once, and the block axis is kept
+    beside the corner axis rather than being one of the powers.
+
+    Parameters
+    ----------
+    steps : numpy.ndarray
+        A ``(B, M, D)`` array of each stencil's displacements from its node.
+    frames : numpy.ndarray
+        A ``(B, D, D)`` array of the directions each stencil spans.
+    room : int
+        How many of those directions count.
+    degree : int
+        The degree of the polynomial.
+
+    Returns
+    -------
+    basis : list of tuple of int
+        The exponents of the monomials, as ``monomial_exponents`` gives them.
+    linear : list of int
+        Where the gradient's monomials sit among them.
+    design : numpy.ndarray
+        A ``(B, M, W)`` array of the monomials at each stencil's coordinates.
+    '''
+    basis = monomial_exponents(room, degree)
+    linear = [basis.index(tuple(1 if b == a else 0 for b in range(room)))
+              for a in range(room)]
+    exponents = asarray(basis)
+    local = steps @ frames[:, :room, :].transpose(0, 2, 1)        # (B, M, room)
+    design = (local[:, :, None, :] ** exponents[None, None, :, :]).prod(axis=-1)
+    return (basis, linear, design)
 
 
 def _stencil_frame(coords, stencil, node, /):

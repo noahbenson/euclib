@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from unittest import TestCase
 
+import numpy as np
 from numpy.random import default_rng
 from numpy import (allclose, arange, array, asarray, concatenate, cos, eye,
-                   isfinite, isnan, nan, pi, sin, stack, zeros)
+                   isfinite, isnan, linspace, nan, pi, sin, stack, zeros)
 
 from euclib.types import (
     Grid, GridTopology, SegPath, SegTopology, TetMesh, TetTopology, TriMesh,
@@ -619,3 +620,75 @@ class TestPointCloudInterpolation(TestCase):
         self.assertFalse(self.cloud.propinfo('v').interp_specified)
         self.assertAlmostEqual(
             _scalar(self.cloud, 'v', array([[2.], [0.]])), 3.0)
+
+
+class TestTheBatchedEstimate(TestCase):
+    '''The gradient estimate, which takes the coordinates a block at a time.
+
+    Every coordinate's stencil grows by a ring of the neighbourhood at a time, so
+    the coordinates of one mesh are of many different sizes and the estimate
+    takes them in runs of equal size. The answers must not depend on how they are
+    grouped or how large a block is, and a fit on a mesh of two dimensions is the
+    case where the frame and the design have real work to do --- a path's stencil
+    spans one direction, and a mesh's spans two or three.
+    '''
+
+    def _grid(self, n):
+        '''A triangulated ``n`` by ``n`` grid mesh.'''
+        from euclib import trimesh
+        from euclib.types import TriTopology
+        axis = linspace(0.0, 1.0, n)
+        gridx, gridy = np.meshgrid(axis, axis)
+        points = stack([gridx.ravel(), gridy.ravel()])
+        faces = []
+        for (i, j) in np.ndindex(n - 1, n - 1):
+            (a, b) = (i * n + j, i * n + j + 1)
+            (c, d) = ((i + 1) * n + j, (i + 1) * n + j + 1)
+            faces += [[a, b, d], [a, d, c]]
+        return trimesh(points, array(faces).T)
+
+    def test_it_reproduces_a_quadratic_on_a_mesh(self):
+        # f(x, y) = x^2 + 2xy + 3y^2, whose gradient is (2x + 2y, 2x + 6y). A
+        # stencil that determines a quadratic gives back that quadratic's own
+        # derivative, whichever coordinate of the mesh it is taken at.
+        from euclib.types._interp import estimate_gradient
+        mesh = self._grid(12)
+        points = np.asarray(mesh.coords)
+        values = (points[0] ** 2 + 2.0 * points[0] * points[1]
+                  + 3.0 * points[1] ** 2)[None, :]
+        geom = mesh.withprop('f', values)
+        prop = geom._prop_for('f', None)
+        got = np.asarray(estimate_gradient(geom, prop, 2))
+        want = stack([2.0 * points[0] + 2.0 * points[1],
+                      2.0 * points[0] + 6.0 * points[1]])
+        self.assertTrue(np.allclose(got, want, atol=1e-9),
+                        f"the largest disagreement is"
+                        f" {np.abs(got - want).max():.3e}")
+        # And the interpolation built on it reproduces the field itself.
+        for (x, y) in ((0.13, 0.81), (0.5, 0.5), (0.97, 0.02)):
+            with self.subTest(x=x, y=y):
+                self.assertAlmostEqual(
+                    float(np.asarray(geom.prop(
+                        'f', at=array([[x], [y]]), interp=2)).ravel()[0]),
+                    x ** 2 + 2.0 * x * y + 3.0 * y ** 2, places=9)
+
+    def test_the_block_size_does_not_change_the_answer(self):
+        # The coordinates are taken a block at a time, and a block boundary
+        # falls wherever the count puts it. Lowering the size to two puts a
+        # boundary between nearly every pair of coordinates.
+        from euclib.types import _interp
+        from euclib.types._interp import estimate_gradient
+        mesh = self._grid(10)
+        points = np.asarray(mesh.coords)
+        values = (points[0] ** 2 + 2.0 * points[0] * points[1]
+                  + 3.0 * points[1] ** 2)[None, :]
+        geom = mesh.withprop('f', values)
+        prop = geom._prop_for('f', None)
+        want = np.asarray(estimate_gradient(geom, prop, 2))
+        saved = _interp._ESTIMATE_BLOCK
+        try:
+            _interp._ESTIMATE_BLOCK = 2
+            got = np.asarray(estimate_gradient(geom, prop, 2))
+        finally:
+            _interp._ESTIMATE_BLOCK = saved
+        self.assertTrue(np.array_equal(got, want))
