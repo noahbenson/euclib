@@ -283,7 +283,8 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         (res, drawn) = _interp_grid(geom, prop, loc, order)
         missed = _masked_grid(mask, drawn)
     else:
-        (res, corners, drawn) = _interp_simplex(geom, prop, loc, order, fitted)
+        (res, corners, drawn) = _interp_simplex(geom, prop, loc, method,
+                                               order, fitted)
         missed = _masked_corners(mask, corners, drawn)
     # A position outside the object has no answer unless extrapolation was
     # asked for. Extrapolation of order 0 is the value at the nearest position
@@ -306,19 +307,23 @@ def _substitute_null(res, missed, null, /):
     return res
 
 
-def _element_fit(geom, /):
+def _element_fit(geom, method, /):
     '''The fit that builds an element's field above linear.
 
-    Each kind of element settles the freedom a quadratic or a cubic leaves in its
-    own way --- a segment's data determines its cubic exactly and leaves its
-    quadratic one coefficient short, a triangle's leaves one control value, and a
-    tetrahedron's leaves the four on its faces --- so the fit is chosen by the
-    element rather than by the order, which several elements share.
+    Which fit it is depends on the method and on the element. The *Bezier*
+    method settles the freedom a quadratic or a cubic leaves by a construction
+    that is the element's own: a segment's data determines its cubic exactly and
+    leaves its quadratic one coefficient short, a triangle's leaves one control
+    value, and a tetrahedron's leaves the four on its faces. The *polynomial*
+    method fits the monomial basis instead, and that fit makes no use of how the
+    corners are arranged, so one fit serves every kind of element.
 
     Parameters
     ----------
     geom : SimplexGeometry
         The geometry whose elements are being fitted.
+    method : str
+        The interpolation method, ``'bezier'`` or ``'polynomial'``.
 
     Returns
     -------
@@ -328,19 +333,23 @@ def _element_fit(geom, /):
     Raises
     ------
     NotImplementedError
-        If no quadratic or cubic fit is built for this kind of element.
+        If no quadratic or cubic fit is built for this method and element.
     '''
-    if isinstance(geom, SegPath):
-        return segment_fit
-    if isinstance(geom, TriMesh):
-        return triangle_fit
-    if isinstance(geom, TetMesh):
-        return tetrahedron_fit
+    if method == 'polynomial':
+        return polynomial_fit
+    if method == 'bezier':
+        if isinstance(geom, SegPath):
+            return segment_fit
+        if isinstance(geom, TriMesh):
+            return triangle_fit
+        if isinstance(geom, TetMesh):
+            return tetrahedron_fit
     raise NotImplementedError(
-        f"no quadratic or cubic fit is built for {type(geom).__name__}")
+        f"no quadratic or cubic fit is built for {method!r} on"
+        f" {type(geom).__name__}")
 
 
-def _interp_simplex(geom, prop, loc, order, gradient=None, /):
+def _interp_simplex(geom, prop, loc, method, order, gradient=None, /):
     '''Interpolates a simplex geometry's property at local coordinates.
 
     Parameters
@@ -351,6 +360,8 @@ def _interp_simplex(geom, prop, loc, order, gradient=None, /):
         The property being read.
     loc : LocMixin
         The local coordinates to read it at.
+    method : str
+        The interpolation method, which chooses the fit above linear.
     order : int
         The order of the interpolation being asked for.
     gradient : array-like or None, optional
@@ -379,7 +390,7 @@ def _interp_simplex(geom, prop, loc, order, gradient=None, /):
         return (values[..., 0, :], corners, ones(corners.shape, dtype=bool))
     if order >= 2:
         # The higher orders are built one element at a time.
-        fit = _element_fit(geom)
+        fit = _element_fit(geom, method)
         return (fit(geom, loc, values, corners, gradient, order),
                 corners, ones(corners.shape, dtype=bool))
     weight = asarray(loc.weight)
@@ -841,6 +852,202 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /):
                      ).reshape(exponents.shape).prod(axis=1)
     basis = basis * (factorial(order) / counts)[:, None]
     return einsum('wq,w...q->...q', basis, control)
+
+
+def _monomials(powers, u, /):
+    '''The monomials of a list of exponent tuples at one position.'''
+    res = []
+    for power in powers:
+        value = 1.0
+        for (entry, weight) in zip(power, u):
+            value *= weight ** entry
+        res.append(value)
+    return res
+
+
+def _monomial_gradients(powers, u, axis, /):
+    '''The derivatives of the monomials at one position, along one axis.'''
+    res = []
+    for power in powers:
+        if power[axis] == 0:
+            res.append(0.0)
+            continue
+        value = float(power[axis])
+        for (i, (entry, weight)) in enumerate(zip(power, u)):
+            value *= weight ** (entry - (1 if i == axis else 0))
+        res.append(value)
+    return res
+
+
+def _local_design(powers, count, /):
+    '''The design matrix of the monomial fit on one element of a kind.
+
+    Each corner contributes one **value** condition and one **gradient**
+    condition per local axis, and the columns are the monomials. The corners'
+    local coordinates are the same for every element of a kind --- a corner is
+    at a unit vector of the local coordinates, and the last corner is at their
+    origin, because its weight is the one the others leave --- so the matrix is
+    built once and used for every element.
+
+    Parameters
+    ----------
+    powers : list of tuple of int
+        The exponents of the monomials, as ``monomial_exponents`` gives them.
+    count : int
+        The corners the elements have.
+
+    Returns
+    -------
+    design : numpy.ndarray
+        A ``(R, W)`` matrix of the monomials at each condition.
+    conditions : list of tuple
+        One entry per row: ``('value', corner)`` or ``('gradient', corner,
+        axis)``, which says where the row's right-hand side comes from.
+    '''
+    k = count - 1
+    rows = []
+    conditions = []
+    for c in range(count):
+        # A corner's local coordinates: the unit vector naming it, and the
+        # origin for the last, whose weight is what the others leave.
+        u = [1.0 if i == c else 0.0 for i in range(k)]
+        rows.append(_monomials(powers, u))
+        conditions.append(('value', c))
+        for axis in range(k):
+            rows.append(_monomial_gradients(powers, u, axis))
+            conditions.append(('gradient', c, axis))
+    return (asarray(rows), conditions)
+
+
+def polynomial_fit(geom, loc, values, corners, gradient, order, /):
+    '''Fits a polynomial of the given order through elements' data by least
+    squares, in the monomial basis.
+
+    Unlike the Bezier fits, this one is the same for every kind of element,
+    because it makes no use of how the corners are arranged: it writes a
+    polynomial of the given degree in the element's own local coordinates ---
+    the barycentric weights a local coordinate stores, which name a position
+    within an element uniquely --- and finds its coefficients by least squares
+    from the conditions the data supplies.
+
+    Those conditions are the corners' values and the corners' gradients: one
+    value and one gradient per corner, in the element's own coordinates, which
+    is ``(K+1)(K+1)`` conditions against ``C(order+K, K)`` coefficients. Which
+    of the two is the greater decides what the fit can promise, and the two
+    cases alternate with the order and the element:
+
+    ===================  ==========  ============  ==========================
+    element              conditions  coefficients  what the fit gives back
+    ===================  ==========  ============  ==========================
+    segment, order 2     4           3             the data's own polynomial
+    segment, order 3     4           4             the data's own polynomial
+    triangle, order 2    9           6             the data's own polynomial
+    triangle, order 3    9           10            the data, and least-norm
+    tetrahedron, order 2 16          10            the data's own polynomial
+    tetrahedron, order 3 16          20            the data, and least-norm
+    ===================  ==========  ============  ==========================
+
+    Where the conditions outnumber the coefficients, the data *is* the
+    polynomial: a quadratic's values and gradients over-determine the fit, so
+    the least-squares solution is that quadratic, and a field of that degree
+    comes back exactly. Where the coefficients outnumber the conditions, the fit
+    matches the data --- exactly, since there is room to --- and the freedom left
+    over is settled by taking the solution of least norm, which is what a
+    least-squares solver returns. That last part is a choice, and it is not the
+    choice that reproduces quadratics: a cubic that agrees with a quadratic at
+    the corners may differ from it between them, and the least-norm one does.
+    The Bezier fits make the other choice, spending those degrees of freedom on
+    the degree-elevation rule that recovers a quadratic exactly.
+
+    **And what it does not promise.** The fit is over the data as it stands, so
+    where the conditions outnumber the coefficients it does not interpolate the
+    corners unless the data is consistent --- a value and a gradient at the same
+    corner that a quadratic could not have produced are settled against one
+    another rather than both honoured, and the field need not be continuous
+    across a shared face. The Bezier fits hold the corners exactly whatever the
+    data, which is what makes them continuous, at the cost of using the gradients
+    in a fixed way rather than a least-squares one.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry the elements belong to.
+    loc : LocMixin
+        The local coordinates: an element index and the barycentric weights.
+    values : numpy.ndarray
+        A ``(C..., K+1, Q)`` array of the corners' values at each position.
+    corners : numpy.ndarray
+        The ``(K+1, Q)`` matrix of the corners each position draws on.
+    gradient : array-like
+        A ``(C..., D, N)`` gradient over the geometry's coordinates.
+    order : int
+        The order of the fit, ``2`` or ``3``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The fitted values, with the property's channel dimensions and one value
+        per position.
+    '''
+    coords = asarray(geom.coords)
+    (dim, count) = (coords.shape[0], corners.shape[0])
+    k = count - 1
+    gradient = asarray(gradient)
+    if gradient.shape[-2] != dim:
+        raise ValueError(
+            f"the gradient has {gradient.shape[-2]} dimensions, but this"
+            f" geometry occupies {dim} of them")
+    index = asarray(loc.index)
+    weight = asarray(loc.weight)
+    channels = tuple(values.shape[:-2])
+    width = 1
+    for c in channels:
+        width *= c
+    powers = monomial_exponents(k, order)
+    exponents = asarray(powers)
+    (design, conditions) = _local_design(powers, count)
+    inverse = linalg.pinv(design)                          # (W, R)
+    # The element each position falls in, and where its data is read from: the
+    # corners of an element do not depend on the position, so one position per
+    # element is enough to read them all.
+    (elements, back) = unique(index, return_inverse=True)
+    if elements.size == 0:
+        return zeros(channels + (0,))
+    (_, first) = unique(back, return_index=True)
+    here = geom.topo.indices[:, elements]                  # (K+1, E)
+    ends = coords[:, here]                                 # (D, K+1, E)
+    data_values = values[(Ellipsis, slice(None), first)]   # (C..., K+1, E)
+    data_gradient = gradient[(Ellipsis, slice(None), here)]  # (C..., D, K+1, E)
+    # The gradient the data gives, written in the element's own coordinates. A
+    # position is ``X_K + J u`` in those coordinates, where ``J`` has the
+    # vectors from the last corner to the others as its columns, so the chain
+    # rule says ``grad_x = J^T grad_u`` and ``grad_u = J^T grad_x`` the other
+    # way. The transpose is the whole of it, and it is also a projection: the
+    # element spans K directions however many dimensions the geometry has, and
+    # a gradient with a component across that space has no component left after
+    # the multiply, which is the only part of it the field could have meant.
+    origin = ends[:, k, :]                                 # (D, E)
+    jacobian = ends[:, :k, :] - origin[:, None, :]         # (D, K, E)
+    local = einsum('dke,...dce->...kce', jacobian, data_gradient)
+    # One row of the right-hand side per condition: the corner's value, or its
+    # gradient along one of the element's own axes.
+    target = zeros((len(conditions),) + (width,) + (elements.size,))
+    for (row, condition) in enumerate(conditions):
+        if condition[0] == 'value':
+            target[row] = data_values[..., condition[1], :].reshape(
+                (width, elements.size))
+        else:
+            target[row] = local[..., condition[2], condition[1], :].reshape(
+                (width, elements.size))
+    coefficients = einsum('wr,rce->wce', inverse, target)  # (W, C, E)
+    # Evaluate at the positions, each one with its own element's polynomial.
+    chosen = coefficients[(Ellipsis, back)]                # (W, C, Q)
+    basis = ones((len(powers), weight.shape[1]))
+    for axis in range(k):
+        basis = basis * (weight[axis][None, :]
+                         ** exponents[:, axis][:, None])
+    res = einsum('wq,wcq->cq', basis, chosen)
+    return res.reshape(channels + (weight.shape[1],))
 
 
 def estimate_gradient(geom, prop, order, /):

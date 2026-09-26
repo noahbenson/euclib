@@ -876,3 +876,155 @@ class TestTetrahedronBezier(TestCase):
                     # a quadratic and the construction reproduces those.
                     (x, y, z) = (s, t, 1.0 - s - t)
                     self.assertAlmostEqual(one, self.F(x, y, z), places=10)
+
+
+class TestPolynomialMethod(TestCase):
+    '''The polynomial method: a monomial-basis least-squares fit.
+
+    It is the same fit for every kind of element, because it makes no use of how
+    an element's corners are arranged --- it writes a polynomial in the
+    element's own local coordinates and finds its coefficients by least squares
+    from the corner values and gradients. What it gives back depends on which of
+    the two is the more numerous, and the tests below pin both cases.
+    '''
+
+    #: A quadratic with cross terms, and its exact gradient.
+    F = staticmethod(lambda x, y, z: 0.4 * x ** 2 + 0.3 * y ** 2
+                     + 0.2 * z ** 2 + 0.25 * x * y - 0.15 * y * z)
+    DF = staticmethod(lambda x, y, z: np.array([0.8 * x + 0.25 * y,
+                                                0.6 * y + 0.25 * x - 0.15 * z,
+                                                0.4 * z - 0.15 * y]))
+
+    def _square(self):
+        '''A square split into two triangles, in the plane.'''
+        from euclib import trimesh
+        return trimesh(array([[0., 1., 0., 1.], [0., 0., 1., 1.]]),
+                       array([[0, 1], [1, 3], [2, 2]]))
+
+    def _cube(self):
+        '''Two tetrahedra filling the unit cube.'''
+        from euclib import tetmesh
+        return tetmesh(array([[0., 1., 0., 0., 1.],
+                              [0., 0., 1., 0., 1.],
+                              [0., 0., 0., 1., 1.]]),
+                       array([[0, 1], [1, 2], [2, 3], [3, 4]]))
+
+    def _carrying(self, geom, dim):
+        '''The geometry with a quadratic on it, and its exact gradient.
+
+        The field is written in three dimensions and read in as many as the
+        geometry has, so that the same quadratic serves a segment, a triangle,
+        and a tetrahedron.
+        '''
+        coords = np.asarray(geom.coords)
+        padded = np.vstack([coords, np.zeros((3 - dim, coords.shape[1]))])
+        values = array([[self.F(padded[0, i], padded[1, i], padded[2, i])
+                         for i in range(padded.shape[1])]])
+        gradient = stack([self.DF(padded[0, i], padded[1, i], padded[2, i])[:dim]
+                          for i in range(padded.shape[1])],
+                         axis=-1)[None, :, :]
+        return geom.withprop('f', values, gradient=gradient)
+
+    def test_a_quadratic_is_reproduced_at_order_two(self):
+        # At order 2 the conditions outnumber the coefficients on every element,
+        # so the data is the polynomial and it comes back exactly.
+        from euclib import SegPath
+        from euclib.types import SegTopology
+        for (label, geom, dim, places) in (
+                ('segment',
+                 SegPath(array([[0., 1., 2.], [0., 0., 0.]]),
+                         SegTopology([[0, 1], [1, 2]])), 2,
+                 ((0.5, 0.0), (1.5, 0.0), (0.2, 0.0))),
+                ('triangle', self._square(), 2,
+                 ((0.2, 0.3), (0.7, 0.1), (0.55, 0.4))),
+                ('tetrahedron', self._cube(), 3,
+                 ((0.2, 0.3, 0.1), (0.5, 0.2, 0.1), (0.1, 0.1, 0.6)))):
+            with self.subTest(element=label):
+                carried = self._carrying(geom, dim)
+                for point in places:
+                    at = array(point, dtype=float).reshape(dim, 1)
+                    got = float(np.ravel(np.asarray(carried.prop(
+                        'f', at=at, interp=('polynomial', 2))))[0])
+                    self.assertAlmostEqual(got, self.F(*(point + (0.,) * (3 - dim))),
+                                           places=12)
+
+    def test_a_segment_reproduces_a_quadratic_at_order_three_too(self):
+        # A segment's four conditions against four coefficients determine its
+        # cubic exactly, so there is no freedom left for a least-norm choice to
+        # spend and the quadratic comes back.
+        from euclib import SegPath
+        from euclib.types import SegTopology
+        path = SegPath(array([[0., 1., 2.], [0., 0., 0.]]),
+                       SegTopology([[0, 1], [1, 2]]))
+        carried = self._carrying(path, 2)
+        for x in (0.25, 1.0, 1.75):
+            got = float(np.ravel(np.asarray(carried.prop(
+                'f', at=array([[x], [0.]]), interp=('polynomial', 3))))[0])
+            with self.subTest(x=x):
+                self.assertAlmostEqual(got, self.F(x, 0.0, 0.0), places=12)
+
+    def test_order_three_matches_the_data_and_not_the_polynomial(self):
+        # A triangle's cubic has ten coefficients against nine conditions, so
+        # the fit matches the data --- which it can, there being room --- and
+        # then takes the solution of least norm. That is a different cubic from
+        # the quadratic the data came from, and the difference is the point:
+        # the Bezier method spends the same freedom on recovering the quadratic.
+        carried = self._carrying(self._square(), 2)
+        coords = array(carried.coords)
+        for node in range(coords.shape[1]):
+            at = coords[:, node].reshape(2, 1)
+            for (method, places) in (('polynomial', 10), ('bezier', 12)):
+                got = float(np.ravel(np.asarray(carried.prop(
+                    'f', at=at, interp=(method, 3))))[0])
+                with self.subTest(node=node, method=method):
+                    self.assertAlmostEqual(got, self.F(coords[0, node],
+                                                       coords[1, node], 0.0),
+                                           places=places)
+        # Between the corners the two differ, and the polynomial one is the
+        # further from the quadratic.
+        at = array([[0.55], [0.4]])
+        mine = float(np.ravel(np.asarray(carried.prop(
+            'f', at=at, interp=('polynomial', 3))))[0])
+        theirs = float(np.ravel(np.asarray(carried.prop(
+            'f', at=at, interp=('bezier', 3))))[0])
+        want = self.F(0.55, 0.4, 0.0)
+        self.assertAlmostEqual(theirs, want, places=12)
+        self.assertGreater(abs(mine - want), 1e-4)
+
+    def test_the_data_is_matched_where_there_is_room_for_it(self):
+        # A cubic on a triangle can take any nine conditions, so it matches the
+        # corner values and gradients whatever they are; a quadratic cannot, and
+        # there the fit is a compromise rather than an interpolation.
+        mesh = self._square()
+        coords = array(mesh.coords)
+        values = array([[self.F(x, y, 0.0) for (x, y) in coords.T]])
+        gradient = stack([self.DF(x, y, 0.0)[:2] for (x, y) in coords.T],
+                         axis=-1)[None, :, :]
+        gradient[0, 0] *= 2.0                      # a slope the values forbid
+        carried = mesh.withprop('f', values, gradient=gradient)
+        for node in range(coords.shape[1]):
+            at = coords[:, node].reshape(2, 1)
+            cubic = float(np.ravel(np.asarray(carried.prop(
+                'f', at=at, interp=('polynomial', 3))))[0])
+            with self.subTest(node=node):
+                self.assertAlmostEqual(cubic, values[0, node], places=10)
+
+    def test_the_fit_is_the_same_for_every_kind_of_element(self):
+        # The polynomial fit is one function, since it uses nothing about how
+        # the corners are arranged beyond their count: a triangle's fit and a
+        # tetrahedron's are found by the same code.
+        from euclib.types._interp import _element_fit, polynomial_fit
+        from euclib import SegPath
+        from euclib.types import SegTopology
+        path = SegPath(array([[0., 1., 2.], [0., 0., 0.]]),
+                       SegTopology([[0, 1], [1, 2]]))
+        for (label, geom) in (('segment', path), ('triangle', self._square()),
+                              ('tetrahedron', self._cube())):
+            with self.subTest(element=label):
+                self.assertIs(_element_fit(geom, 'polynomial'), polynomial_fit)
+                for order in (2, 3):
+                    # ...and it answers for each of them, rather than raising.
+                    self.assertTrue(np.isfinite(float(np.ravel(np.asarray(
+                        self._carrying(geom, geom.dim).prop(
+                            'f', at=np.asarray(geom.coords)[:, :1],
+                            interp=('polynomial', order))))[0])))
