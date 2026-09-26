@@ -188,6 +188,40 @@ class TestTheEdgeEstimate(TestCase):
         self.assertIn((1, 2), found)
 
 
+class TestTheSplit(TestCase):
+    '''Which piece of the split a position falls in, and its weights there.
+
+    An element's patches live on the three sub-triangles, while a local
+    coordinate in the engine names a position within the whole triangle, so the
+    weights have to be converted. The conversion is not a matrix: the
+    sub-triangle's corners are two corners of the triangle and its centre, so
+    its weights come from the triangle's by subtraction.
+    '''
+
+    def test_every_position_lands_in_one_piece_with_weights_of_its_own(self):
+        rng = np.random.default_rng(0)
+        seen = set()
+        for _ in range(500):
+            weights = rng.uniform(size=2)
+            if weights.sum() > 1.0:
+                continue
+            (pieces, inside) = _ct.sub_weights(weights.reshape(2, 1))
+            piece = int(pieces[0])
+            seen.add(piece)
+            with self.subTest(weights=weights.tolist()):
+                # The weights within the piece are the triangle's own weights
+                # read off its three corners, so they cannot be negative...
+                self.assertTrue((inside[0] > -1e-12).all(),
+                                "a negative weight means the wrong piece")
+                # ...and they name the same position the triangle's do.
+                whole = np.append(weights, 1.0 - weights.sum())
+                corners = _ct._corners(_ct.REFERENCE, piece)
+                self.assertTrue(np.allclose(_ct.REFERENCE @ whole,
+                                            corners @ inside[0]))
+        # All three pieces are reachable, or the test is only checking one.
+        self.assertEqual(seen, {0, 1, 2})
+
+
 class TestTheElementOnAnotherTriangle(TestCase):
     '''The same properties on a triangle that is not the reference one.
 

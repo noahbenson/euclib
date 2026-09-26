@@ -41,7 +41,7 @@ from __future__ import annotations
 from math import factorial
 
 from numpy import (
-    array, asarray, einsum, eye, linalg, zeros)
+    argmin, array, asarray, einsum, eye, linalg, stack, zeros)
 
 #: The reference triangle: the corners the element is derived on.
 REFERENCE = array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
@@ -393,3 +393,50 @@ def edge_data(geom, values, slopes, /):
             total[key] = total.get(key, 0.0) + float(direction @ across)
             count[key] = count.get(key, 0) + 1
     return {key: total[key] / count[key] for key in total}
+
+
+def sub_weights(weights, /):
+    """The weights within the piece that holds a position, from the whole
+    triangle's.
+
+    The three pieces are the triangle's three edges with the centre. A position
+    with barycentric weights ``u`` has, within the piece holding the two corners
+    of the edge it leaves out, the weights
+
+        ``(u_a - u_c, u_b - u_c, 3 u_c)``,
+
+    where the piece's own corners are ``a`` and ``b`` and ``c`` is the corner it
+    leaves out. This comes of writing the centre as the average of the three
+    corners and reading the weights off. The piece that holds the position is
+    the one leaving out the corner whose weight is *smallest* --- which is the
+    same as its three weights being non-negative --- and that corner is the one
+    *before* the piece in the list, since piece 0 holds the edge (0, 1) and so
+    leaves out corner 2.
+
+    Parameters
+    ----------
+    weights : numpy.ndarray
+        A ``(2, Q)`` matrix of the first two barycentric weights of positions
+        within one triangle; the third is what they leave of the unit sum.
+
+    Returns
+    -------
+    pieces : numpy.ndarray
+        A length-``Q`` vector naming the piece each position falls in.
+    inside : numpy.ndarray
+        A ``(Q, 3)`` matrix of the weights within that piece.
+    """
+    whole = stack([weights[0], weights[1],
+                   1.0 - weights[0] - weights[1]], axis=-1)     # (Q, 3)
+    pieces = (argmin(whole, axis=-1) + 1) % 3                    # (Q,)
+    out = zeros((whole.shape[0], 3))
+    for k in range(3):
+        here = pieces == k
+        if not here.any():
+            continue
+        (a, b) = EDGES[k]
+        left_out = [x for x in range(3) if x not in (a, b)][0]
+        out[here, 0] = whole[here, a] - whole[here, left_out]
+        out[here, 1] = whole[here, b] - whole[here, left_out]
+        out[here, 2] = 3.0 * whole[here, left_out]
+    return (pieces, out)
