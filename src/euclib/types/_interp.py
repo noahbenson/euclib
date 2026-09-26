@@ -1108,8 +1108,32 @@ def estimate_gradient(geom, prop, order, /):
         A ``(C..., D, N)`` gradient: the value's channel dimensions, the ``D``
         dimensions of the space, and one gradient per coordinate.
     '''
-    coords = asarray(geom.coords)
-    values = asarray(prop.value)
+    return _estimate_gradient(asarray(geom.coords),
+                              asarray(geom.topo.simplices[1]),
+                              asarray(prop.value), order)
+
+
+def gradient_for(coords, edges, prop, order, /):
+    '''The gradient an interpolation is to be fitted with.
+
+    A property that carries one supplies it; one that does not has it
+    estimated from the values around each coordinate. Both are wanted under the
+    same name because a fit does not care which it got, and because keeping them
+    in one place is what lets an estimate be computed once rather than on every
+    call --- see ``SimplexGeometry.interp_data``.
+    '''
+    if prop.gradient is not None:
+        return asarray(prop.gradient)
+    return _estimate_gradient(coords, edges, asarray(prop.value), order)
+
+
+def _estimate_gradient(coords, edges, values, order, /):
+    '''The estimate, from the fields it reads rather than from an object.
+
+    A geometry's ``interp_data`` is a calc, and a calc is given fields and not
+    the object they came from, so the work is written here where both can reach
+    it.
+    '''
     (dim, count) = (coords.shape[0], coords.shape[1])
     channels = tuple(values.shape[:-1])
     res = zeros(channels + (dim, count))
@@ -1123,7 +1147,7 @@ def estimate_gradient(geom, prop, order, /):
     for c in channels:
         width *= c
     flat = values.reshape((width, count))
-    neighbours = _neighbours(asarray(geom.topo.simplices[1]), count)
+    neighbours = _neighbours(edges, count)
     stencils = [[i] for i in range(count)]
     pending = arange(count)
     stuck = []

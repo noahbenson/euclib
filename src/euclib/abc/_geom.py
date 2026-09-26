@@ -34,7 +34,7 @@ from abc import abstractmethod
 
 from numpy import asarray, concatenate, integer
 from immlib import math as imath, to_array, to_tensor
-from pcollections import ldict, llist
+from pcollections import ldict, llist, lazy
 
 from .. import _init
 from ._core import MetaObject, calc, normalize_backend, plantypeABC
@@ -1042,6 +1042,60 @@ class SimplexGeometry(Geometry):
             The simplex counts, indexed by order.
         '''
         return topo.simplex_count
+
+    @calc('interp_data')
+    def proc_interp_data(properties, coords, topo):
+        '''The data interpolation needs, kept where the methods can share it.
+
+        Interpolating above linear needs data a `Property` does not carry: the
+        derivatives of the values where the property has none, and the adjacency
+        of the mesh those estimates are made from. Computing them costs more
+        than the interpolation does --- an estimate at order 2 takes seconds on a
+        mesh of a hundred thousand coordinates --- and the methods need the same
+        ones, so they are kept here together: a dictionary whose values are
+        computed when a method first asks for one and not before, and computed
+        at most once however many times it is asked for.
+
+        The entries are named in two ways. A name alone --- ``'neighbours'`` ---
+        is data that belongs to the *geometry*, the same whichever property is
+        being read and whichever method is reading it. A triple --- ``(name,
+        'gradient', order)`` --- is data derived from one *property's values*,
+        and has to say which property it came from, because two properties on
+        the same mesh have different derivatives.
+
+        Nothing here can go stale. A geometry is immutable, so its coordinates,
+        its topology, and its properties are fixed; a geometry with different
+        values is a different object with an ``interp_data`` of its own.
+
+        Returns
+        -------
+        interp_data : pcollections.ldict
+            A dictionary of the data, whose values are computed when read.
+        '''
+        # Imported here rather than at the top of the module: the types layer is
+        # built on this one, so this module cannot import it at module scope.
+        from ..types._interp import gradient_for, _neighbours
+        count = coords.shape[1]
+        edges = asarray(topo.simplices[1])
+        entries = {
+            # The adjacency of the mesh, which every estimate reads and which
+            # is the same for every property.
+            'neighbours': lazy(_neighbours, edges, count),
+        }
+        # The keys are strings because the plan stores a calc's value by its
+        # keys, and a key that is not a string does not survive that -- which
+        # is worth knowing, since a tuple of (name, kind, order) is the
+        # obvious way to write one and it comes back as its middle element.
+        before = len(entries)
+        for (name, prop) in properties.items():
+            for order in (2, 3):
+                entries[f'{name}:gradient:{order}'] = lazy(
+                    gradient_for, coords, edges, prop, order)
+        if len(entries) != before + 2 * len(properties):
+            raise ValueError(
+                "two properties' names differ only by a ':' before the kind,"
+                " which is what these keys are separated by")
+        return ldict(entries)
 
     @calc('spatial_index')
     def proc_spatial_index(coords, topo):

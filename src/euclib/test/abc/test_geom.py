@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from unittest import TestCase
 
-from numpy import array, ones, zeros
+from numpy import allclose, array, array_equal, ones, zeros
 
 from euclib.abc import (
     SimplexTopology, SimplexGeometry, Geometry,
@@ -447,3 +447,66 @@ class TestNameSplitting(TestCase):
     def test_two_element_name_that_is_not_a_pair(self):
         # A 2-tuple whose first element is not an order is a bare name.
         self.assertEqual(split_property_name(('a', 'b')), (None, ('a', 'b')))
+
+
+class TestInterpData(TestCase):
+    '''The data interpolation needs, kept on the geometry.
+
+    Interpolating above linear needs derivatives a Property may not carry, and
+    estimating them costs more than the interpolation does. They are kept on the
+    geometry, in a dictionary whose values are computed when a method first asks
+    for one: the adjacency, which every estimate reads and which is the same for
+    every property, and a gradient per property and order.
+    '''
+
+    def _with_a_property(self, gradient=None, name='f'):
+        mesh = _mesh()
+        values = array([[1.0, 4.0, 9.0, 16.0]])
+        return mesh.withprop(name, values, gradient=gradient)
+
+    def test_the_geometrys_own_data_is_there_without_a_property(self):
+        # The adjacency belongs to the geometry, and is there whether or not
+        # anything has been attached to it.
+        self.assertEqual(list(_mesh().interp_data.keys()), ['neighbours'])
+
+    def test_a_property_adds_a_gradient_for_each_order(self):
+        self.assertEqual(
+            sorted(self._with_a_property().interp_data.keys()),
+            ['f:gradient:2', 'f:gradient:3', 'neighbours'])
+
+    def test_nothing_is_computed_until_it_is_read(self):
+        data = self._with_a_property(gradient=ones((1, 2, 4))).interp_data
+        for key in ('neighbours', 'f:gradient:2', 'f:gradient:3'):
+            with self.subTest(key=key):
+                self.assertFalse(data.is_ready(key))
+        data['f:gradient:2']
+        self.assertTrue(data.is_ready('f:gradient:2'))
+        # ...and reading it did not compute the others.
+        self.assertFalse(data.is_ready('f:gradient:3'))
+
+    def test_a_gradient_the_property_has_is_the_one_kept(self):
+        gradient = ones((1, 2, 4))
+        data = self._with_a_property(gradient=gradient).interp_data
+        self.assertTrue(array_equal(data['f:gradient:2'],
+                                    array(gradient)))
+        self.assertTrue(array_equal(data['f:gradient:3'],
+                                    array(gradient)))
+
+    def test_a_gradient_the_property_lacks_is_estimated(self):
+        # ...and the estimate is the one the engine computes when it is asked
+        # directly, so keeping it changes when the work happens and not what it
+        # gives.
+        from euclib.types._interp import estimate_gradient
+        mesh = self._with_a_property()
+        kept = mesh.interp_data['f:gradient:2']
+        direct = estimate_gradient(mesh, mesh._prop_for('f', None), 2)
+        self.assertTrue(allclose(kept, direct))
+
+    def test_the_same_dictionary_serves_every_read(self):
+        # The member is a calc, so it is computed once and the same object is
+        # returned; that is what makes the values inside it a cache rather than
+        # a computation repeated on every look.
+        mesh = self._with_a_property()
+        first = mesh.interp_data['f:gradient:2']
+        second = mesh.interp_data['f:gradient:2']
+        self.assertTrue(array_equal(first, second))
