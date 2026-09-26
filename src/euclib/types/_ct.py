@@ -41,7 +41,8 @@ from __future__ import annotations
 from math import factorial
 
 from numpy import (
-    argmin, array, asarray, einsum, eye, linalg, stack, zeros)
+    argmin, array, asarray, einsum, eye, linalg, ones, stack,
+    zeros)
 
 #: The reference triangle: the corners the element is derived on.
 REFERENCE = array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
@@ -131,7 +132,11 @@ def gradient(controls, corners, w, /):
                    corners[:, 2] - corners[:, 0]]).T
     wanted = stack([directional(controls, w, 1),
                     directional(controls, w, 2)], axis=-1)
-    return einsum('jk,...k->...j', linalg.inv(along.T), wanted)
+    # The pseudo-inverse and not the inverse: a triangle is usually a surface in
+    # three dimensions, where the two edge directions do not span the space and
+    # no inverse exists. What it gives is the gradient's part *in* the
+    # triangle's plane, which is the only part a field on the triangle can mean.
+    return einsum('jk,...k->...j', linalg.pinv(along.T), wanted)
 
 
 # The pieces #################################################################
@@ -463,3 +468,160 @@ def sub_weights(weights, /):
         out[here, 1] = whole[here, b] - whole[here, left_out]
         out[here, 2] = 3.0 * whole[here, left_out]
     return (pieces, out)
+
+
+# The operator the element's edge numbers come from ##########################
+
+def edge_key(coords, i, j, /):
+    """An edge, named by its two corners in order by where they are.
+
+    The order has to be one both triangles holding the edge can see, and their
+    own numbering of it is not: a derivative across an edge means nothing
+    without a direction.
+    """
+    return (i, j) if tuple(coords[:, i]) <= tuple(coords[:, j]) else (j, i)
+
+
+def across_of(coords, i, j, /):
+    """The direction the derivative across an edge is taken along."""
+    (a, b) = edge_key(coords, i, j)
+    edge = coords[:, b] - coords[:, a]
+    return array([-edge[1], edge[0]])
+
+
+def triangle_blocks(corners, /):
+    """What one triangle says its three edges' derivatives are.
+
+    A ``(3, 3*(D+1))`` matrix: for each of its edges, the coefficients of the
+    derivative across it at its midpoint, in terms of its corners' values and
+    gradients --- a value and then one gradient per corner, in the order the
+    element's own rows are built.
+
+    **The controls it goes through**, which is where the element's content is:
+    the corners hold their own values; the two controls a third of the way along
+    an edge carry the slope there, being the gradient's component along the
+    edge; and the one interior control is the mean of the three edges'
+    *reflected* midpoints, each ``(v_i + v_j)/2 + (s_i - s_j)/4``. That
+    reflection is the same form the quadratic edge's middle control has, and it
+    is not the midpoint value, which is ``(v_i + v_j)/2 + (s_i - s_j)/8``. The
+    gradient at an edge's midpoint is then the pair of directional derivatives
+    there combined through the triangle's own axes and dotted with the edge's
+    across direction.
+    """
+    (dim, _) = (corners.shape[0], 3)
+    width = 3 * (dim + 1)
+    block = zeros((3, width))
+    controls = zeros((10, width))
+    for c in range(3):
+        controls[SPOT[tuple(3 if x == c else 0 for x in range(3))], 3 * c] = 1.0
+    for (u, v) in ((0, 1), (1, 2), (2, 0)):
+        step = corners[:, v] - corners[:, u]
+        near_u = SPOT[tuple(2 if x == u else (1 if x == v else 0)
+                            for x in range(3))]
+        near_v = SPOT[tuple(1 if x == u else (2 if x == v else 0)
+                            for x in range(3))]
+        controls[near_u, 3 * u] = 1.0
+        controls[near_u, 3 * u + 1:3 * u + 1 + dim] = step / 3.0
+        controls[near_v, 3 * v] = 1.0
+        controls[near_v, 3 * v + 1:3 * v + 1 + dim] = -step / 3.0
+        inside = SPOT[(1, 1, 1)]
+        controls[inside, 3 * u] += 0.5 / 3.0
+        controls[inside, 3 * v] += 0.5 / 3.0
+        controls[inside, 3 * u + 1:3 * u + 1 + dim] += step / 12.0
+        controls[inside, 3 * v + 1:3 * v + 1 + dim] -= step / 12.0
+    axes = array([corners[:, 1] - corners[:, 0],
+                  corners[:, 2] - corners[:, 0]]).T
+    for (e, (a, b)) in enumerate(((0, 1), (1, 2), (2, 0))):
+        w = zeros(3)
+        w[a] = 0.5
+        w[b] = 0.5
+        # The coefficients the two directional derivatives take, from the
+        # across direction --- the pseudo-inverse again, and for the same
+        # reason.
+        share = across_of(corners, a, b) @ linalg.pinv(axes.T)
+        for (m, coefficient) in enumerate(share, start=1):
+            row = zeros(10)
+            for p in LOWER:
+                high = list(p)
+                high[m] += 1
+                base = list(p)
+                base[0] += 1
+                weight = (3.0 * COEF2[p] * (w[0] ** p[0]) * (w[1] ** p[1])
+                          * (w[2] ** p[2]) * coefficient)
+                row[SPOT[tuple(high)]] += weight
+                row[SPOT[tuple(base)]] -= weight
+            block[e] += row @ controls
+    return block
+
+
+def edge_operator(coords, indices, /):
+    """The operator giving the derivative across each edge at its midpoint.
+
+    The element's twelfth kind of number is per *edge* and a `Property` carries
+    its data per coordinate, so it is estimated from the mesh: each triangle says
+    what the derivative across an edge is, from its own Bezier patch, and the
+    estimate is the average of the triangles sharing it. That estimate is
+    **linear** --- a triangle's control values are linear in its corners' values
+    and gradients, and the gradient at an edge's midpoint is linear in the
+    controls --- so it is one fixed operator, depending on the mesh alone.
+
+    Its input is a coordinate's value and *its gradient*, stacked: the values
+    first, then the gradient components as ``(D, N)`` flattened. It is built that
+    way rather than as an operator on the values alone because a property may
+    carry its own gradient, and one that is given is not a function of the
+    values --- so the caller supplies the gradients it is fitting with, whether
+    they were given or estimated, and this does not care which.
+
+    Parameters
+    ----------
+    coords : numpy.ndarray
+        A ``(D, N)`` matrix of coordinates.
+    indices : numpy.ndarray
+        A ``(3, M)`` integer matrix of triangle corners.
+
+    Returns
+    -------
+    scipy.sparse.csr_matrix
+        An ``(E, N + D*N)`` operator: one row per distinct edge, reading the
+        values and then the gradients.
+    edges : list of tuple of int
+        The two corners of each edge, in order.
+    rows : numpy.ndarray
+        A ``(M, 3)`` matrix of the row each triangle's own three edges are in,
+        so that a caller can read off what a triangle's edges come to without
+        looking the edges up again.
+    """
+    from scipy.sparse import block_diag, csr_matrix, identity, vstack
+    (dim, count) = (coords.shape[0], coords.shape[1])
+    triangles = indices.shape[1]
+    corners_of = [[int(x) for x in indices[:, t]] for t in range(triangles)]
+    where = {}
+    for here in corners_of:
+        for (a, b) in ((0, 1), (1, 2), (2, 0)):
+            where.setdefault(edge_key(coords, here[a], here[b]), len(where))
+    edges = [None] * len(where)
+    for (edge, row) in where.items():
+        edges[row] = edge
+    # What each triangle says, as one block-diagonal stack of its three rows.
+    says = block_diag(
+        [csr_matrix(triangle_blocks(coords[:, here])) for here in corners_of],
+        format='csr')
+    # The numbers each triangle reads: a value and a gradient per corner, which
+    # is a row of the ``(N + D*N)`` identity apiece.
+    big = identity(count + dim * count, format='csr')
+    wanted = [b * count + corner for here in corners_of for corner in here
+              for b in range(dim + 1)]
+    numbers = big[wanted]
+    # Which triangles say anything about which edge, averaged.
+    rows = []
+    columns = []
+    for (t, here) in enumerate(corners_of):
+        for (e, (a, b)) in enumerate(((0, 1), (1, 2), (2, 0))):
+            rows.append(where[edge_key(coords, here[a], here[b])])
+            columns.append(t * 3 + e)
+    sharing = csr_matrix((ones(len(rows)), (rows, columns)),
+                         shape=(len(where), triangles * 3))
+    mean = sharing.multiply(
+        1.0 / asarray(sharing.sum(axis=1)).ravel()[:, None])
+    rows_of = asarray(rows).reshape(triangles, 3)
+    return ((mean @ says @ numbers).tocsr(), edges, rows_of)

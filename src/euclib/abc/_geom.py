@@ -1071,6 +1071,7 @@ class SimplexGeometry(Geometry):
         # Imported here rather than at the top of the module: the types layer is
         # built on this one, so this module cannot import it at module scope.
         from ..types._interp import _gradient_operator, _neighbours
+        from ..types._ct import edge_operator
         count = coords.shape[1]
         edges = asarray(topo.simplices[1])
         entries = {
@@ -1084,6 +1085,14 @@ class SimplexGeometry(Geometry):
         for order in (2, 3):
             entries[f'gradient_{order}'] = lazy(
                 _gradient_operator, coords, edges, order)
+        # The Clough-Tocher element needs a number that belongs to an *edge* and
+        # not to a coordinate, and it is estimated from the triangles sharing
+        # the edge. That estimate is linear too, in the values and the gradients
+        # the fit is using --- the gradients are an input, since a property may
+        # supply its own and one that is given is not a function of the values.
+        indices = asarray(topo.indices)
+        if indices.shape[0] == 3:
+            entries['edge_data'] = lazy(edge_operator, coords, indices)
         return ldict(entries)
 
     @calc('spatial_index')

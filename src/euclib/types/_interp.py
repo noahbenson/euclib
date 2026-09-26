@@ -1091,22 +1091,28 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
 
     '''
     coords = asarray(geom.coords)
+    dim = coords.shape[0]
     channels = tuple(values.shape[:-2])
     width = 1
     for entry in channels:
         width *= entry
-    # The estimate is made over the whole mesh, and it has to be: an edge's
-    # derivative is what the two triangles holding it say, and a triangle's
-    # patch is built from its own three corners, which need not be among the
-    # positions asked about. Scattering the gathered values back would leave
-    # every other coordinate zero and the estimate would be taken from a field
-    # that is mostly nothing --- which is what it did, and what the caller's
-    # `whole` is for. It falls back to the gathered values when a caller has no
-    # more to give, which is right for a query that covers the mesh.
+    # An edge's derivative is what the two triangles holding it say, so the
+    # estimate is made over the whole mesh and not only where the positions are:
+    # a triangle's patch is built from its own three corners, and those corners
+    # need not be among the positions asked about. Scattering the gathered
+    # values back would leave every other coordinate zero and the estimate would
+    # be taken from a field that is mostly nothing, which is what it did before
+    # `whole` was passed in.
     if whole is None:
-        whole = zeros(channels + (coords.shape[1],))
-        whole[(Ellipsis, corners)] = values
-    across = _ct.edge_data(geom, whole, slopes)
+        raise ValueError(
+            "the Clough-Tocher fit needs the property's values at every"
+            " coordinate, as `whole`; it reads the mesh's edges, which a"
+            " triangle's own corners do not determine")
+    (operator, edges, rows_of) = geom.interp_data['edge_data']
+    stacked = concatenate([whole.reshape((width, coords.shape[1])),
+                           slopes.reshape((width, dim * coords.shape[1]))],
+                          axis=-1)
+    across = stacked @ operator.T                          # (C, E)
     indices = asarray(geom.topo.indices)
     index = asarray(loc.index)
     weight = asarray(loc.weight)
@@ -1127,9 +1133,8 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
                 (Ellipsis, 0, here[vertex])].reshape(width)
             numbers[:, 3 * vertex + 2] = slopes[
                 (Ellipsis, 1, here[vertex])].reshape(width)
-        for (k, (a, b)) in enumerate(_ct.EDGES):
-            key = (min(int(here[a]), int(here[b])), max(int(here[a]), int(here[b])))
-            numbers[:, 9 + k] = asarray(across[key]).reshape(width)
+        for k in range(3):
+            numbers[:, 9 + k] = across[:, rows_of[element, k]]
         # The twelve control vectors for this triangle's shape, and the
         # controls they give these numbers.
         controls = numbers @ _ct.basis(triangle).T
