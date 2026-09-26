@@ -109,7 +109,8 @@ def gradient(controls, corners, w, /):
     can.
     '''
     # The two directions from the first corner, as the columns of a matrix.
-    along = array([corners[1] - corners[0], corners[2] - corners[0]]).T
+    along = array([corners[:, 1] - corners[:, 0],
+                   corners[:, 2] - corners[:, 0]]).T
     wanted = array([directional(controls, w, 1),
                     directional(controls, w, 2)])
     return linalg.solve(along.T, wanted)
@@ -118,10 +119,14 @@ def gradient(controls, corners, w, /):
 # The pieces #################################################################
 
 def _corners(triangle, k, /):
-    """The three corners of sub-triangle k: a macro edge and the centre."""
+    """The three corners of sub-triangle k: a macro edge and the centre.
+
+    A ``(2, 3)`` matrix, as coordinates are everywhere in this library: the
+    dimensions leading and the corners following.
+    """
     (a, b) = EDGES[k]
     centre = triangle.mean(axis=1)
-    return array([triangle[:, a], triangle[:, b], centre])
+    return array([triangle[:, a], triangle[:, b], centre]).T
 
 
 def _holders(vertex, /):
@@ -283,3 +288,108 @@ def basis(triangle=None, /):
     targets = zeros((rows.shape[0], 12))
     targets[len(held):, :] = eye(12)
     return linalg.lstsq(rows, targets, rcond=None)[0]
+
+
+# The number a Property cannot carry #########################################
+
+def _bezier_controls(values, gradients, corners, /):
+    """The ten Bezier controls of a cubic through one triangle's own data.
+
+    This is the construction the triangle method uses --- each edge fitted
+    through its two ends' values and slopes, and a cubic's one interior value
+    the mean of the three edges' degree-2 controls --- written here for a single
+    triangle rather than for a whole query, because the edge estimate below
+    asks it one triangle at a time.
+    """
+    (ends, at) = (corners, gradients)
+    control = zeros(10)
+
+    def spot(power, /):
+        return SPOT[tuple(power)]
+
+    def along(i, j, /):
+        step = ends[:, j] - ends[:, i]
+        return (float(at[:, i] @ step), float(at[:, j] @ step))
+
+    for c in range(3):
+        control[spot([3 if x == c else 0 for x in range(3)])] = values[c]
+    for (i, j) in ((0, 1), (1, 2), (2, 0)):
+        (da, db) = along(i, j)
+        # The control a third of the way in from each end, which carries the
+        # slope there: on a cubic its exponent is two at that corner and one
+        # at the other.
+        near_i = [2 if x == i else (1 if x == j else 0) for x in range(3)]
+        near_j = [1 if x == i else (2 if x == j else 0) for x in range(3)]
+        control[spot(near_i)] = values[i] + da / 3.0
+        control[spot(near_j)] = values[j] - db / 3.0
+    # The one interior control: the average of the three edges' *degree-2*
+    # control values, which is what degree elevation of a quadratic gives.
+    middle = []
+    for (i, j) in ((0, 1), (1, 2), (2, 0)):
+        (da, db) = along(i, j)
+        (bi, bj) = (values[i] + da / 3.0, values[j] - db / 3.0)
+        halfway = (values[i] + 3.0 * bi + 3.0 * bj + values[j]) / 8.0
+        middle.append(2.0 * halfway - (values[i] + values[j]) / 2.0)
+    control[spot([1, 1, 1])] = sum(middle) / 3.0
+    return control
+
+
+def _across_of(coords, one, two, /):
+    """The vector the derivative across an edge is taken along.
+
+    The same rule the element's own edges use: the edge's two corners in the
+    order of where they are, turned a quarter turn. Both triangles sharing the
+    edge compute this and get the same vector, which is the point of it.
+    """
+    (i, j) = (one, two) if tuple(coords[:, one]) < tuple(coords[:, two]) \
+        else (two, one)
+    edge = coords[:, j] - coords[:, i]
+    return array([-edge[1], edge[0]])
+
+
+def edge_data(geom, values, slopes, /):
+    """The derivative across each edge of a triangle mesh at its midpoint.
+
+    The element's twelfth kind of number --- the derivative across an edge at
+    its midpoint --- is per *edge*, and a `Property` carries its data per
+    coordinate, so there is nowhere to put one. It is estimated instead, from
+    the mesh: each triangle carries a cubic Bezier patch from its own corners'
+    values and gradients, and the patch's gradient at the midpoint of an edge,
+    in the direction the two triangles sharing it agree on, is what that
+    triangle says the derivative there is. The estimate is the average of the
+    triangles sharing the edge.
+
+    Why the average is the right one: the derivative across an edge, as a
+    function along it, is a quadratic whose values at the two ends are already
+    fixed by the corner gradients --- which both triangles share. Two quadratics
+    that agree at both ends and at the middle are the same quadratic, so taking
+    the average makes the two triangles' across-derivatives identical, and that
+    is exactly C1.
+
+    Returns
+    -------
+    dict
+        One entry per edge, keyed by its two corner indices in order, holding
+        the estimate.
+    """
+    coords = asarray(geom.coords)
+    indices = asarray(geom.topo.indices)
+    total = {}
+    count = {}
+    for t in range(indices.shape[1]):
+        here = indices[:, t]
+        (values_here, slopes_here) = (values[..., here], slopes[..., here])
+        control = _bezier_controls(values_here, slopes_here, coords[:, here])
+        for (one, two) in ((0, 1), (1, 2), (2, 0)):
+            (i, j) = (int(here[one]), int(here[two]))
+            middle = (coords[:, i] + coords[:, j]) / 2.0
+            across = _across_of(coords, i, j)
+            w = array([0.5, 0.5, 0.0]) if (one, two) == (0, 1) else (
+                array([0.0, 0.5, 0.5]) if (one, two) == (1, 2)
+                else array([0.5, 0.0, 0.5]))
+            # The gradient of the patch at the midpoint of that edge.
+            direction = gradient(control, coords[:, here], w)
+            key = (min(i, j), max(i, j))
+            total[key] = total.get(key, 0.0) + float(direction @ across)
+            count[key] = count.get(key, 0) + 1
+    return {key: total[key] / count[key] for key in total}

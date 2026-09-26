@@ -57,7 +57,7 @@ def numbers_of(triangle, field, derivative, /):
 
 def point_of(triangle, k, w, /):
     '''The position the weights name within one of a triangle's pieces.'''
-    return w @ _ct._corners(triangle, k)
+    return _ct._corners(triangle, k) @ w
 
 
 def value_of(basis, numbers, k, w, /):
@@ -136,6 +136,56 @@ class TestTheReferenceElement(TestCase):
                                    _ct._weights_on_edge(other, vertex, s))
                 worst = max(worst, np.abs(one - two).max())
         self.assertLess(worst, 1e-12)
+
+
+class TestTheEdgeEstimate(TestCase):
+    '''The one number a Property has nowhere to keep.
+
+    The derivative across an edge at its midpoint is per *edge*, and a Property
+    carries its data per coordinate, so the element's twelfth kind of number is
+    estimated from the mesh: each triangle says what the derivative is, from its
+    own Bezier patch, and the estimate is the average of the triangles sharing
+    the edge. For a quadratic every triangle's patch *is* the quadratic, so the
+    estimate has a right answer to be held to.
+    '''
+
+    #: A square of four corners in two triangles, sharing the diagonal.
+    COORDS = np.array([[0., 1., 0., 1.], [0., 0., 1., 1.]])
+
+    def _mesh(self):
+        from euclib import trimesh
+        return trimesh(self.COORDS, np.array([[0, 1], [1, 3], [2, 2]]))
+
+    def test_the_estimate_is_the_field_s_own_derivative(self):
+        mesh = self._mesh()
+        coords = self.COORDS
+        values = np.array([[QUADRATIC(coords[:, i])
+                            for i in range(coords.shape[1])]])[0]
+        slopes = np.stack([QUADRATIC_GRADIENT(coords[:, i])
+                           for i in range(coords.shape[1])], axis=-1)
+        found = _ct.edge_data(mesh, values, slopes)
+        self.assertEqual(len(found), 5)
+        worst = 0.0
+        for ((i, j), got) in found.items():
+            middle = (coords[:, i] + coords[:, j]) / 2.0
+            want = float(QUADRATIC_GRADIENT(middle) @ _ct._across_of(coords, i, j))
+            worst = max(worst, abs(got - want))
+        self.assertLess(worst, 1e-12)
+
+    def test_the_two_triangles_sharing_an_edge_agree_on_it(self):
+        # The estimate is the average of the two, and each of them says the
+        # same thing about a quadratic -- which is the property that makes the
+        # elements on either side agree: two quadratics along an edge that
+        # match at both ends and at the middle are the same quadratic.
+        mesh = self._mesh()
+        coords = self.COORDS
+        values = np.array([[CUBIC(coords[:, i])
+                            for i in range(coords.shape[1])]])[0]
+        slopes = np.stack([CUBIC_GRADIENT(coords[:, i])
+                           for i in range(coords.shape[1])], axis=-1)
+        found = _ct.edge_data(mesh, values, slopes)
+        # The shared edge is the diagonal, between corners 1 and 2.
+        self.assertIn((1, 2), found)
 
 
 class TestTheElementOnAnotherTriangle(TestCase):
