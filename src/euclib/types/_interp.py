@@ -711,8 +711,12 @@ def estimate_gradient(geom, prop, order, /):
         # *determined* by it. Enough nodes is not enough: a grid's nodes can
         # number more than the monomials of an order and still not span them, so
         # the test is the rank of the fit's design matrix, not its row count.
+        # The rank comes from the solve below rather than from a decomposition
+        # of its own: the same design is decomposed either way, and asking it
+        # twice was a third of the work here for the same answer.
         stencil = [i]
         settled = False
+        solved = None
         while True:
             # A polynomial of the order has at least ``order + 1`` monomials
             # whatever it spans --- one direction gives its degree plus one --- so
@@ -726,10 +730,12 @@ def estimate_gradient(geom, prop, order, /):
                 (step, frame, room) = taken
                 (basis, linear, design) = _monomial_design(step, frame, room,
                                                            order)
-                settled = (len(basis) <= len(stencil)
-                           and linalg.matrix_rank(design) == len(basis))
-                if settled:
-                    break
+                if len(basis) <= len(stencil):
+                    solved = linalg.lstsq(
+                        design, moveaxis(values[..., stencil], -1, 0))
+                    settled = solved[2] == len(basis)
+                    if settled:
+                        break
             wider = _stencil(neighbours, i, len(stencil) + 1)
             if len(wider) == len(stencil):
                 # The whole neighbourhood is here and the order asked for is
@@ -738,18 +744,21 @@ def estimate_gradient(geom, prop, order, /):
                     (step, frame, room) = _stencil_frame(coords, stencil, i)
                     (basis, linear, design) = _monomial_design(
                         step, frame, room, order)
+                    solved = linalg.lstsq(
+                        design, moveaxis(values[..., stencil], -1, 0))
                 break
             stencil = wider
+        # The values of the stencil, one row per node and the channels after, so
+        # that one solve answers for every channel at once.
+        rhs = moveaxis(values[..., stencil], -1, 0)               # (M, C...)
         degree = order
         while degree > 1 and not settled:
             degree -= 1
             (basis, linear, design) = _monomial_design(step, frame, room, degree)
+            solved = linalg.lstsq(design, rhs)
             settled = (len(basis) <= len(stencil)
-                       and linalg.matrix_rank(design) == len(basis))
-        # The values of the stencil, one row per node and the channels after, so
-        # that one solve answers for every channel at once.
-        rhs = moveaxis(values[..., stencil], -1, 0)               # (M, C...)
-        coeffs = linalg.lstsq(design, rhs)[0]                     # (W, C...)
+                       and solved[2] == len(basis))
+        coeffs = solved[0]                                        # (W, C...)
         # The gradient the fit found is in the stencil's frame; the caller wants
         # it in the geometry's own axes.
         hull = moveaxis(coeffs[linear], 0, -1) @ frame[:room]      # (C..., D)
