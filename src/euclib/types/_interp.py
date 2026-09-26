@@ -41,8 +41,9 @@ from collections.abc import Mapping
 from math import factorial
 
 from numpy import (
-    arange, argsort, asarray, concatenate, einsum, flatnonzero, floor, linalg,
-    maximum, moveaxis, ones, ravel_multi_index, sqrt, unique, where, zeros)
+    arange, argsort, asarray, concatenate, einsum, finfo, flatnonzero, floor,
+    linalg, maximum, moveaxis, ones, ravel_multi_index, sqrt, unique, where,
+    zeros)
 
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
@@ -66,6 +67,11 @@ _RANK_TOLERANCE = 1e-9
 #: estimate's memory is spent on: at three thousand coordinates, a dozen nodes
 #: per stencil, and ten monomials, that is a few megabytes.
 _ESTIMATE_BLOCK = 3072
+
+#: The rounding of the floating-point type the fits are done in, which is what
+#: decides a singular value small enough to be one direction a stencil does not
+#: really span. It is the tolerance NumPy's own rank and solve use.
+_FLOAT_EPSILON = float(finfo('float64').eps)
 
 
 # Positions ##################################################################
@@ -772,7 +778,19 @@ def estimate_gradient(geom, prop, order, /):
                         # no rank of the design can settle this, and these grow.
                         growing.extend(block[rows].tolist())
                         continue
-                    settled = linalg.matrix_rank(design) == len(basis)
+                    # One decomposition of the design answers both questions
+                    # asked of it: its rank says whether the stencil determines
+                    # the polynomial, and its singular values give the solve.
+                    # Asking `matrix_rank` and `pinv` separately decomposes the
+                    # same matrix twice, which on a mesh of any size is the
+                    # greater part of what the estimate costs.
+                    (left, values_, right) = linalg.svd(
+                        design, full_matrices=False)
+                    cutoff = (values_[:, :1]
+                              * max(design.shape[1], design.shape[2])
+                              * _FLOAT_EPSILON)
+                    keep = values_ > cutoff
+                    settled = keep.sum(axis=1) == len(basis)
                     if settled.any():
                         rhs = flat[:, points[rows[settled]]].transpose(1, 2, 0)
                         # The solve is by pseudo-inverse rather than by
@@ -785,7 +803,11 @@ def estimate_gradient(geom, prop, order, /):
                         # 1e-13 on a grid and 1e-7 where a cubic's monomials
                         # make the design ill-conditioned, against gradients of
                         # order 1.
-                        coeffs = linalg.pinv(design[settled]) @ rhs    # (G, W, C)
+                        inverse = 1.0 / where(keep[settled], values_[settled],
+                                              1.0)
+                        coeffs = ((right[settled].transpose(0, 2, 1)
+                                   * inverse[:, None, :])
+                                  @ left[settled].transpose(0, 2, 1)) @ rhs
                         hull = moveaxis(coeffs[:, linear, :], 1, -1) @ \
                             frames[rows[settled]][:, :room, :]         # (G, C, D)
                         for (g, node) in enumerate(block[rows[settled]]):
