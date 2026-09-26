@@ -41,10 +41,15 @@ classifiers = [
     'Operating System :: POSIX',
     'Operating System :: Unix',
     'Operating System :: MacOS']
+# The three libraries euclib is built on are released together with it, and the
+# floors below are the versions that exist *now* rather than the 1.0 they will
+# be: a floor of 1.0 excludes a 1.0 release candidate, which sorts before 1.0,
+# so nothing could install euclib from a source tree that has the candidates and
+# not the releases. They are raised to 1.0 before euclib 1.0 is released.
 dependencies = [
-    'immlib >= 1.0',
-    'pcollections >= 1.0',
-    'docshare >= 1.0',
+    'immlib >= 1.0.0rc1',
+    'pcollections >= 1.0.0rc1',
+    'docshare >= 0.3.0',
     'numpy',
     'joblib']
 
