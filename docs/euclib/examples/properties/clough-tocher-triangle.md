@@ -181,20 +181,78 @@ for method in (('clough-tocher', 3), ('bezier', 3), ('polynomial', 3)):
     print(f"  {str(method):<22} worst = {worst:.3e}")
 ```
 
-**And its slope is continuous across the edge.** This is the property that
-distinguishes the method, and it is checked where the element is: the two pieces
-meeting on an interior edge are held to the same gradient along it, on the
-reference triangle and on a lopsided one, in
-`euclib/test/types/test_ct.py`. It is checked there rather than here because a
-demonstration needs a mesh and a field that actually show the difference, and
-the obvious ones do not: on a square split along its diagonal, the two
-triangles' Bézier cubic patches agree in slope along the diagonal as well, by
-symmetry, so nothing is visible. Making a convincing picture of the crease wants
-an asymmetric mesh, and that is left for when this page has one.
+**And its slope is continuous across the edge.** This is the check that
+distinguishes the method, and it needs a field the Bézier cubic *cannot*
+reproduce — a cubic — on a mesh whose two triangles are not mirror images of one
+another. The measure is the **second difference** of the interpolated field
+across the shared edge, along the edge's normal: for a field that is smooth
+there it comes out as the curvature, and at a crease it comes out far larger,
+because the slope changes abruptly between the samples.
 
-What the element *is*, though, is the C¹ condition, and that is what its tests
-measure: the pieces' gradients agree along the edges they share to 1e-14, and
-two elements sharing a triangle's edge agree along it to 3e-14.
+```{code-cell}
+# A cubic field, which the Bezier cubic does not reproduce, on a square whose
+# upper corners have been moved so that the two triangles are not mirror
+# images across the edge they share.
+bent = np.array([[0., 1., 0.3, 1.], [0., 0., 0.9, 1.]])
+bent_mesh = el.trimesh(bent, np.array([[0, 1], [1, 3], [2, 2]]))
+
+def g(x, y):
+    return 0.3 * x ** 3 - 0.7 * x ** 2 * y + 0.2 * y ** 3 + 0.5 * x * y
+
+def dg(x, y):
+    return np.array([0.9 * x ** 2 - 1.4 * x * y + 0.5 * y,
+                     -0.7 * x ** 2 + 0.6 * y ** 2 + 0.5 * x])
+
+corners = bent.shape[1]
+cubed = bent_mesh.withprop(
+    'g', np.array([[g(bent[0, i], bent[1, i]) for i in range(corners)]]),
+    gradient=np.stack([dg(bent[0, i], bent[1, i])
+                       for i in range(corners)], axis=-1)[None, :, :])
+
+# The edge the two triangles share runs from corner 1 to corner 2.
+(P, Q) = (bent[:, 1], bent[:, 2])
+middle = (P + Q) / 2.0
+normal = np.array([-(Q - P)[1], (Q - P)[0]])
+normal = normal / np.linalg.norm(normal)
+
+def curvature(method, step=1e-3):
+    '''How much the field bends across the edge, at the edge itself.
+
+    Three positions on a line crossing the edge at right angles --- one either
+    side of it and one at it, equally spaced --- and the second difference of
+    the values divided by the square of the spacing. Pass ``'field'`` to measure
+    the field the corners carry instead of an interpolation of it.
+    '''
+    def at(s):
+        point = middle + s * normal
+        if method == 'field':
+            return float(g(point[0], point[1]))
+        return float(np.ravel(np.asarray(cubed.prop(
+            'g', at=point.reshape(2, 1), interp=method)))[0])
+
+    return (at(-step) - 2.0 * at(0.0) + at(step)) / step ** 2
+
+print("how much the field bends across the shared edge, at the edge itself:")
+print(f"  {'the field itself':<22} {curvature('field'):+10.4f}")
+for method in (('clough-tocher', 3), ('bezier', 3)):
+    print(f"  {str(method):<22} {curvature(method):+10.4f}")
+print("  (a field that is smooth across the edge gives its own curvature there;")
+print("   one whose slope jumps gives that curvature plus the jump over the")
+print("   spacing, which is what makes the Bezier row enormous)")
+```
+
+The Bézier cubic's number is some four hundred times the field's — that is the
+crease this method exists to remove, and on a shaded surface it is a line.
+
+The Clough–Tocher number is a tenth of a Bézier one's and still not the field's,
+which is worth being exact about rather than calling it agreement. Two things
+are in it. The element reproduces a cubic exactly when it is *given* the cubic's
+twelve numbers, but on a mesh the three edge numbers are estimated from the two
+triangles' Bézier patches — and that estimate is exact for a quadratic, as the
+check above shows, and not for a cubic. So the field is a cubic slightly
+disturbed, and its curvature is disturbed with it. What the number does *not*
+contain is a jump: the pieces are tied together by gradient, so there is none
+for the spacing to magnify, where the Bézier row is almost entirely jump.
 
 ```{code-cell}
 import pathlib
