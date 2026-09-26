@@ -42,7 +42,8 @@ from ..utils import (
     SpatialTree, content_hash, simplex_boxes, values_equal, simplex_measures)
 from ._property import (
     INTERP_QUALITATIVE, INTERP_SUPPORTED, INTERP_SUPPORTED_SEGMENT,
-    INTERP_SUPPORTED_TRIANGLE, Property, UNSET, is_property)
+    INTERP_SUPPORTED_TETRAHEDRON, INTERP_SUPPORTED_TRIANGLE, Property, UNSET,
+    is_property)
 from ._topo import Topology, SimplexTopology
 
 
@@ -95,11 +96,11 @@ def supported_interp(topo, /):
     the only thing its local coordinate can say is which point is nearest.
 
     Otherwise the answer depends on the *element*, because the higher-order
-    polynomial fits are built one dimension at a time. A segment is the first:
-    a cubic through it is exactly determined by the values and slopes at its two
-    ends, and a quadratic's free coefficient follows from the same slopes by
-    least squares. A triangle and a tetrahedron support the element-wise
-    methods that every element has, until their own higher orders are built.
+    fits are built one dimension at a time. A segment is the first: a cubic
+    through it is exactly determined by the values and slopes at its two ends,
+    and a quadratic's free coefficient follows from the same slopes by least
+    squares. A triangle and a tetrahedron build the Bezier construction, each
+    spending the freedom its corners leave on reproducing quadratics.
 
     Parameters
     ----------
@@ -120,6 +121,8 @@ def supported_interp(topo, /):
     # own interpolation is deferred, so it does not take the triangle's.
     if order == 2 and getattr(topo, 'local_dim', None) == 2:
         return INTERP_SUPPORTED_TRIANGLE
+    if order == 3 and getattr(topo, 'local_dim', None) == 3:
+        return INTERP_SUPPORTED_TETRAHEDRON
     return INTERP_SUPPORTED
 
 

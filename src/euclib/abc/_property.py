@@ -76,6 +76,18 @@ VARTYPES = (QUANTITATIVE, QUALITATIVE)
 #: The interpolation methods that ``euclib`` defines. A method names a scheme
 #: for fitting a field through a simplex's values; not all of them are
 #: implemented yet, which is what ``INTERP_SUPPORTED`` records.
+#:
+#: Two of them are the schemes for a polynomial. ``'polynomial'`` fits the
+#: monomial basis to an element's data by least squares, taking the solution of
+#: least norm where the data leaves the fit under-determined; at order 1 that is
+#: exactly linear interpolation, because one value per corner determines a
+#: linear field and nothing more. ``'bezier'`` builds the Bernstein control
+#: values instead --- the construction that keeps two elements agreeing on the
+#: face they share, and that reproduces the polynomials its data can determine.
+#: ``('bezier', 1)`` is the degree-1 Bernstein patch, which is the barycentric
+#: blend itself, so it is the same interpolation as ``('polynomial', 1)`` and is
+#: **an alias for it**: the two may be written interchangeably at order 1, and
+#: at no other order do they agree.
 INTERP_METHODS = (
     'nearest', 'polynomial', 'clough-tocher', 'powell-sabin', 'catmull-rom',
     'bezier')
@@ -94,15 +106,16 @@ INTERP_QUALITATIVE = ('nearest', 0)
 #: ``supported_interp``. This is the set that applies to the elements whose
 #: higher orders have not been built, so a triangle and a tetrahedron support
 #: it as it stands, and a segment supports more.
-INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1))
+INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1), ('bezier', 1))
 
-#: The interpolations a *segment* supports. The higher orders of the polynomial
-#: method are built one dimension at a time, and a segment's are the ones that
-#: exist: a cubic fit is exactly determined by the values and slopes at a
-#: segment's two ends, and a quadratic's one free coefficient is settled by the
-#: two slopes by least squares. Triangles and tetrahedra come next.
-INTERP_SUPPORTED_SEGMENT = (('nearest', 0), ('polynomial', 1),
-                            ('polynomial', 2), ('polynomial', 3))
+#: The interpolations a *segment* supports. The element-wise schemes are built
+#: one element at a time, and a segment is the first: a cubic is exactly
+#: determined by the values and slopes at its two ends, and a quadratic's one
+#: free coefficient is settled by the two slopes by least squares. A segment
+#: takes the Bezier method and not the polynomial one above linear, because its
+#: fit is the control-value construction.
+INTERP_SUPPORTED_SEGMENT = (('nearest', 0), ('polynomial', 1), ('bezier', 1),
+                            ('bezier', 2), ('bezier', 3))
 
 #: The interpolations a *triangle* supports. A cubic's ten control values come
 #: from the nine conditions a triangle's three values and three gradients
@@ -112,8 +125,17 @@ INTERP_SUPPORTED_SEGMENT = (('nearest', 0), ('polynomial', 1),
 #: ``examples/properties/bezier-triangle.md`` for the construction and the
 #: derivation. A prism mesh reports a triangle's order with a third local
 #: dimension and its own interpolation is deferred, so it does not get these.
-INTERP_SUPPORTED_TRIANGLE = (('nearest', 0), ('polynomial', 1),
-                             ('polynomial', 2), ('polynomial', 3))
+INTERP_SUPPORTED_TRIANGLE = (('nearest', 0), ('polynomial', 1), ('bezier', 1),
+                             ('bezier', 2), ('bezier', 3))
+
+#: The interpolations a *tetrahedron* supports. A cubic's twenty control values
+#: come from the sixteen conditions a tetrahedron's four values and four
+#: gradients supply, and the four that are left over sit one on each face, where
+#: the triangle's own rule settles them; a quadratic's ten are settled the same
+#: way, edge by edge. See ``tetrahedron_fit`` for the construction and
+#: ``examples/properties/bezier-triangle.md`` for the derivation it follows.
+INTERP_SUPPORTED_TETRAHEDRON = (('nearest', 0), ('polynomial', 1), ('bezier', 1),
+                                ('bezier', 2), ('bezier', 3))
 
 #: The valid extrapolation orders. Only 0 (nearest point on the object) is
 #: supported; ``None`` means "no extrapolation".

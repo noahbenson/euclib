@@ -16,9 +16,11 @@ property carries metadata at all:
     How to combine the values of the components around a position. Order 0
     takes the value of the nearest; order 1 blends them linearly by distance;
     orders 2 and 3 fit a polynomial of that degree, which needs derivative data
-    because an element's values alone do not determine it. Those fits are built
-    one element at a time: a segment's are done, and triangles, tetrahedra, and
-    the rest follow.
+    because an element's values alone do not determine it. The *method* says
+    how that fit is made --- the monomial basis by least squares, or the Bernstein
+    control values that keep two elements agreeing on a shared face --- and the
+    fits are built one element at a time: a segment's and a triangle's are done,
+    a tetrahedron's with them, and the rest follow.
 ``mask``
     Which components' values are missing. A masked component poisons any blend
     that would have drawn on it, so that a value is never invented from data
@@ -38,6 +40,7 @@ work.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from itertools import combinations
 from math import factorial
 
 from numpy import (
@@ -48,7 +51,7 @@ from numpy import (
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
     INTERP_SUPPORTED, UNSET, normalize_interp)
-from ._geom import Grid
+from ._geom import Grid, SegPath, TetMesh, TriMesh
 
 
 #: Relative tolerance for deciding that a position lies on a geometry.
@@ -268,7 +271,7 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     # property's, and a property that carries none has one estimated from the
     # values around the geometry.
     fitted = None
-    if order >= 2 and geom.order in (1, 2):
+    if order >= 2 and geom.order in (1, 2, 3):
         if gradient is not UNSET and gradient is not None:
             fitted = asarray(gradient)
         elif prop.gradient is not None:
@@ -301,6 +304,40 @@ def _substitute_null(res, missed, null, /):
     res = asarray(res).copy()
     res[(Ellipsis, missed)] = 0 if null is None else null
     return res
+
+
+def _element_fit(geom, /):
+    '''The fit that builds an element's field above linear.
+
+    Each kind of element settles the freedom a quadratic or a cubic leaves in its
+    own way --- a segment's data determines its cubic exactly and leaves its
+    quadratic one coefficient short, a triangle's leaves one control value, and a
+    tetrahedron's leaves the four on its faces --- so the fit is chosen by the
+    element rather than by the order, which several elements share.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry whose elements are being fitted.
+
+    Returns
+    -------
+    callable
+        The fit, called as ``fit(geom, loc, values, corners, gradient, order)``.
+
+    Raises
+    ------
+    NotImplementedError
+        If no quadratic or cubic fit is built for this kind of element.
+    '''
+    if isinstance(geom, SegPath):
+        return segment_fit
+    if isinstance(geom, TriMesh):
+        return triangle_fit
+    if isinstance(geom, TetMesh):
+        return tetrahedron_fit
+    raise NotImplementedError(
+        f"no quadratic or cubic fit is built for {type(geom).__name__}")
 
 
 def _interp_simplex(geom, prop, loc, order, gradient=None, /):
@@ -342,7 +379,7 @@ def _interp_simplex(geom, prop, loc, order, gradient=None, /):
         return (values[..., 0, :], corners, ones(corners.shape, dtype=bool))
     if order >= 2:
         # The higher orders are built one element at a time.
-        fit = segment_fit if geom.order == 1 else triangle_fit
+        fit = _element_fit(geom)
         return (fit(geom, loc, values, corners, gradient, order),
                 corners, ones(corners.shape, dtype=bool))
     weight = asarray(loc.weight)
@@ -365,7 +402,7 @@ def _interp_simplex(geom, prop, loc, order, gradient=None, /):
 
 
 def segment_fit(geom, loc, values, corners, gradient, order, /):
-    '''Fits a polynomial of the given order through one segment's data.
+    '''Fits a Bezier polynomial of the given order through one segment's data.
 
     A segment's polynomial has more coefficients than its two endpoints have
     values, so the values alone cannot determine it: the slopes at the ends are
@@ -512,34 +549,41 @@ def _stencil(neighbours, node, wanted, /):
     return sorted(seen)
 
 
-def simplex_exponents(order, /):
+def simplex_exponents(order, parts=3, /):
     '''Returns the multi-indices of a Bezier simplex's control values.
 
-    A polynomial of degree ``order`` on a triangle is a combination of the
+    A polynomial of degree ``order`` on a simplex is a combination of the
     Bernstein basis polynomials, one per multi-index whose entries sum to the
     order. Those with a single non-zero entry sit at the corners, those with two
-    along the edges, and the rest --- on a triangle, only ``(1, 1, 1)`` ---
-    inside it.
+    along the edges, and the rest further in: on a triangle only ``(1, 1, 1)``,
+    and on a tetrahedron the four that have two non-zero entries, one on each
+    face. The order in which they come back is by the first entry, then the
+    second, and so on.
 
     Parameters
     ----------
     order : int
         The degree.
+    parts : int, optional
+        How many corners the simplex has, which is one more than its dimension:
+        3 for a triangle, the default, and 4 for a tetrahedron.
 
     Returns
     -------
     list of tuple of int
         One index tuple per control value.
     '''
+    if parts == 1:
+        return [(order,)]
     res = []
     for i in range(order + 1):
-        for j in range(order - i + 1):
-            res.append((i, j, order - i - j))
+        for tail in simplex_exponents(order - i, parts - 1):
+            res.append((i,) + tail)
     return res
 
 
 def triangle_fit(geom, loc, values, corners, gradient, order, /):
-    '''Fits a polynomial of the given order through one triangle's data.
+    '''Fits a Bezier polynomial of the given order through one triangle's data.
 
     A triangle's polynomial is determined by its values and its corners'
     gradients --- except for one degree of freedom, because a cubic has ten
@@ -660,6 +704,137 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /):
     # barycentric weights taken to the control point's exponents, over the three
     # corners, scaled by the multinomial coefficient. The weights are (Q, 3), so
     # the exponents have to be (1, 3) alongside them for the product to be taken
+    # over the corners rather than over the queries.
+    basis = (full.T[None, :, :] ** exponents[:, None, :]).prod(axis=-1)
+    counts = asarray([factorial(p) for p in exponents.ravel()]
+                     ).reshape(exponents.shape).prod(axis=1)
+    basis = basis * (factorial(order) / counts)[:, None]
+    return einsum('wq,w...q->...q', basis, control)
+
+
+def tetrahedron_fit(geom, loc, values, corners, gradient, order, /):
+    '''Fits a Bezier polynomial of the given order through one tetrahedron's
+    data.
+
+    A tetrahedron's polynomial is determined by its values and its corners'
+    gradients except for four degrees of freedom, because a cubic has twenty
+    control values where four values and four gradients give sixteen conditions,
+    and a quadratic has ten where they give more than enough. The construction
+    that settles the rest is the triangle's, applied to each of the four faces:
+
+    * Each edge carries the one-dimensional fit of its own two ends, exactly as a
+      segment's fit is made and as a triangle's edges are. Two tetrahedra
+      sharing a face give each of that face's edges the same polynomial, which is
+      what keeps the field continuous across it, and it is why the construction
+      starts with the edges. Its middle control value is the *reflection* of the
+      edge's midpoint value about the endpoints' average: a quadratic's middle
+      control is not the value at the midpoint, and using that value instead
+      costs the fit its reproduction.
+    * A cubic has one control value left on each face, and each is the average of
+      that face's three edges' *degree-2* control values --- the reflected
+      midpoints, not the cubic edges' midpoint values. Degree elevation of a
+      quadratic gives exactly those averages, so the rule is what reproduces
+      quadratics exactly, which is the most the corners can determine: a general
+      cubic's face values are not knowable from them.
+
+    Nothing settles a value *inside* the tetrahedron, because a cubic has none
+    there; the first that does is a quartic's, at ``(1, 1, 1, 1)``.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry the tetrahedron belongs to.
+    loc : LocMixin
+        The local coordinates: a tetrahedron index and the first three
+        barycentric weights.
+    values : numpy.ndarray
+        A ``(C..., 4, Q)`` array of the corners' values at each position.
+    corners : numpy.ndarray
+        The ``(4, Q)`` matrix of the corners each position draws on.
+    gradient : array-like
+        A ``(C..., D, N)`` gradient over the geometry's coordinates.
+    order : int
+        The order of the fit, ``2`` or ``3``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The fitted values, with the property's channel dimensions and one value
+        per position.
+    '''
+    coords = asarray(geom.coords)
+    dim = coords.shape[0]
+    gradient = asarray(gradient)
+    if gradient.shape[-2] != dim:
+        raise ValueError(
+            f"the gradient has {gradient.shape[-2]} dimensions, but this"
+            f" geometry occupies {dim} of them")
+    powers = simplex_exponents(order, 4)
+    exponents = asarray(powers)
+    q = corners.shape[1]
+    ends = coords[:, corners]                                  # (D, 4, Q)
+    # The gradient at each of the corners, which is also how the channels are
+    # carried: a scalar property's gradient is (D, N) and a channelled one's is
+    # (C..., D, N), and the corner axis is the last either way.
+    at = gradient[..., :, corners]                             # (C..., D, 4, Q)
+    control = zeros((len(powers),) + tuple(values.shape[:-2]) + (q,))
+    # The corners hold their own values.
+    for c in range(4):
+        corner = tuple(order if i == c else 0 for i in range(4))
+        control[powers.index(corner)] = values[..., c, :]
+    # Each edge holds the one-dimensional fit of its two ends.
+    for (i, j) in combinations(range(4), 2):
+        step = ends[:, j, :] - ends[:, i, :]                   # (D, Q)
+        # The slope each end asks for along the edge is the gradient's component
+        # in the edge's direction: the parameter runs from 0 at one corner to 1
+        # at the other, so the edge's length is already accounted for.
+        at_i = (at[..., :, i, :] * step).sum(axis=-2)          # (C..., Q)
+        at_j = (at[..., :, j, :] * step).sum(axis=-2)
+        near_i = tuple(order - 1 if c == i else (1 if c == j else 0)
+                       for c in range(4))
+        if order == 3:
+            control[powers.index(near_i)] = values[..., i, :] + at_i / 3.0
+            near_j = tuple(1 if c == i else (order - 1 if c == j else 0)
+                           for c in range(4))
+            control[powers.index(near_j)] = values[..., j, :] - at_j / 3.0
+        else:
+            control[powers.index(near_i)] = (
+                (values[..., i, :] + values[..., j, :]) / 2.0
+                + (at_i - at_j) / 4.0)
+    if order == 3:
+        # One control value per face, each the average of that face's own three
+        # edges' *degree-2* control values, which is what degree elevation asks
+        # for. It is the triangle's rule, and it uses only the three corners of
+        # the face, so the two tetrahedra that share the face agree on it.
+        for face in combinations(range(4), 3):
+            middle = []
+            for (i, j) in ((face[0], face[1]), (face[1], face[2]),
+                           (face[2], face[0])):
+                near_i = tuple(order - 1 if c == i else (1 if c == j else 0)
+                               for c in range(4))
+                near_j = tuple(1 if c == i else (order - 1 if c == j else 0)
+                               for c in range(4))
+                at_i = tuple(order if c == i else 0 for c in range(4))
+                at_j = tuple(order if c == j else 0 for c in range(4))
+                # The cubic edge's own value at its midpoint ...
+                halfway = (control[powers.index(at_i)]
+                           + 3.0 * control[powers.index(near_i)]
+                           + 3.0 * control[powers.index(near_j)]
+                           + control[powers.index(at_j)]) / 8.0
+                # ... reflected, as a control value of degree 2 must be.
+                middle.append(
+                    2.0 * halfway
+                    - (values[..., i, :] + values[..., j, :]) / 2.0)
+            inside = tuple(1 if c in face else 0 for c in range(4))
+            control[powers.index(inside)] = sum(middle) / 3.0
+    # Evaluate the Bernstein basis at the barycentric weights. The last weight
+    # is what the first three leave of the unit sum.
+    weight = asarray(loc.weight)
+    full = concatenate([weight, (1.0 - weight.sum(axis=0))[None, :]], axis=0)
+    # The Bernstein basis, one value per control point: the product of the
+    # barycentric weights taken to the control point's exponents, over the four
+    # corners, scaled by the multinomial coefficient. The weights are (Q, 4), so
+    # the exponents have to be (1, 4) alongside them for the product to be taken
     # over the corners rather than over the queries.
     basis = (full.T[None, :, :] ** exponents[:, None, :]).prod(axis=-1)
     counts = asarray([factorial(p) for p in exponents.ravel()]
@@ -813,8 +988,14 @@ def estimate_gradient(geom, prop, order, /):
                                   @ left[settled].transpose(0, 2, 1)) @ rhs
                         hull = moveaxis(coeffs[:, linear, :], 1, -1) @ \
                             frames[rows[settled]][:, :room, :]         # (G, C, D)
+                        # The solution's channel axis is already leading, as
+                        # the answer's is, so the two are shaped alike and one
+                        # only has to be placed in the other. Transposing it
+                        # first --- which is what the corner axis of a *sample*
+                        # wants --- puts the channels and the dimensions the
+                        # wrong way round for a property with more than one.
                         for (g, node) in enumerate(block[rows[settled]]):
-                            res[..., :, node] = hull[g].T.reshape(
+                            res[..., :, node] = hull[g].reshape(
                                 channels + (dim,))
                     growing.extend(block[rows[~settled]].tolist())
             start = stop
@@ -834,14 +1015,20 @@ def estimate_gradient(geom, prop, order, /):
         (step, frame, room) = _stencil_frame(coords, stencils[i], i)
         degree = order
         (basis, linear, design) = _monomial_design(step, frame, room, degree)
-        rhs = moveaxis(values[..., stencils[i]], -1, 0)
+        # The channels are flattened here as they are in the batched path: a
+        # solve with a stack of right-hand sides is one call where a solve per
+        # channel would be as many as there are channels, and `lstsq` takes a
+        # single design and a single right-hand side rather than a stack of
+        # either.
+        rhs = flat[:, stencils[i]].T                          # (M, C)
         while degree > 1 and (len(basis) > len(stencils[i])
                               or linalg.matrix_rank(design) < len(basis)):
             degree -= 1
             (basis, linear, design) = _monomial_design(step, frame, room,
                                                        degree)
-        coeffs = linalg.lstsq(design, rhs)[0]
-        res[..., :, i] = moveaxis(coeffs[linear], 0, -1) @ frame[:room]
+        coeffs = linalg.lstsq(design, rhs)[0]                 # (W, C)
+        hull = moveaxis(coeffs[linear], 0, -1) @ frame[:room]  # (C, D)
+        res[..., :, i] = hull.reshape(channels + (dim,))
     return res
 
 
@@ -1044,8 +1231,11 @@ __all__ = ('interpolate', 'to_loc', 'is_local_at', 'to_query')
 # be chosen, and with it whether a Property must be able to carry derivative
 # data alongside its values.
 #
-# The candidates are Clough-Tocher elements for triangles, which subdivide each
-# triangle into three and fit cubics that agree in value and gradient across the
-# shared edges; tensor-product Bezier patches for tetrahedra; and Catmull-Rom
-# splines for paths, where the derivative at each vertex can be estimated from
-# its neighbours. This choice was deferred to this release and remains open.
+# What is built is the Bezier construction: the control values that make two
+# elements agree on a shared face, which is a quadratic or a cubic's worth of
+# the corners' data and no more. The schemes that go further --- Clough-Tocher,
+# which subdivides a triangle into three so that a cubic can agree in value *and*
+# gradient across a shared edge, Powell-Sabin for quadratics, and Catmull-Rom
+# splines for paths, where a vertex's derivative comes from its neighbours ---
+# are recognized by name and rejected with NotImplementedError, so the API is in
+# place for them.

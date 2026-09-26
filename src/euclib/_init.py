@@ -36,9 +36,14 @@ if default_backend is not None and default_backend not in backend_names:
 
 #: The interpolation that a quantitative property uses when its metadata leaves
 #: it unspecified. The design calls for ``('bezier', 2)``, a quadratic scheme
-#: that suits smooth real-valued data on a simplex; ``('polynomial', 1)`` is
-#: what is implemented, and this returns to the design's default once the
-#: higher orders are built (see ``euclib.types._interp``).
+#: that suits smooth real-valued data on a simplex, and the Bezier method is now
+#: built for every element that carries a quadratic --- segments, triangles, and
+#: tetrahedra --- so what stands between the design and this is no longer the
+#: method but the *order*. A quadratic default needs derivative data on every
+#: call, and a property that carries none pays for an estimate of it: measured
+#: on a mesh of 133,103 vertices, about 5 s at order 2 against 5 ms at order 1.
+#: Whether that belongs in the default is a decision about the library rather
+#: than about the method, so it is left standing here and recorded.
 #:
 #: The README says something else again --- that an unspecified interpolation on
 #: continuous data is cubic (3) --- so three answers are on record here, and the

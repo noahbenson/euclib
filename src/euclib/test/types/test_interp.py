@@ -12,7 +12,8 @@ from unittest import TestCase
 import numpy as np
 from numpy.random import default_rng
 from numpy import (allclose, arange, array, asarray, concatenate, cos, eye,
-                   isfinite, isnan, linspace, nan, pi, sin, stack, zeros)
+                   isfinite, isnan, linspace, nan, ones, pi, ravel, sin,
+                   stack, zeros)
 
 from euclib.types import (
     Grid, GridTopology, SegPath, SegTopology, TetMesh, TetTopology, TriMesh,
@@ -54,6 +55,21 @@ class TestLinearInterpolation(TestCase):
         path = _path()
         self.assertAlmostEqual(_scalar(path, 't', array([[0.], [0.]])), 0.0)
         self.assertAlmostEqual(_scalar(path, 't', array([[2.], [0.]])), 30.0)
+
+    def test_order_one_is_the_same_under_either_method(self):
+        # A degree-1 Bernstein patch is the barycentric blend itself, so the
+        # two methods are one interpolation at order 1 and ('bezier', 1) is an
+        # alias for ('polynomial', 1). They part company above it, where the
+        # freedom the corners leave has to be spent somehow.
+        path = _path()
+        for x in (0.25, 0.5, 1.75):
+            with self.subTest(x=x):
+                at = array([[x], [0.]])
+                self.assertEqual(
+                    _scalar(path, 't', at, interp=('polynomial', 1)),
+                    _scalar(path, 't', at, interp=('bezier', 1)))
+                self.assertEqual(_scalar(path, 't', at, interp=('bezier', 1)),
+                                 _scalar(path, 't', at, interp=1))
 
     def test_interpolation_is_the_identity_on_a_linear_field(self):
         # A field that is linear in position must come back exactly.
@@ -218,22 +234,27 @@ class TestUnimplementedOrders(TestCase):
             with self.subTest(order=order):
                 self.assertTrue(
                     isfinite(float(_path().prop('t', at=array([[0.5], [0.]]),
-                                                interp=order)[0])))
+                                                interp=('bezier', order))[0])))
 
-    def test_a_higher_order_is_not_built_for_a_tetrahedron_yet(self):
-        # Triangles are built; tetrahedra come next.
-        mesh = TetMesh(array([[0., 1., 0., 0.], [0., 0., 1., 0.],
-                              [0., 0., 0., 1.]]),
-                       TetTopology([[0], [1], [2], [3]])).withprop(
-                           't', array([1., 2., 3., 4.]))
+    def test_a_higher_order_is_built_for_a_tetrahedron(self):
+        # The element-wise fits are built one element at a time, and a
+        # tetrahedron's are done: it fits a quadratic and a cubic through its
+        # values and its corners' gradients. A linear field is what every order
+        # has to reproduce, so that is what both orders are held to.
+        coords = array([[0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]])
+        mesh = TetMesh(coords, TetTopology([[0], [1], [2], [3]]))
+        mesh = mesh.withprop('t', coords.sum(axis=0)[None, :],
+                             gradient=ones((1, 3, 4)))
         for order in (2, 3):
             with self.subTest(order=order):
-                with self.assertRaises(NotImplementedError):
-                    mesh.prop('t', at=array([[0.1], [0.1], [0.1]]), interp=order)
+                self.assertAlmostEqual(
+                    float(asarray(mesh.prop(
+                        't', at=array([[0.2], [0.3], [0.1]]),
+                        interp=('bezier', order))).ravel()[0]), 0.6, places=12)
 
 
-class TestSegmentPolynomial(TestCase):
-    '''The polynomial method above linear, which a segment is the first to have.
+class TestSegmentBezier(TestCase):
+    '''The Bezier method above linear, which a segment is the first to have.
 
     A segment's two values cannot determine a quadratic or a cubic: two
     conditions against three or four coefficients. The slopes at the ends supply
@@ -258,7 +279,7 @@ class TestSegmentPolynomial(TestCase):
 
     def _at(self, path, x, order, y=0., **kw):
         return float(asarray(path.prop('t', at=array([[x], [y]]),
-                                       interp=order, **kw))[0])
+                                       interp=('bezier', order), **kw))[0])
 
     def test_order_three_reproduces_a_cubic_from_supplied_slopes(self):
         # f(x) = x^3 on the nodes, with its exact derivative. A cubic has four
@@ -377,7 +398,7 @@ class TestSegmentPolynomial(TestCase):
         self.assertTrue(isnan(self._at(path, 1.5, 2)))
 
 
-class TestTrianglePolynomial(TestCase):
+class TestTriangleBezier(TestCase):
     '''The polynomial method on a triangle.
 
     A triangle's three values and three gradients are nine conditions where a
@@ -432,7 +453,7 @@ class TestTrianglePolynomial(TestCase):
             with self.subTest(order=order):
                 for (w, point) in self._inside(mesh):
                     got = float(asarray(mesh.prop(
-                        'f', at=point.reshape(2, 1), interp=order))[0])
+                        'f', at=point.reshape(2, 1), interp=('bezier', order)))[0])
                     self.assertAlmostEqual(got, self.F(point[0], point[1]),
                                            places=12)
 
@@ -445,7 +466,7 @@ class TestTrianglePolynomial(TestCase):
             with self.subTest(order=order):
                 for (w, point) in self._inside(mesh):
                     got = float(asarray(mesh.prop(
-                        'f', at=point.reshape(2, 1), interp=order))[0])
+                        'f', at=point.reshape(2, 1), interp=('bezier', order)))[0])
                     self.assertAlmostEqual(got, self.F(point[0], point[1]),
                                            places=12)
 
@@ -485,7 +506,7 @@ class TestTrianglePolynomial(TestCase):
                         loc = mesh.topo.Loc(array([index]),
                                             weights[:2].reshape(2, 1))
                         answers.append(float(asarray(mesh.prop(
-                            'f', at=loc, interp=order))[0]))
+                            'f', at=loc, interp=('bezier', order)))[0]))
                     with self.subTest(order=order, edge=edge, s=s):
                         self.assertAlmostEqual(answers[0], answers[1],
                                                places=12)
@@ -510,7 +531,7 @@ class TestTrianglePolynomial(TestCase):
         for order in (2, 3):
             for (w, point) in self._inside(mesh):
                 got = asarray(mesh.prop('f', at=point.reshape(2, 1),
-                                        interp=order))
+                                        interp=('bezier', order)))
                 self.assertEqual(got.shape, (2, 1))
                 self.assertAlmostEqual(float(got[0, 0]),
                                        self.F(point[0], point[1]), places=12)
@@ -537,7 +558,7 @@ class TestTrianglePolynomial(TestCase):
             with self.subTest(order=order):
                 for node in range(6):
                     got = float(asarray(mesh.prop(
-                        'f', at=coords[:, node].reshape(2, 1), interp=order))[0])
+                        'f', at=coords[:, node].reshape(2, 1), interp=('bezier', order)))[0])
                     self.assertAlmostEqual(got, self.F(coords[0, node],
                                                        coords[1, node]),
                                            places=12)
@@ -548,11 +569,11 @@ class TestTrianglePolynomial(TestCase):
         point = (coords[:, 0] + coords[:, 1] + coords[:, 2]) / 3.0
         exact = self.gradient_of(coords)
         with_estimate = float(asarray(mesh.prop(
-            'f', at=point.reshape(2, 1), interp=2))[0])
+            'f', at=point.reshape(2, 1), interp=('bezier', 2)))[0])
         with_exact = float(asarray(mesh.prop(
-            'f', at=point.reshape(2, 1), interp=2, gradient=exact))[0])
+            'f', at=point.reshape(2, 1), interp=('bezier', 2), gradient=exact))[0])
         with_zero = float(asarray(mesh.prop(
-            'f', at=point.reshape(2, 1), interp=2, gradient=zeros((2, 6))))[0])
+            'f', at=point.reshape(2, 1), interp=('bezier', 2), gradient=zeros((2, 6))))[0])
         self.assertAlmostEqual(with_estimate, with_exact, places=12)
         self.assertAlmostEqual(with_exact, self.F(point[0], point[1]),
                                places=12)
@@ -563,7 +584,7 @@ class TestTrianglePolynomial(TestCase):
     def test_a_gradient_of_the_wrong_dimension_is_refused(self):
         mesh = self._fan()
         with self.assertRaises(ValueError):
-            mesh.prop('f', at=array([[0.], [0.]]), interp=2,
+            mesh.prop('f', at=array([[0.], [0.]]), interp=('bezier', 2),
                       gradient=zeros((3, 6)))
 
     def test_a_mask_poisons_the_triangles_that_draw_on_it(self):
@@ -580,9 +601,9 @@ class TestTrianglePolynomial(TestCase):
                 # A position inside the triangle that has the masked corner,
                 # and one inside the other triangle, which does not.
                 self.assertTrue(isnan(float(asarray(mesh.prop(
-                    'f', at=array([[0.2], [0.2]]), interp=order))[0])))
+                    'f', at=array([[0.2], [0.2]]), interp=('bezier', order)))[0])))
                 self.assertTrue(isnan(float(asarray(mesh.prop(
-                    'f', at=array([[0.8], [0.8]]), interp=order))[0])))
+                    'f', at=array([[0.8], [0.8]]), interp=('bezier', order)))[0])))
 
 
 class TestPointCloudInterpolation(TestCase):
@@ -669,8 +690,34 @@ class TestTheBatchedEstimate(TestCase):
             with self.subTest(x=x, y=y):
                 self.assertAlmostEqual(
                     float(np.asarray(geom.prop(
-                        'f', at=array([[x], [y]]), interp=2)).ravel()[0]),
+                        'f', at=array([[x], [y]]), interp=('bezier', 2))).ravel()[0]),
                     x ** 2 + 2.0 * x * y + 3.0 * y ** 2, places=9)
+
+    def test_a_channelled_property_is_estimated_channel_by_channel(self):
+        # A property's channel dimensions are leading in its gradient as they
+        # are in its values, and the solve's channel axis is leading too, so the
+        # two are shaped alike and one is placed in the other. Putting the
+        # solution in transposed --- which is what the corner axis of a *sample*
+        # wants --- turns the channels and the dimensions the wrong way round for
+        # a property with more than one, and a single-channel property cannot
+        # tell the difference.
+        from euclib.types._interp import estimate_gradient
+        mesh = self._grid(10)
+        points = np.asarray(mesh.coords)
+        values = (points[0] ** 2 + 2.0 * points[0] * points[1])
+        gradient = np.stack([2.0 * points[0] + 2.0 * points[1],
+                             2.0 * points[0]])
+        for channels in ((), (1,), (2,), (2, 3)):
+            with self.subTest(channels=channels):
+                geom = mesh.withprop(
+                    'f', np.broadcast_to(values, channels + values.shape).copy(),
+                    gradient=np.broadcast_to(
+                        gradient, channels + gradient.shape).copy())
+                prop = geom._prop_for('f', None)
+                got = np.asarray(estimate_gradient(geom, prop, 2))
+                self.assertEqual(got.shape, channels + (2,) + values.shape)
+                self.assertTrue(np.allclose(
+                    got, geom.propinfo('f').gradient, atol=1e-9))
 
     def test_the_block_size_does_not_change_the_answer(self):
         # The coordinates are taken a block at a time, and a block boundary
@@ -692,3 +739,140 @@ class TestTheBatchedEstimate(TestCase):
         finally:
             _interp._ESTIMATE_BLOCK = saved
         self.assertTrue(np.array_equal(got, want))
+
+
+class TestTetrahedronBezier(TestCase):
+    '''The Bezier method on a tetrahedron.
+
+    A quadratic or a cubic on a tetrahedron is not determined by its corners'
+    values and gradients --- a cubic has twenty control values where the corners
+    give sixteen conditions --- so a construction settles the rest. It is the
+    triangle's, applied to each of the four faces: every edge carries its own
+    one-dimensional fit, and a cubic's face values are the degree-elevation
+    averages of those edges' degree-2 controls. What that buys is what these
+    tests are about: a quadratic is reproduced exactly, and two tetrahedra that
+    share a face agree on every point of it.
+    '''
+
+    #: Two tetrahedra sharing the face (c1, c2, c3).
+    COORDS = array([[0., 1., 0., 0., 1.],
+                    [0., 0., 1., 0., 1.],
+                    [0., 0., 0., 1., 1.]])
+    TETS = array([[0, 1], [1, 2], [2, 3], [3, 4]])
+
+    #: The quadratic every order has to reproduce, and its gradient.
+    F = staticmethod(lambda x, y, z: x ** 2 + 2 * x * y + 3 * y ** 2 + 4 * z ** 2)
+    DF = staticmethod(lambda p: stack([2 * p[0] + 2 * p[1],
+                                       2 * p[0] + 6 * p[1], 8 * p[2]]))
+
+    def _mesh(self):
+        mesh = TetMesh(self.COORDS, TetTopology(self.TETS))
+        coords = array(mesh.coords)
+        return mesh.withprop('f', self.F(coords[0], coords[1], coords[2])[None, :],
+                             gradient=self.DF(coords)[None, :, :])
+
+    #: Positions inside the first tetrahedron, and inside the second.
+    INSIDE = ((0.2, 0.3, 0.1), (0.1, 0.1, 0.1), (0.05, 0.5, 0.05))
+
+    def test_a_quadratic_is_reproduced(self):
+        mesh = self._mesh()
+        for order in (2, 3):
+            with self.subTest(order=order):
+                for (x, y, z) in self.INSIDE:
+                    got = float(ravel(asarray(mesh.prop(
+                        'f', at=array([[x], [y], [z]]),
+                        interp=('bezier', order))))[0])
+                    self.assertAlmostEqual(got, self.F(x, y, z), places=10)
+
+    def _block(self, cubes):
+        '''A tetrahedral mesh of a ``cubes``-cubed block of unit cubes.
+
+        Each cube is cut into six tetrahedra by the Kuhn decomposition, which
+        cuts a shared face the same way from both sides, so the pieces fit
+        together. The corners belong to the mesh rather than to the cube, which
+        is what gives a node inside the block the neighbours --- along the axes,
+        across the faces, and through the body diagonal --- that a quadratic in
+        three dimensions needs ten monomials to be determined by.
+        '''
+        coords = []
+        where = {}
+
+        def at(i, j, k):
+            if (i, j, k) not in where:
+                where[(i, j, k)] = len(coords)
+                coords.append((i, j, k))
+            return where[(i, j, k)]
+
+        def corner(i, j, k, bits):
+            return at(i + (bits & 1), j + ((bits >> 1) & 1),
+                      k + ((bits >> 2) & 1))
+
+        tets = []
+        for i in range(cubes):
+            for j in range(cubes):
+                for k in range(cubes):
+                    for (a, b) in ((0, 1), (0, 2), (1, 0),
+                                   (1, 2), (2, 0), (2, 1)):
+                        tets.append([corner(i, j, k, 0),
+                                     corner(i, j, k, 1 << a),
+                                     corner(i, j, k, (1 << a) + (1 << b)),
+                                     corner(i, j, k, 7)])
+        return TetMesh(array(coords, dtype=float).T,
+                       TetTopology(array(tets, dtype=int).T))
+
+    def test_the_estimate_reproduces_a_quadratic_on_a_mesh(self):
+        # Two tetrahedra cannot say what a quadratic was --- five nodes do not
+        # determine one --- so a mesh's worth of neighbours is what the estimate
+        # needs. Given them, the fit uses an estimated gradient and reproduces
+        # the quadratic from the values alone.
+        mesh = self._block(2)
+        coords = array(mesh.coords)
+        mesh = mesh.withprop(
+            'f', self.F(coords[0], coords[1], coords[2])[None, :])
+        for (x, y, z) in ((0.5, 0.5, 0.5), (0.25, 0.75, 0.5), (1.5, 0.5, 0.25)):
+            got = float(ravel(asarray(mesh.prop(
+                'f', at=array([[x], [y], [z]]),
+                interp=('bezier', 2))))[0])
+            with self.subTest(point=(x, y, z)):
+                self.assertAlmostEqual(got, self.F(x, y, z), places=9)
+
+    def test_the_values_at_the_corners_are_interpolated(self):
+        mesh = self._mesh()
+        coords = array(mesh.coords)
+        for order in (2, 3):
+            with self.subTest(order=order):
+                for node in range(5):
+                    got = float(ravel(asarray(mesh.prop(
+                        'f', at=coords[:, node].reshape(3, 1),
+                        interp=('bezier', order))))[0])
+                    self.assertAlmostEqual(
+                        got, self.F(coords[0, node], coords[1, node],
+                                    coords[2, node]), places=12)
+
+    #: A face of the first tetrahedron, as the weights its own local coordinate
+    #: stores: the shared face is corners 1, 2 and 3, so its weight on corner 0
+    #: is zero and the last weight is what the three of them leave. The second
+    #: tetrahedron's corners are (c1, c2, c3, c4), so the same face is opposite
+    #: its *last* corner, which is the one a weight is implied for.
+    def _on_the_face(self, one, two, three):
+        return (array([0.0, one, two]).reshape(3, 1),
+                array([one, two, three]).reshape(3, 1))
+
+    def test_two_tetrahedra_agree_on_the_face_they_share(self):
+        mesh = self._mesh()
+        loc = mesh.topo.Loc
+        for order in (2, 3):
+            for (s, t) in ((0.2, 0.3), (0.5, 0.25), (0.1, 0.8), (0.6, 0.2)):
+                with self.subTest(order=order, point=(s, t)):
+                    (first, second) = self._on_the_face(s, t, 1.0 - s - t)
+                    one = float(ravel(asarray(mesh.prop(
+                        'f', at=loc(array([0]), first),
+                        interp=('bezier', order))))[0])
+                    two = float(ravel(asarray(mesh.prop(
+                        'f', at=loc(array([1]), second),
+                        interp=('bezier', order))))[0])
+                    self.assertAlmostEqual(one, two, places=12)
+                    # ...and both are the field's own value there, since it is
+                    # a quadratic and the construction reproduces those.
+                    (x, y, z) = (s, t, 1.0 - s - t)
+                    self.assertAlmostEqual(one, self.F(x, y, z), places=10)
