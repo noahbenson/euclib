@@ -317,8 +317,32 @@ def across_vector(triangle, k, /):
                 plane_normal(triangle))
 
 
+def neighbours_of(vertex, /):
+    """The other two corners of a triangle, in increasing order. A triangle's
+    corners are 0, 1 and 2, so this is the two that are not this one."""
+    return tuple(x for x in range(3) if x != vertex)
+
+
 def element_rows(triangle, /):
-    """The rows that read off the twelve numbers, and what each one is."""
+    """The rows that read off the twelve numbers, and what each one is.
+
+    The twelve are the three corners' values, the derivative at each corner
+    *along its two edges towards the other corners* --- six numbers --- and the
+    derivative across each edge at its midpoint. They are the twelve the
+    classical construction is stated in, and the derivation on the method's
+    page works entirely in them.
+
+    **Why the slopes and not the gradient's components.** The element has to
+    serve a triangle in a plane and a triangle in space alike, and what makes
+    that possible is taking its second-order data as derivatives in *geometric*
+    directions: the vector from a corner to its neighbour is a direction in the
+    geometry, however the geometry is named, and the derivative along it is the
+    same number for the triangle in a plane and for the triangle in space. A
+    component of the gradient in a *coordinate* direction is only the slope
+    along an edge when the edge happens to run along that axis, and nothing else
+    in the construction repairs it --- which is exactly how the element came to
+    answer wrongly for a mesh in three dimensions.
+    """
     rows = []
     for vertex in range(3):
         k = _holders(vertex)[0]
@@ -327,11 +351,12 @@ def element_rows(triangle, /):
         w[corner] = 1.0
         rows.append((_row_from(lambda c, w=w, k=k: evaluate(c[k], w), k),
                      ('value', vertex)))
-        for component in (0, 1):
+        for other in neighbours_of(vertex):
+            along = triangle[:, other] - triangle[:, vertex]
             rows.append((_row_from(
-                lambda c, w=w, k=k, m=component:
-                gradient(c[k], _corners(triangle, k), w)[m], k),
-                ('gradient', vertex, component)))
+                lambda c, w=w, k=k, d=along:
+                float(gradient(c[k], _corners(triangle, k), w) @ d), k),
+                ('slope', vertex, other)))
     for k in range(3):
         w = array([0.5, 0.5, 0.0])
         across = across_vector(triangle, k)
@@ -536,6 +561,13 @@ def across_of(coords, i, j, normal, /):
     return turn(coords[:, b] - coords[:, a], normal)
 
 
+def _slope_column(corner, towards, /):
+    """Which of a triangle's twelve numbers is the slope at one corner along
+    the edge towards another: a value and then the two slopes per corner, the
+    slopes in the order the neighbours come in."""
+    return 3 * corner + 1 + neighbours_of(corner).index(towards)
+
+
 def triangle_blocks(corners, /):
     """What one triangle says its three edges' derivatives are.
 
@@ -555,27 +587,39 @@ def triangle_blocks(corners, /):
     there combined through the triangle's own axes and dotted with the edge's
     across direction.
     """
-    (dim, _) = (corners.shape[0], 3)
-    width = 3 * (dim + 1)
+    # A triangle's twelve numbers: three values, the slope at each corner along
+    # each of its two edges, and the derivative across each edge at its
+    # midpoint. The same twelve whatever the dimension --- which is what lets
+    # this serve a triangle in a plane and a triangle in space alike --- and the
+    # slopes are in *geometric* directions, from a corner towards a neighbour,
+    # so they are the same numbers for either.
+    width = 12
     block = zeros((3, width))
     controls = zeros((10, width))
     for c in range(3):
         controls[SPOT[tuple(3 if x == c else 0 for x in range(3))], 3 * c] = 1.0
     for (u, v) in ((0, 1), (1, 2), (2, 0)):
-        step = corners[:, v] - corners[:, u]
         near_u = SPOT[tuple(2 if x == u else (1 if x == v else 0)
                             for x in range(3))]
         near_v = SPOT[tuple(1 if x == u else (2 if x == v else 0)
                             for x in range(3))]
+        # A third of the way from u towards v the field is u's value plus a
+        # third of the slope at u along that edge --- and the same at the other
+        # end, the slope there being the one along the edge towards u.
         controls[near_u, 3 * u] = 1.0
-        controls[near_u, 3 * u + 1:3 * u + 1 + dim] = step / 3.0
+        controls[near_u, _slope_column(u, v)] = 1.0 / 3.0
         controls[near_v, 3 * v] = 1.0
-        controls[near_v, 3 * v + 1:3 * v + 1 + dim] = -step / 3.0
+        controls[near_v, _slope_column(v, u)] = 1.0 / 3.0
+        # The interior control is the mean of the three edges' *reflected*
+        # midpoints, each of which is
+        # ``(v_u + v_v)/2 + (s(u->v) + s(v->u))/4`` --- the same form the
+        # quadratic edge's middle control has, and not the midpoint value, which
+        # has the slopes over eight instead of over four.
         inside = SPOT[(1, 1, 1)]
         controls[inside, 3 * u] += 0.5 / 3.0
         controls[inside, 3 * v] += 0.5 / 3.0
-        controls[inside, 3 * u + 1:3 * u + 1 + dim] += step / 12.0
-        controls[inside, 3 * v + 1:3 * v + 1 + dim] -= step / 12.0
+        controls[inside, _slope_column(u, v)] += 0.25 / 3.0
+        controls[inside, _slope_column(v, u)] += 0.25 / 3.0
     axes = array([corners[:, 1] - corners[:, 0],
                   corners[:, 2] - corners[:, 0]]).T
     for (e, (a, b)) in enumerate(((0, 1), (1, 2), (2, 0))):
@@ -639,7 +683,7 @@ def edge_operator(coords, indices, /):
         so that a caller can read off what a triangle's edges come to without
         looking the edges up again.
     """
-    from scipy.sparse import block_diag, csr_matrix, identity, vstack
+    from scipy.sparse import block_diag, csr_matrix, vstack
     (dim, count) = (coords.shape[0], coords.shape[1])
     triangles = indices.shape[1]
     corners_of = [[int(x) for x in indices[:, t]] for t in range(triangles)]
@@ -651,15 +695,35 @@ def edge_operator(coords, indices, /):
     for (edge, row) in where.items():
         edges[row] = edge
     # What each triangle says, as one block-diagonal stack of its three rows.
+    # The element's map is over all twelve of its numbers; the three that are
+    # derivatives *across* an edge are not among a property's data --- they are
+    # what this operator produces --- so only the nine a property can supply are
+    # read here, and the whole point of the operator is to say what the tenth,
+    # eleventh and twelfth would be.
     says = block_diag(
-        [csr_matrix(triangle_blocks(coords[:, here])) for here in corners_of],
-        format='csr')
-    # The numbers each triangle reads: a value and a gradient per corner, which
-    # is a row of the ``(N + D*N)`` identity apiece.
-    big = identity(count + dim * count, format='csr')
-    wanted = [b * count + corner for here in corners_of for corner in here
-              for b in range(dim + 1)]
-    numbers = big[wanted]
+        [csr_matrix(triangle_blocks(coords[:, here])[:, :9])
+         for here in corners_of], format='csr')
+    # ...and the nine numbers themselves, out of each corner's value and its
+    # gradient: the value is the value, and a slope is the gradient's components
+    # combined along the direction towards the neighbour, which is a direction
+    # in the geometry and not in the coordinates, so this is the same operator
+    # for a mesh in a plane and a mesh in space.
+    (rows_out, cols_out, data_out) = ([], [], [])
+    for (t, here) in enumerate(corners_of):
+        base = 9 * t
+        for vertex in range(3):
+            corner = here[vertex]
+            rows_out.append(base + 3 * vertex)
+            cols_out.append(corner)
+            data_out.append(1.0)
+            for (place, other) in enumerate(neighbours_of(vertex)):
+                along = coords[:, here[other]] - coords[:, corner]
+                for m in range(dim):
+                    rows_out.append(base + 3 * vertex + 1 + place)
+                    cols_out.append((m + 1) * count + corner)
+                    data_out.append(float(along[m]))
+    numbers = csr_matrix((data_out, (rows_out, cols_out)),
+                         shape=(9 * triangles, count + dim * count))
     # Which triangles say anything about which edge, averaged.
     rows = []
     columns = []

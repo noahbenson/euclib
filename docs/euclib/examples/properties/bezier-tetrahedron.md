@@ -405,8 +405,12 @@ the element has.
 A cubic patch whose *slope* is continuous across a shared face, rather than only
 its value, is what finite-element plates need, and on a tetrahedron that takes
 either a split of the element or a higher degree than the corners can pay for.
-`euclib`'s Clough–Tocher and Powell–Sabin methods are the triangle answers to it
-and are not built yet; see the roadmap.
+On a *triangle* `euclib` answers it by splitting the element instead of raising
+the degree: [Clough–Tocher interpolation on a triangle](clough-tocher-triangle.md)
+splits each triangle into three cubics that agree in gradient across the edges
+between them. The corresponding scheme for a tetrahedron, and the piecewise
+*quadratic* answer to the same question, are Powell–Sabin's and are not built
+yet; see the roadmap.
 :::
 
 :::{seealso}

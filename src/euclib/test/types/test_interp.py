@@ -1120,3 +1120,67 @@ class TestCloughTocher(TestCase):
                 self.assertAlmostEqual(float(got[0]), self.QUADRATIC(x, y),
                                        places=12)
                 self.assertAlmostEqual(float(got[1]), second(x, y), places=12)
+
+
+class TestCloughTocherOnATriangleInSpace(TestCase):
+    '''The method on a mesh that does not lie in a coordinate plane.
+
+    A triangle in space has a plane of its own just as a triangle in the plane
+    does --- its three pieces stay coplanar however it is carried --- so the
+    construction is the same one and only the *data* has to be read aright: in
+    directions the geometry defines rather than in the coordinates'. A surface
+    field's ambient gradient has as many components as the space has
+    dimensions, and the element is built from its derivatives along the
+    triangle's edges alone. Read as the gradient's first two coordinate
+    components, the element answered wrongly by more than a fifth of the
+    field's own scale on a triangle that was merely turned; read as the
+    derivation says, a quadratic of the triangle's own plane comes back to
+    machine precision, which is what this checks.
+    '''
+
+    #: A triangle carried off every coordinate plane, with no symmetry to hide
+    #: behind either.
+    TRIANGLE = array([[0.0, 1.2, 0.4], [0.3, 0.3, 1.1], [0.7, 0.6, -0.2]])
+
+    def _along(self):
+        return np.stack([self.TRIANGLE[:, 1] - self.TRIANGLE[:, 0],
+                         self.TRIANGLE[:, 2] - self.TRIANGLE[:, 0]], axis=1)
+
+    def _inplane(self, point):
+        '''A position's two coordinates within the triangle's own plane.'''
+        return np.linalg.pinv(self._along()) @ (point - self.TRIANGLE[:, 0])
+
+    def _field(self, point):
+        (u, v) = self._inplane(point)
+        return (0.4 * u ** 2 - 0.3 * u * v + 0.25 * v ** 2
+                + 0.8 * u - 0.2 * v + 0.5)
+
+    def _gradient(self, point):
+        (u, v) = self._inplane(point)
+        inplane = array([0.8 * u - 0.3 * v + 0.8, -0.3 * u + 0.5 * v - 0.2])
+        return np.linalg.pinv(self._along()).T @ inplane
+
+    def _mesh(self):
+        from euclib import trimesh
+        mesh = trimesh(self.TRIANGLE, array([[0], [1], [2]]))
+        values = array([[self._field(self.TRIANGLE[:, c]) for c in range(3)]])
+        slopes = stack([self._gradient(self.TRIANGLE[:, c])
+                        for c in range(3)], axis=-1)[None, :, :]
+        return mesh.withprop('q', values, gradient=slopes)
+
+    def test_a_quadratic_of_the_triangles_own_plane_is_reproduced(self):
+        carried = self._mesh()
+        for (u, v) in ((0.2, 0.2), (0.5, 0.3), (0.3, 0.5), (0.1, 0.8)):
+            with self.subTest(inplane=(u, v)):
+                point = self.TRIANGLE[:, 0] + self._along() @ array([u, v])
+                got = float(ravel(asarray(carried.prop(
+                    'q', at=point.reshape(3, 1),
+                    interp=('clough-tocher', 3))))[0])
+                self.assertAlmostEqual(got, self._field(point), places=12)
+
+    def test_it_is_offered_where_a_triangle_in_space_is(self):
+        from euclib.abc import supported_interp
+        from euclib import trimesh
+        support = supported_interp(
+            trimesh(self.TRIANGLE, array([[0], [1], [2]])).topo)
+        self.assertIn(('clough-tocher', 3), support)

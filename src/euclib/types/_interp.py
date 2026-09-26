@@ -1092,21 +1092,20 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
     '''
     coords = asarray(geom.coords)
     dim = coords.shape[0]
-    if dim != 2:
-        # The element is a construction on a triangle *in its own plane*: its
-        # twelve numbers are the corners' values and their gradients within that
-        # plane, and its control net and interior conditions are the plane's.
-        # None of that changes for a triangle in space --- the three pieces are
-        # coplanar however the triangle sits --- but the *data* does: what
-        # reaches this fit is the ambient gradient of a surface field, whose
-        # components in the coordinate directions are not the ones the element
-        # is built from. Lifting each triangle into its own two-dimensional
-        # frame, and expressing the gradients there, is the fix, and it is not
-        # built.
-        raise NotImplementedError(
-            f"the Clough-Tocher fit is built for triangles in a plane, and this"
-            f" geometry's triangles are in {dim} dimensions; lifting them into"
-            f" their own frames is not built yet")
+    # A triangle in space is no different to construct on than one in a plane:
+    # its three pieces are coplanar however it sits, its control net is the
+    # four-point net the plane's is, and its interior conditions are the plane's.
+    # What makes that true is where the twelve numbers *come from*. Two of the
+    # three kinds are the corners' values and the slopes at each corner along
+    # each of its edges --- and a slope is a derivative in a direction defined by
+    # the geometry, so the number is the same one for the triangle in the plane
+    # and the triangle in space. The third kind is the derivative across an edge,
+    # whose direction is the edge turned a quarter turn *within the triangle's
+    # plane*; that direction is a vector in space, the derivative along it is a
+    # derivative of the same field, and the turn keeps two triangles sharing an
+    # edge agreeing about which way it points. Nothing here ever needs a
+    # coordinate component of a gradient, which is the one thing a triangle in
+    # space would not have to offer.
     channels = tuple(values.shape[:-2])
     width = 1
     for entry in channels:
@@ -1144,10 +1143,17 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
         for vertex in range(3):
             numbers[:, 3 * vertex] = values[
                 (Ellipsis, vertex, first[slot])].reshape(width)
-            numbers[:, 3 * vertex + 1] = slopes[
-                (Ellipsis, 0, here[vertex])].reshape(width)
-            numbers[:, 3 * vertex + 2] = slopes[
-                (Ellipsis, 1, here[vertex])].reshape(width)
+            # The derivative at this corner *along each of its edges*, which is
+            # a direction in the geometry and so is the same number whether the
+            # triangle is in a plane or in space. A component of the gradient in
+            # a coordinate direction is only this when the edge runs along that
+            # axis.
+            for (place, other) in enumerate(_ct.neighbours_of(vertex)):
+                along = (coords[:, here[other]]
+                         - coords[:, here[vertex]]).reshape(dim)
+                numbers[:, 3 * vertex + 1 + place] = einsum(
+                    '...d,d->...', slopes[(Ellipsis, slice(None), here[vertex])],
+                    along).reshape(width)
         for k in range(3):
             numbers[:, 9 + k] = across[:, rows_of[element, k]]
         # The twelve control vectors for this triangle's shape, and the

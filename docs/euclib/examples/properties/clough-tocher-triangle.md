@@ -73,8 +73,17 @@ The element is interpolated from **twelve numbers**:
 | number | how many | what it is |
 |---|---|---|
 | corner values | 3 | the field's value at each corner |
-| corner gradients | 6 | its two first derivatives at each corner |
+| corner slopes | 6 | the derivative at each corner along each of its two edges |
 | edge derivatives | 3 | the derivative *across* each edge, at the edge's midpoint |
+
+The second kind is stated as a *slope* rather than as the gradient's
+components, and that is not a manner of speaking: it is what makes the element
+work on a triangle that does not lie in a coordinate plane, as the section on
+[triangles in space](#triangles-in-space) below shows. A slope is the field's
+derivative along a direction the triangle's own geometry defines, so it is the
+same number however the triangle is placed; a gradient's components in the
+coordinate directions are the slopes along the edges only when the edges happen
+to run along the axes.
 
 The last three are what a triangle's corner data does not supply, and they are
 what buys the smoothness. A derivative across an edge is a direction-dependent
@@ -134,6 +143,75 @@ print(f"  (the space holds the cubics, which are"
       f" {(3 + 1) * (3 + 2) // 2} dimensional, and it has"
       f" {30 - np.linalg.matrix_rank(smooth)})")
 ```
+
+## Triangles in space
+
+Nothing above assumed the triangle was flat in the coordinate plane. A triangle
+in three-dimensional space has a plane of its own — any three points do — and its
+three pieces are coplanar within it, so the control net, the interior
+conditions, and the construction are exactly the ones just derived. What a
+triangle in space does *not* have is coordinate directions inside its plane, and
+that is the one thing the element must never ask for.
+
+It does not, because of how the second kind of number is stated. A slope is the
+field's derivative along an **edge**, and an edge is a direction the geometry
+defines: the vector from one corner to another is a vector in space, and the
+derivative along it is a number that means the same thing whether the triangle
+sits in a coordinate plane or is standing on end. The third kind is the same
+argument once more: the derivative across an edge is taken along the edge turned
+a quarter turn *within the triangle's plane*, which is again a direction the
+geometry supplies, and the turn is made the same way from both sides of a shared
+edge so that two elements agree about which way it points.
+
+Read the other way — as the ambient gradient's first two components in the
+coordinate directions — the number is right only when the triangle happens to
+lie in the first two axes, and wrong otherwise by a fifth of the field's own
+scale. The check below is the difference between the two readings, on a triangle
+with no symmetry to hide behind and a quadratic of its own plane on it.
+
+```{code-cell}
+# A triangle carried off every coordinate plane. `along` holds its two edge
+# directions, which span the plane it lies in and are all the frame it needs.
+T = np.array([[0.0, 1.2, 0.4], [0.3, 0.3, 1.1], [0.7, 0.6, -0.2]])
+along = np.stack([T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]], axis=1)
+
+def inplane(point):
+    """A position's two coordinates within the triangle's own plane."""
+    return np.linalg.pinv(along) @ (point - T[:, 0])
+
+def q(point):
+    """A quadratic of that plane, and the answer to compare against."""
+    (u, v) = inplane(point)
+    return 0.4 * u ** 2 - 0.3 * u * v + 0.25 * v ** 2 + 0.8 * u - 0.2 * v + 0.5
+
+def dq(point):
+    """Its gradient in the ambient coordinates.
+
+    The chain rule: the two in-plane derivatives are carried out to the
+    ambient ones by the edge directions' pseudo-inverse, which is how the
+    inverse of a map between spaces of different dimensions is meant.
+    """
+    (u, v) = inplane(point)
+    return np.linalg.pinv(along).T @ np.array([0.8 * u - 0.3 * v + 0.8,
+                                               -0.3 * u + 0.5 * v - 0.2])
+
+space = el.trimesh(T, np.array([[0], [1], [2]]))
+space = space.withprop('q', np.array([[q(T[:, c]) for c in range(3)]]),
+                       gradient=np.stack([dq(T[:, c]) for c in range(3)],
+                                         axis=-1)[None, :, :])
+worst = 0.0
+for (u, v) in ((0.2, 0.2), (0.5, 0.3), (0.3, 0.5), (0.1, 0.8)):
+    point = T[:, 0] + along @ np.array([u, v])
+    got = float(np.ravel(np.asarray(space.prop(
+        'q', at=point.reshape(3, 1), interp=('clough-tocher', 3))))[0])
+    worst = max(worst, abs(got - q(point)))
+print(f"  a quadratic of the triangle's own plane, on a triangle in space:")
+print(f"    worst difference over four points = {worst:.3e}")
+```
+
+The number is the arithmetic's own noise, which is the sense in which the
+element serves a triangle in space: not nearly, but exactly, and for the same
+reason it does in a plane.
 
 ## A worked example: two triangles across an edge
 
