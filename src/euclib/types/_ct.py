@@ -93,7 +93,8 @@ def directional(controls, w, axis, /):
         base = list(p)
         base[0] += 1
         total += COEF2[p] * (w[0] ** p[0]) * (w[1] ** p[1]) * (w[2] ** p[2]) \
-            * (controls[SPOT[tuple(high)]] - controls[SPOT[tuple(base)]])
+            * (controls[..., SPOT[tuple(high)]]
+               - controls[..., SPOT[tuple(base)]])
     return 3.0 * total
 
 
@@ -111,9 +112,9 @@ def gradient(controls, corners, w, /):
     # The two directions from the first corner, as the columns of a matrix.
     along = array([corners[:, 1] - corners[:, 0],
                    corners[:, 2] - corners[:, 0]]).T
-    wanted = array([directional(controls, w, 1),
-                    directional(controls, w, 2)])
-    return linalg.solve(along.T, wanted)
+    wanted = stack([directional(controls, w, 1),
+                    directional(controls, w, 2)], axis=-1)
+    return einsum('jk,...k->...j', linalg.inv(along.T), wanted)
 
 
 # The pieces #################################################################
@@ -302,17 +303,21 @@ def _bezier_controls(values, gradients, corners, /):
     asks it one triangle at a time.
     """
     (ends, at) = (corners, gradients)
-    control = zeros(10)
+    # A property's channel dimensions lead and the corners follow the
+    # dimensions, so the corner is the *last* axis of the values and the first
+    # of the controls, which are indexed as ``control[..., spot]``.
+    control = zeros(gradients.shape[:-2] + (len(POWERS),))
 
     def spot(power, /):
         return SPOT[tuple(power)]
 
     def along(i, j, /):
         step = ends[:, j] - ends[:, i]
-        return (float(at[:, i] @ step), float(at[:, j] @ step))
+        return (at[..., :, i] @ step, at[..., :, j] @ step)
+
 
     for c in range(3):
-        control[spot([3 if x == c else 0 for x in range(3)])] = values[c]
+        control[..., spot([3 if x == c else 0 for x in range(3)])] = values[..., c]
     for (i, j) in ((0, 1), (1, 2), (2, 0)):
         (da, db) = along(i, j)
         # The control a third of the way in from each end, which carries the
@@ -320,17 +325,18 @@ def _bezier_controls(values, gradients, corners, /):
         # at the other.
         near_i = [2 if x == i else (1 if x == j else 0) for x in range(3)]
         near_j = [1 if x == i else (2 if x == j else 0) for x in range(3)]
-        control[spot(near_i)] = values[i] + da / 3.0
-        control[spot(near_j)] = values[j] - db / 3.0
+        control[..., spot(near_i)] = values[..., i] + da / 3.0
+        control[..., spot(near_j)] = values[..., j] - db / 3.0
     # The one interior control: the average of the three edges' *degree-2*
     # control values, which is what degree elevation of a quadratic gives.
     middle = []
     for (i, j) in ((0, 1), (1, 2), (2, 0)):
         (da, db) = along(i, j)
-        (bi, bj) = (values[i] + da / 3.0, values[j] - db / 3.0)
-        halfway = (values[i] + 3.0 * bi + 3.0 * bj + values[j]) / 8.0
-        middle.append(2.0 * halfway - (values[i] + values[j]) / 2.0)
-    control[spot([1, 1, 1])] = sum(middle) / 3.0
+        (bi, bj) = (values[..., i] + da / 3.0, values[..., j] - db / 3.0)
+        halfway = (values[..., i] + 3.0 * bi + 3.0 * bj + values[..., j]) / 8.0
+        middle.append(2.0 * halfway
+                      - (values[..., i] + values[..., j]) / 2.0)
+    control[..., spot([1, 1, 1])] = sum(middle) / 3.0
     return control
 
 
@@ -390,7 +396,7 @@ def edge_data(geom, values, slopes, /):
             # The gradient of the patch at the midpoint of that edge.
             direction = gradient(control, coords[:, here], w)
             key = (min(i, j), max(i, j))
-            total[key] = total.get(key, 0.0) + float(direction @ across)
+            total[key] = total.get(key, 0) + asarray(direction @ across)
             count[key] = count.get(key, 0) + 1
     return {key: total[key] / count[key] for key in total}
 

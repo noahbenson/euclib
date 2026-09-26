@@ -172,6 +172,36 @@ class TestTheEdgeEstimate(TestCase):
             worst = max(worst, abs(got - want))
         self.assertLess(worst, 1e-12)
 
+    def test_a_channelled_property_is_estimated_channel_by_channel(self):
+        # A property may carry more than one channel, and each is a field of
+        # its own: the estimate has to be made for every channel at once, with
+        # the channel dimensions leading as they do everywhere else.
+        mesh = self._mesh()
+        coords = self.COORDS
+        fields = (QUADRATIC, lambda q: (-0.2 * q[0] ** 2 + 0.5 * q[0] * q[1]
+                                        + 0.3 * q[1] ** 2 - 0.4 * q[1] + 1.0))
+        slopes = (QUADRATIC_GRADIENT,
+                  lambda q: np.array([-0.4 * q[0] + 0.5 * q[1],
+                                      0.5 * q[0] + 0.6 * q[1] - 0.4]))
+        count = coords.shape[1]
+        values = np.stack([
+            np.array([field(coords[:, i]) for i in range(count)])
+            for field in fields])
+        gradients = np.stack([
+            np.stack([slope(coords[:, i]) for i in range(count)], axis=-1)
+            for slope in slopes])
+        found = _ct.edge_data(mesh, values, gradients)
+        worst = 0.0
+        for ((i, j), got) in found.items():
+            middle = (coords[:, i] + coords[:, j]) / 2.0
+            across = _ct._across_of(coords, i, j)
+            with self.subTest(edge=(i, j)):
+                self.assertEqual(np.asarray(got).shape, (2,))
+                want = np.array([float(slope(middle) @ across)
+                                 for slope in slopes])
+                worst = max(worst, np.abs(np.asarray(got) - want).max())
+        self.assertLess(worst, 1e-12)
+
     def test_the_two_triangles_sharing_an_edge_agree_on_it(self):
         # The estimate is the average of the two, and each of them says the
         # same thing about a quadratic -- which is the property that makes the
