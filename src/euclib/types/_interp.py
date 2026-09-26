@@ -1092,6 +1092,21 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
     '''
     coords = asarray(geom.coords)
     dim = coords.shape[0]
+    if dim != 2:
+        # The element is a construction on a triangle *in its own plane*: its
+        # twelve numbers are the corners' values and their gradients within that
+        # plane, and its control net and interior conditions are the plane's.
+        # None of that changes for a triangle in space --- the three pieces are
+        # coplanar however the triangle sits --- but the *data* does: what
+        # reaches this fit is the ambient gradient of a surface field, whose
+        # components in the coordinate directions are not the ones the element
+        # is built from. Lifting each triangle into its own two-dimensional
+        # frame, and expressing the gradients there, is the fix, and it is not
+        # built.
+        raise NotImplementedError(
+            f"the Clough-Tocher fit is built for triangles in a plane, and this"
+            f" geometry's triangles are in {dim} dimensions; lifting them into"
+            f" their own frames is not built yet")
     channels = tuple(values.shape[:-2])
     width = 1
     for entry in channels:

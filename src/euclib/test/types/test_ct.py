@@ -168,7 +168,11 @@ class TestTheEdgeEstimate(TestCase):
         worst = 0.0
         for ((i, j), got) in found.items():
             middle = (coords[:, i] + coords[:, j]) / 2.0
-            want = float(QUADRATIC_GRADIENT(middle) @ _ct._across_of(coords, i, j))
+            # These meshes are in the plane, so the direction across an edge
+            # is the edge turned within that plane.
+            want = float(QUADRATIC_GRADIENT(middle)
+                         @ _ct._across_of(coords, i, j,
+                                          np.array([0.0, 0.0, 1.0])))
             worst = max(worst, abs(got - want))
         self.assertLess(worst, 1e-12)
 
@@ -194,11 +198,12 @@ class TestTheEdgeEstimate(TestCase):
         worst = 0.0
         for ((i, j), got) in found.items():
             middle = (coords[:, i] + coords[:, j]) / 2.0
-            across = _ct._across_of(coords, i, j)
+            across = _ct._across_of(coords, i, j,
+                                    np.array([0.0, 0.0, 1.0]))
             with self.subTest(edge=(i, j)):
                 self.assertEqual(np.asarray(got).shape, (2,))
                 want = np.array([float(slope(middle) @ across)
-                                 for slope in slopes])
+                             for slope in slopes])
                 worst = max(worst, np.abs(np.asarray(got) - want).max())
         self.assertLess(worst, 1e-12)
 

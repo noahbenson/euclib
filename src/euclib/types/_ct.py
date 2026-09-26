@@ -254,6 +254,53 @@ def _c1(triangle, samples=5, /):
     return rows
 
 
+def plane_normal(corners, /):
+    """The normal of the plane a triangle lies in.
+
+    A triangle in two dimensions is lifted to the plane it is drawn in, which is
+    the one its points are named in; a triangle in three has a plane of its own.
+    The *sign* does not matter to anything below, because a normal turned round
+    turns the edge round with it and the turn below settles its own sign.
+    """
+    if corners.shape[0] == 2:
+        return array([0.0, 0.0, 1.0])
+    (u, v) = (corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    return array([u[1] * v[2] - u[2] * v[1],
+                  u[2] * v[0] - u[0] * v[2],
+                  u[0] * v[1] - u[1] * v[0]])
+
+
+def turn(edge, normal, /):
+    """An edge turned a quarter turn *within the plane it lies in*.
+
+    For an edge of a triangle in a plane this is the quarter turn the element
+    has always used; for an edge of a triangle in space it is the turn within
+    that triangle's own plane, which the flat formula is not --- the flat formula
+    turns the edge in the coordinate plane, which for a triangle in space is not
+    the triangle's plane at all, and can point off the surface entirely.
+
+    The sign is settled from the result rather than from the normal: the first
+    component that is not zero decides it. Two triangles in the *same* plane
+    give parallel turns differing only in sign, and this makes them agree on one
+    vector, which is what lets two elements in a plane be C1 across the edge
+    they share. Two triangles in *different* planes give genuinely different
+    turns whatever it says, and no rule can reconcile them --- the surface is
+    creased there and the two derivatives mean different things.
+    """
+    if len(edge) == 2:
+        candidate = array([edge[1], -edge[0]])
+    else:
+        (a, b, c) = edge
+        (u, v, w) = normal
+        candidate = array([b * w - c * v, c * u - a * w, a * v - b * u])
+    for entry in candidate:
+        if entry > 0.0:
+            return candidate
+        if entry < 0.0:
+            return -candidate
+    return candidate
+
+
 def across_vector(triangle, k, /):
     """The vector the derivative across piece k's outer edge is taken along.
 
@@ -262,12 +309,12 @@ def across_vector(triangle, k, /):
     agree; so the direction belongs to the *edge* and not to the element. It is
     the edge's two corners put in order by where they are --- not by their
     index, which the two elements number differently --- turned a quarter turn
-    one way.
+    within the triangle's plane.
     """
     (a, b) = EDGES[k]
     (i, j) = sorted((a, b), key=lambda x: tuple(triangle[:, x]))
-    edge = triangle[:, j] - triangle[:, i]
-    return array([-edge[1], edge[0]])
+    return turn(triangle[:, j] - triangle[:, i],
+                plane_normal(triangle))
 
 
 def element_rows(triangle, /):
@@ -362,17 +409,17 @@ def _bezier_controls(values, gradients, corners, /):
     return control
 
 
-def _across_of(coords, one, two, /):
+def _across_of(coords, one, two, normal, /):
     """The vector the derivative across an edge is taken along.
 
     The same rule the element's own edges use: the edge's two corners in the
-    order of where they are, turned a quarter turn. Both triangles sharing the
-    edge compute this and get the same vector, which is the point of it.
+    order of where they are, turned a quarter turn within the triangle's plane.
+    Two triangles *in that plane* compute this and get the same vector, which is
+    the point of it.
     """
     (i, j) = (one, two) if tuple(coords[:, one]) < tuple(coords[:, two]) \
         else (two, one)
-    edge = coords[:, j] - coords[:, i]
-    return array([-edge[1], edge[0]])
+    return turn(coords[:, j] - coords[:, i], normal)
 
 
 def edge_data(geom, values, slopes, /):
@@ -411,7 +458,8 @@ def edge_data(geom, values, slopes, /):
         for (one, two) in ((0, 1), (1, 2), (2, 0)):
             (i, j) = (int(here[one]), int(here[two]))
             middle = (coords[:, i] + coords[:, j]) / 2.0
-            across = _across_of(coords, i, j)
+            across = _across_of(coords, i, j,
+                                 plane_normal(coords[:, here]))
             w = array([0.5, 0.5, 0.0]) if (one, two) == (0, 1) else (
                 array([0.0, 0.5, 0.5]) if (one, two) == (1, 2)
                 else array([0.5, 0.0, 0.5]))
@@ -482,11 +530,10 @@ def edge_key(coords, i, j, /):
     return (i, j) if tuple(coords[:, i]) <= tuple(coords[:, j]) else (j, i)
 
 
-def across_of(coords, i, j, /):
+def across_of(coords, i, j, normal, /):
     """The direction the derivative across an edge is taken along."""
     (a, b) = edge_key(coords, i, j)
-    edge = coords[:, b] - coords[:, a]
-    return array([-edge[1], edge[0]])
+    return turn(coords[:, b] - coords[:, a], normal)
 
 
 def triangle_blocks(corners, /):
@@ -538,7 +585,8 @@ def triangle_blocks(corners, /):
         # The coefficients the two directional derivatives take, from the
         # across direction --- the pseudo-inverse again, and for the same
         # reason.
-        share = across_of(corners, a, b) @ linalg.pinv(axes.T)
+        share = turn(corners[:, b] - corners[:, a], plane_normal(corners)) \
+            @ linalg.pinv(axes.T)
         for (m, coefficient) in enumerate(share, start=1):
             row = zeros(10)
             for p in LOWER:
