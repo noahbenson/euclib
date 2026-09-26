@@ -688,13 +688,16 @@ def estimate_gradient(geom, prop, order, /):
     **The coordinates advance together.** Each one's stencil starts as itself and
     grows by a graph step at a time, so at every turn they all hold the same
     number of coordinates, and the frames, designs, and solves of a whole turn
-    are taken as arrays rather than one at a time. A turn is cut into blocks
-    because the designs are what is large: a block of coordinates gives a
-    ``(B, M, W)`` stack of them, and three thousand coordinates of a mesh come to
-    a few megabytes. The frames are taken for the block, the designs are built by
-    the dimensions each stencil spans --- a stencil on a line spans one where the
-    mesh around it spans three --- and each group of like ones is solved in one
-    call.
+    are taken as arrays rather than one at a time. A turn is cut into blocks of
+    ``_ESTIMATE_BLOCK`` coordinates, because the designs and the arrays built
+    from them are ``(B, M, W)`` and a mesh's worth of those at once is what the
+    estimate would be spending its memory on. Measured on a mesh of 133,103
+    vertices at order 3, one block of 3,072 coordinates needs about 23 MB beyond
+    the mesh, where taking the mesh in one turn needs about 878 MB --- and the
+    second grows with the mesh where the first does not. The frames are taken for
+    the block, the designs are built by the dimensions each stencil spans --- a
+    stencil on a line spans one where the mesh around it spans three --- and each
+    group of like ones is solved in one call.
 
     Two limits are worth knowing. A geometry with fewer coordinates within reach
     than the order needs cannot say what the polynomial was, and the estimate is
