@@ -1028,3 +1028,95 @@ class TestPolynomialMethod(TestCase):
                         self._carrying(geom, geom.dim).prop(
                             'f', at=np.asarray(geom.coords)[:, :1],
                             interp=('polynomial', order))))[0])))
+
+
+class TestCloughTocher(TestCase):
+    '''The Clough-Tocher method through the engine.
+
+    The element itself is tested in ``test_ct``; what these check is that the
+    engine reaches it, that it is offered where it belongs and nowhere else,
+    and that the field it produces is the one the element was verified to
+    compute. The scheme is cubic --- the piecewise *quadratic* one that is
+    smooth across the split is Powell-Sabin's --- so order 3 is the only order
+    it answers at.
+    '''
+
+    #: A square of four corners in two triangles, sharing the diagonal.
+    COORDS = array([[0., 1., 0., 1.], [0., 0., 1., 1.]])
+
+    QUADRATIC = staticmethod(lambda x, y: (0.4 * x ** 2 - 0.3 * x * y
+                                           + 0.25 * y ** 2 + 0.8 * x
+                                           - 0.2 * y + 0.5))
+    GRADIENT = staticmethod(lambda x, y: array([0.8 * x - 0.3 * y + 0.8,
+                                                -0.3 * x + 0.5 * y - 0.2]))
+
+    def _mesh(self, gradient=True):
+        from euclib import trimesh
+        mesh = trimesh(self.COORDS, array([[0, 1], [1, 3], [2, 2]]))
+        coords = self.COORDS
+        count = coords.shape[1]
+        values = array([[self.QUADRATIC(coords[0, i], coords[1, i])
+                         for i in range(count)]])
+        supplied = stack([self.GRADIENT(coords[0, i], coords[1, i])
+                          for i in range(count)], axis=-1)[None, :, :]
+        return mesh.withprop('f', values,
+                             gradient=supplied if gradient else None)
+
+    def test_a_triangle_offers_it_at_order_three_and_no_other(self):
+        from euclib.abc import supported_interp
+        from euclib import trimesh
+        support = supported_interp(trimesh(self.COORDS,
+                                           array([[0, 1], [1, 3], [2, 2]])).topo)
+        self.assertIn(('clough-tocher', 3), support)
+        for order in (0, 1, 2):
+            with self.subTest(order=order):
+                self.assertNotIn(('clough-tocher', order), support)
+
+    def test_a_quadratic_is_reproduced(self):
+        # The element holds the cubics and its data over-determines a
+        # quadratic, so a quadratic comes back exactly.
+        mesh = self._mesh()
+        for (x, y) in ((0.2, 0.3), (0.7, 0.1), (0.55, 0.4), (0.05, 0.9),
+                       (0.3, 0.3)):
+            with self.subTest(point=(x, y)):
+                got = float(ravel(asarray(mesh.prop(
+                    'f', at=array([[x], [y]]),
+                    interp=('clough-tocher', 3))))[0])
+                self.assertAlmostEqual(got, self.QUADRATIC(x, y), places=12)
+
+    def test_the_values_at_the_corners_are_interpolated(self):
+        mesh = self._mesh()
+        coords = self.COORDS
+        for node in range(coords.shape[1]):
+            with self.subTest(node=node):
+                got = float(ravel(asarray(mesh.prop(
+                    'f', at=coords[:, node].reshape(2, 1),
+                    interp=('clough-tocher', 3))))[0])
+                self.assertAlmostEqual(
+                    got, self.QUADRATIC(coords[0, node], coords[1, node]),
+                    places=12)
+
+    def test_a_channelled_property_is_fitted_channel_by_channel(self):
+        from euclib import trimesh
+        mesh = trimesh(self.COORDS, array([[0, 1], [1, 3], [2, 2]]))
+        coords = self.COORDS
+        count = coords.shape[1]
+        second = lambda x, y: -0.2 * x ** 2 + 0.5 * x * y + 0.1 * y + 1.0
+        second_gradient = lambda x, y: array([-0.4 * x + 0.5 * y, 0.5 * x + 0.1])
+        values = stack([array([self.QUADRATIC(coords[0, i], coords[1, i])
+                               for i in range(count)]),
+                        array([second(coords[0, i], coords[1, i])
+                               for i in range(count)])])
+        slopes = stack([
+            stack([self.GRADIENT(coords[0, i], coords[1, i])
+                   for i in range(count)], axis=-1),
+            stack([second_gradient(coords[0, i], coords[1, i])
+                   for i in range(count)], axis=-1)])
+        carried = mesh.withprop('f', values, gradient=slopes)
+        for (x, y) in ((0.25, 0.25), (0.6, 0.2)):
+            got = ravel(asarray(carried.prop(
+                'f', at=array([[x], [y]]), interp=('clough-tocher', 3))))
+            with self.subTest(point=(x, y)):
+                self.assertAlmostEqual(float(got[0]), self.QUADRATIC(x, y),
+                                       places=12)
+                self.assertAlmostEqual(float(got[1]), second(x, y), places=12)

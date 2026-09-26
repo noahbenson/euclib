@@ -51,6 +51,7 @@ from numpy import (
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
     INTERP_SUPPORTED, UNSET, normalize_interp)
+from . import _ct
 from ._geom import Grid, SegPath, TetMesh, TriMesh
 
 
@@ -323,12 +324,19 @@ def _element_fit(geom, method, /):
     geom : SimplexGeometry
         The geometry whose elements are being fitted.
     method : str
-        The interpolation method, ``'bezier'`` or ``'polynomial'``.
+        The interpolation method: ``'bezier'``, ``'polynomial'``, or
+        ``'clough-tocher'``.
 
     Returns
     -------
     callable
-        The fit, called as ``fit(geom, loc, values, corners, gradient, order)``.
+        The fit, called as ``fit(geom, loc, values, corners, gradient, order,
+        whole=values)``. Every fit takes the last two arguments the same way and
+        most of them ignore ``whole``: it is the property's values at *every*
+        coordinate, which only a fit that reads the mesh's *edges* --- the
+        Clough-Tocher element does --- has any use for, since a triangle's patch
+        is built from its own corners and those corners need not be among the
+        positions being asked about.
 
     Raises
     ------
@@ -344,6 +352,10 @@ def _element_fit(geom, method, /):
             return triangle_fit
         if isinstance(geom, TetMesh):
             return tetrahedron_fit
+    if method == 'clough-tocher' and isinstance(geom, TriMesh):
+        # A triangle is the element this scheme splits; there is no segmented
+        # or tetrahedral form of it.
+        return clough_tocher_fit
     raise NotImplementedError(
         f"no quadratic or cubic fit is built for {method!r} on"
         f" {type(geom).__name__}")
@@ -391,7 +403,8 @@ def _interp_simplex(geom, prop, loc, method, order, gradient=None, /):
     if order >= 2:
         # The higher orders are built one element at a time.
         fit = _element_fit(geom, method)
-        return (fit(geom, loc, values, corners, gradient, order),
+        return (fit(geom, loc, values, corners, gradient, order,
+                    whole=prop.value),
                 corners, ones(corners.shape, dtype=bool))
     weight = asarray(loc.weight)
     # A local coordinate stores the first K barycentric weights; the last
@@ -412,7 +425,8 @@ def _interp_simplex(geom, prop, loc, method, order, gradient=None, /):
     return (res, corners, drawn)
 
 
-def segment_fit(geom, loc, values, corners, gradient, order, /):
+def segment_fit(geom, loc, values, corners, gradient, order, /, *,
+                whole=None):
     '''Fits a Bezier polynomial of the given order through one segment's data.
 
     A segment's polynomial has more coefficients than its two endpoints have
@@ -593,7 +607,8 @@ def simplex_exponents(order, parts=3, /):
     return res
 
 
-def triangle_fit(geom, loc, values, corners, gradient, order, /):
+def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
+                 whole=None):
     '''Fits a Bezier polynomial of the given order through one triangle's data.
 
     A triangle's polynomial is determined by its values and its corners'
@@ -723,7 +738,8 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /):
     return einsum('wq,w...q->...q', basis, control)
 
 
-def tetrahedron_fit(geom, loc, values, corners, gradient, order, /):
+def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
+                    whole=None):
     '''Fits a Bezier polynomial of the given order through one tetrahedron's
     data.
 
@@ -919,7 +935,8 @@ def _local_design(powers, count, /):
     return (asarray(rows), conditions)
 
 
-def polynomial_fit(geom, loc, values, corners, gradient, order, /):
+def polynomial_fit(geom, loc, values, corners, gradient, order, /, *,
+                   whole=None):
     '''Fits a polynomial of the given order through elements' data by least
     squares, in the monomial basis.
 
@@ -1048,6 +1065,83 @@ def polynomial_fit(geom, loc, values, corners, gradient, order, /):
                          ** exponents[:, axis][:, None])
     res = einsum('wq,wcq->cq', basis, chosen)
     return res.reshape(channels + (weight.shape[1],))
+
+
+def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
+                      whole=None):
+    '''Fits a C1 piecewise cubic through one triangle's data.
+
+    The element is the Clough-Tocher one: the triangle is split into three by
+    joining its centroid to its corners, and each third carries a cubic Bezier
+    patch. Its twelve numbers are the value and the gradient at each corner and
+    the derivative across each edge at its midpoint, and they determine a
+    piecewise cubic that is C1 across the edges the pieces share. The
+    construction is in ``euclib.types._ct``, with the derivation on the method's
+    documentation page.
+
+    Three of the twelve numbers are per *edge* and a `Property` carries its data
+    per coordinate, so they are estimated from the mesh --- see
+    ``_ct.edge_data``, which averages what the triangles sharing an edge say the
+    derivative is, and which makes them agree because a cross-derivative along
+    an edge is a quadratic whose ends are pinned by the corner gradients.
+
+    This is the *cubic* scheme, so it answers at order 3 and no other: a
+    quadratic piecewise patch that is C1 across the same split is Powell-Sabin's
+    method, which is a different construction.
+
+    '''
+    coords = asarray(geom.coords)
+    channels = tuple(values.shape[:-2])
+    width = 1
+    for entry in channels:
+        width *= entry
+    # The estimate is made over the whole mesh, and it has to be: an edge's
+    # derivative is what the two triangles holding it say, and a triangle's
+    # patch is built from its own three corners, which need not be among the
+    # positions asked about. Scattering the gathered values back would leave
+    # every other coordinate zero and the estimate would be taken from a field
+    # that is mostly nothing --- which is what it did, and what the caller's
+    # `whole` is for. It falls back to the gathered values when a caller has no
+    # more to give, which is right for a query that covers the mesh.
+    if whole is None:
+        whole = zeros(channels + (coords.shape[1],))
+        whole[(Ellipsis, corners)] = values
+    across = _ct.edge_data(geom, whole, slopes)
+    indices = asarray(geom.topo.indices)
+    index = asarray(loc.index)
+    weight = asarray(loc.weight)
+    (elements, back) = unique(index, return_inverse=True)
+    (_, first) = unique(back, return_index=True)
+    res = zeros(channels + (index.shape[0],))
+    for (slot, element) in enumerate(elements):
+        here = indices[:, element]
+        triangle = coords[:, here]
+        # The twelve numbers, in the order the element's rows are built: a
+        # value and two gradient components for each corner in turn, and then
+        # the derivative across each of its three edges.
+        numbers = zeros((width, 12))
+        for vertex in range(3):
+            numbers[:, 3 * vertex] = values[
+                (Ellipsis, vertex, first[slot])].reshape(width)
+            numbers[:, 3 * vertex + 1] = slopes[
+                (Ellipsis, 0, here[vertex])].reshape(width)
+            numbers[:, 3 * vertex + 2] = slopes[
+                (Ellipsis, 1, here[vertex])].reshape(width)
+        for (k, (a, b)) in enumerate(_ct.EDGES):
+            key = (min(int(here[a]), int(here[b])), max(int(here[a]), int(here[b])))
+            numbers[:, 9 + k] = asarray(across[key]).reshape(width)
+        # The twelve control vectors for this triangle's shape, and the
+        # controls they give these numbers.
+        controls = numbers @ _ct.basis(triangle).T
+        rows = flatnonzero(back == slot)
+        (pieces, inside) = _ct.sub_weights(weight[:, rows])
+        for k in range(3):
+            at = flatnonzero(pieces == k)
+            if at.size == 0:
+                continue
+            got = _ct.evaluate(controls[:, k * 10:(k + 1) * 10], inside[at].T)
+            res[(Ellipsis, rows[at])] = got.reshape(channels + (at.size,))
+    return res
 
 
 def estimate_gradient(geom, prop, order, /):

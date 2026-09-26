@@ -68,15 +68,32 @@ COEF2 = {p: _coefficient(p) for p in LOWER}
 SPOT = {p: n for (n, p) in enumerate(POWERS)}
 
 
-def bernstein(w, powers=POWERS, coef=None, /):
-    '''The Bernstein polynomials of a degree at one set of weights.'''
-    return array([(coef or COEF)[p] * (w[0] ** p[0]) * (w[1] ** p[1])
-                  * (w[2] ** p[2]) for p in powers])
+def bernstein(w, /):
+    """The Bernstein polynomials of degree three at a set of weights.
+
+    One set of weights gives a vector of ten; a ``(3, Q)`` matrix of them gives
+    a ``(10, Q)`` matrix, one column per position, which is what evaluating at
+    many positions at once wants.
+    """
+    w = asarray(w)
+    powers = asarray(POWERS)
+    coef = asarray([COEF[p] for p in POWERS])
+    if w.ndim == 1:
+        return coef * (w[None, :] ** powers).prod(axis=-1)
+    return coef[:, None] * (w[None, :, :] ** powers[:, :, None]).prod(axis=1)
 
 
 def evaluate(controls, w, /):
-    '''A Bezier cubic's value at the weights ``w``.'''
-    return float(bernstein(w) @ controls)
+    """A Bezier cubic's value at the weights ``w``.
+
+    A property's channel dimensions lead, as they do everywhere in this
+    library, so the controls are ``(C..., 10)`` and the sum is over the last
+    axis alone. A ``(3, Q)`` matrix of weights answers ``(C..., Q)``.
+    """
+    w = asarray(w)
+    if w.ndim == 1:
+        return einsum('w,...w->...', bernstein(w), controls)
+    return einsum('wq,...w->...q', bernstein(w), controls)
 
 
 def directional(controls, w, axis, /):

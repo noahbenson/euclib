@@ -130,11 +130,16 @@ INTERP_SUPPORTED_SEGMENT = (('nearest', 0), ('polynomial', 1),
 #: rule that reproduces quadratics; a quadratic's six are more than determined by
 #: the same nine and are settled the same way. See
 #: ``examples/properties/bezier-triangle.md`` for the construction and the
-#: derivation. A prism mesh reports a triangle's order with a third local
-#: dimension and its own interpolation is deferred, so it does not get these.
+#: derivation. It also takes ``'clough-tocher'`` at order 3, which splits the
+#: triangle into three and fits a cubic on each so that the field's *slope* is
+#: continuous across an edge and not only its value; the scheme is cubic, so
+#: that is the one order it answers at. A prism mesh reports a triangle's order
+#: with a third local dimension and its own interpolation is deferred, so it
+#: does not get these.
 INTERP_SUPPORTED_TRIANGLE = (('nearest', 0), ('polynomial', 1),
                              ('polynomial', 2), ('polynomial', 3),
-                             ('bezier', 1), ('bezier', 2), ('bezier', 3))
+                             ('bezier', 1), ('bezier', 2), ('bezier', 3),
+                             ('clough-tocher', 3))
 
 #: The interpolations a *tetrahedron* supports. A cubic's twenty control values
 #: come from the sixteen conditions a tetrahedron's four values and four
