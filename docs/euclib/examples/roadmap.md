@@ -48,6 +48,22 @@ reader who remembers them being absent knows where they went:
   [One-line constructors](construction/constructors.md).
 - **Metadata and transient editing** — see
   [Metadata, immutability, and transient edits](properties/immutability.md).
+- **Interpolation, at every order and on every element.** A segment takes
+  nearest, linear, quadratic and cubic, and the cardinal cubic of Catmull and
+  Rom; a triangle takes those and adds Clough–Tocher's C¹ piecewise cubic and
+  Powell–Sabin's C¹ piecewise quadratic; a tetrahedron takes the Bézier orders;
+  and a grid takes the seven separable kernels. See
+  [Bézier interpolation on a triangle](properties/bezier-triangle.md) and
+  [on a tetrahedron](properties/bezier-tetrahedron.md),
+  [Clough–Tocher](properties/clough-tocher-triangle.md),
+  [Powell–Sabin](properties/powell-sabin-triangle.md),
+  [Catmull–Rom along a path](properties/catmull-rom-path.md), and the grid pages
+  [nearest and linear](properties/grid-linear.md),
+  [the boundary](properties/grid-boundary.md),
+  [cubic convolution](properties/grid-cubic.md),
+  [splines](properties/grid-spline.md),
+  [Lanczos](properties/grid-lanczos.md) and
+  [the polynomial fit](properties/grid-polynomial.md).
 
 ## Partly implemented
 
@@ -61,9 +77,6 @@ written to state the limitation rather than hide it:
 - **Separation between geometries** — `euclib.separation` is exact only when
   the closest approach is at a vertex of one geometry; the general
   simplex-to-simplex case is pending.
-- **Interpolation order** — only nearest-neighbour (order 0) and linear
-  (order 1) interpolation are supported. Quadratic and cubic interpolation are
-  declared but raise `NotImplementedError`.
 - **Ray-style queries** — `euclib.path_crossings` answers "what does this
   segment hit?" for a whole path at once, but there is no ray-casting object
   that fires independent rays from arbitrary origins and directions, which is
