@@ -2072,7 +2072,12 @@ def _convolve_cells(values, parts, shape, kernel, start, count, border,
         idx = []
         for (ax, offset) in enumerate(combo):
             idx.append(_fold(base[ax] + offset, shape[ax], border))
-            weight = weight * (weights[ax][:, offset] if shape[ax] >= 2 else 1.0)
+            # Through immlib, which promotes: the kernel's weights may be a
+            # quantity (they are built from the positions) and the accumulator is
+            # a plain array, and a plain operator between the two stays in
+            # whichever backend the left-hand side came from.
+            weight = (im.multiply(weight, weights[ax][:, offset])
+                      if shape[ax] >= 2 else weight)
         # A cell whose weight is zero must not contribute, or a missing value
         # there would poison the result through 0 * nan. The test is on the
         # weight being *zero* and not on its sign: a cubic kernel's weights are

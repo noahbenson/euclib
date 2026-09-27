@@ -37,8 +37,9 @@ from __future__ import annotations
 
 import immlib.math as im
 from immlib import quant
-from numpy import (
-    abs, argsort, asarray, ones_like, pi, sin, sqrt, where, zeros)
+from math import pi
+
+from numpy import (argsort, asarray, sqrt, zeros)
 
 
 def _zeros_for(like, shape, /):
@@ -61,9 +62,11 @@ def bspline2(t, /):
     along each axis. Its values at the samples are ``3/4`` at the centre and
     ``1/8`` at each neighbour.
     '''
-    t = abs(asarray(t, dtype='float64'))
-    return (where(t <= 0.5, 0.75 - t ** 2, 0.0)
-            + where((t > 0.5) & (t < 1.5), 0.5 * (1.5 - t) ** 2, 0.0))
+    t = abs(t)
+    return im.add(
+        im.where(im.less_equal(t, 0.5), im.subtract(0.75, im.pow(t, 2)), 0.0),
+        im.where(im.multiply(im.greater(t, 0.5), im.less(t, 1.5)),
+                 im.multiply(0.5, im.pow(im.subtract(1.5, t), 2)), 0.0))
 
 
 def bspline3(t, /):
@@ -74,18 +77,23 @@ def bspline3(t, /):
     more order of reproduction and one more degree of continuity. Its values at
     the samples are ``2/3`` at the centre and ``1/6`` at each neighbour.
     '''
-    t = abs(asarray(t, dtype='float64'))
-    return (where(t <= 1.0, 2.0 / 3.0 - t ** 2 + t ** 3 / 2.0, 0.0)
-            + where((t > 1.0) & (t < 2.0), (2.0 - t) ** 3 / 6.0, 0.0))
+    t = abs(t)
+    return im.add(
+        im.where(im.less_equal(t, 1.0),
+                 im.add(im.subtract(2.0 / 3.0, im.pow(t, 2)),
+                        im.divide(im.pow(t, 3), 2.0)), 0.0),
+        im.where(im.multiply(im.greater(t, 1.0), im.less(t, 2.0)),
+                 im.divide(im.pow(im.subtract(2.0, t), 3), 6.0), 0.0))
 
 
 def _sinc(t, /):
     '''The sinc function, defined to be one at the origin.'''
-    t = asarray(t, dtype='float64')
-    out = ones_like(t)
-    nonzero = t != 0
-    out[nonzero] = sin(pi * t[nonzero]) / (pi * t[nonzero])
-    return out
+    t = t if hasattr(t, 'shape') else asarray(t)
+    out = im.ones_like(t)
+    # The sinc is one at the origin and sin(pi t)/(pi t) away from it; the
+    # division is guarded by taking the plain value where t is zero.
+    scaled = im.multiply(t, pi)
+    return im.where(im.not_equal(t, 0), im.divide(im.sin(scaled), scaled), out)
 
 
 def lanczos(t, n, /):
@@ -96,8 +104,9 @@ def lanczos(t, n, /):
     support rather than being cut off there, and it leaves the kernel's zeros at
     the other integers alone --- which is what keeps the method interpolating.
     '''
-    t = abs(asarray(t, dtype='float64'))
-    return where(t < n, _sinc(t) * _sinc(t / n), 0.0)
+    t = abs(t)
+    return im.where(im.less(t, n), im.multiply(_sinc(t), _sinc(im.divide(t, n))),
+                    0.0)
 
 
 def lanczos2(t, /):
