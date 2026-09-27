@@ -42,6 +42,7 @@ named by the same three numbers on any triangle.
 
 from __future__ import annotations
 
+import immlib.math as im
 from numpy import (
     arange, argmin, array, asarray, einsum, eye, linalg, stack, zeros)
 
@@ -118,10 +119,13 @@ def evaluate(ordinates, w, /):
     so the ordinates are ``(C..., 6)`` and the sum is over the last axis alone. A
     ``(3, Q)`` matrix of weights answers ``(C..., Q)``.
     '''
-    w = asarray(w)
+    # Through immlib, because the control values may be a tensor: the
+    # interpolation's data reaches this contraction, and a numpy ``einsum`` on a
+    # tensor reaches its dispatch instead of computing.
+    w = im.mag(im.to_array(w)) if hasattr(w, 'requires_grad') else asarray(w)
     if w.ndim == 1:
-        return einsum('w,...w->...', bernstein(w), ordinates)
-    return einsum('wq,...w->...q', bernstein(w), ordinates)
+        return im.einsum('w,...w->...', bernstein(w), ordinates)
+    return im.einsum('wq,...w->...q', bernstein(w), ordinates)
 
 
 # The geometry, in barycentric weights #######################################

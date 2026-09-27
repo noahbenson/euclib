@@ -1200,26 +1200,33 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
             " coordinate, as `whole`; it reads the mesh's edges, which a"
             " triangle's own corners do not determine")
     (operator, edges, rows_of) = geom.interp_data['edge_data']
-    stacked = concatenate([whole.reshape((width, coords.shape[1])),
-                           slopes.reshape((width, dim * coords.shape[1]))],
-                          axis=-1)
-    across = stacked @ operator.T                          # (C, E)
+    # The values and the slopes are handed back and combined through immlib: the
+    # edge derivative is a fixed operator over the whole mesh, and its product
+    # with the values is the one place a tensor has to reach a sparse matrix.
+    stacked = im.reshape(im.concatenate(
+        [im.reshape(whole, (width, coords.shape[1])),
+         im.reshape(slopes, (width, dim * coords.shape[1]))], axis=-1),
+        (width, coords.shape[1] + dim * coords.shape[1]))
+    across = _operator_product(operator, stacked, width)   # (C, E)
     indices = asarray(geom.topo.indices)
     index = asarray(loc.index)
     weight = loc.weight
     (elements, back) = unique(index, return_inverse=True)
     (_, first) = unique(back, return_index=True)
-    res = zeros(channels + (index.shape[0],))
+    # The values and the slopes promoted together decide the backend of both
+    # arrays built below, since the values are assigned into them.
+    like = im.promote(whole, slopes)[0]
+    res = _grid._zeros_for(like, channels + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
         triangle = coords[:, here]
         # The twelve numbers, in the order the element's rows are built: a
         # value and two gradient components for each corner in turn, and then
         # the derivative across each of its three edges.
-        numbers = zeros((width, 12))
+        numbers = _grid._zeros_for(like, (width, 12))
         for vertex in range(3):
-            numbers[:, 3 * vertex] = values[
-                (Ellipsis, vertex, first[slot])].reshape(width)
+            numbers[:, 3 * vertex] = im.mag(im.reshape(
+                values[(Ellipsis, vertex, first[slot])], width))
             # The derivative at this corner *along each of its edges*, which is
             # a direction in the geometry and so is the same number whether the
             # triangle is in a plane or in space. A component of the gradient in
@@ -1228,22 +1235,24 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
             for (place, other) in enumerate(_ct.neighbours_of(vertex)):
                 along = (coords[:, here[other]]
                          - coords[:, here[vertex]]).reshape(dim)
-                numbers[:, 3 * vertex + 1 + place] = einsum(
-                    '...d,d->...', slopes[(Ellipsis, slice(None), here[vertex])],
-                    along).reshape(width)
+                numbers[:, 3 * vertex + 1 + place] = im.mag(im.reshape(
+                    im.einsum('...d,d->...',
+                              slopes[(Ellipsis, slice(None), here[vertex])],
+                              along), width))
         for k in range(3):
             numbers[:, 9 + k] = across[:, rows_of[element, k]]
         # The twelve control vectors for this triangle's shape, and the
         # controls they give these numbers.
-        controls = numbers @ _ct.basis(triangle).T
+        controls = im.mag(im.matmul(numbers, _ct.basis(triangle).T))
         rows = flatnonzero(back == slot)
         (pieces, inside) = _ct.sub_weights(weight[:, rows])
         for k in range(3):
             at = flatnonzero(pieces == k)
             if at.size == 0:
                 continue
-            got = _ct.evaluate(controls[:, k * 10:(k + 1) * 10], inside[at].T)
-            res[(Ellipsis, rows[at])] = got.reshape(channels + (at.size,))
+            got = im.mag(_ct.evaluate(controls[:, k * 10:(k + 1) * 10],
+                                      inside[at].T))
+            res[(Ellipsis, rows[at])] = im.reshape(got, channels + (at.size,))
     return res
 
 
@@ -1288,7 +1297,10 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
     weight = loc.weight
     (elements, back) = unique(index, return_inverse=True)
     (_, first) = unique(back, return_index=True)
-    res = zeros(channels + (index.shape[0],))
+    # The values and the slopes promoted together decide the backend of both
+    # arrays built below, since the values are assigned into them.
+    like = im.promote(whole, slopes)[0]
+    res = _grid._zeros_for(like, channels + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
         # The triangle's shape enters the element in exactly one place --- the
@@ -1304,14 +1316,15 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
         # from it.
         numbers = zeros((width, 9))
         for vertex in range(3):
-            numbers[:, 3 * vertex] = values[
-                (Ellipsis, vertex, first[slot])].reshape(width)
+            numbers[:, 3 * vertex] = im.mag(im.reshape(
+                values[(Ellipsis, vertex, first[slot])], width))
             for (place, other) in enumerate(_ps.neighbours_of(vertex)):
                 along = (coords[:, here[other]]
                          - coords[:, here[vertex]]).reshape(dim)
-                numbers[:, 3 * vertex + 1 + place] = einsum(
-                    '...d,d->...', slopes[(Ellipsis, slice(None), here[vertex])],
-                    along).reshape(width)
+                numbers[:, 3 * vertex + 1 + place] = im.mag(im.reshape(
+                    im.einsum('...d,d->...',
+                              slopes[(Ellipsis, slice(None), here[vertex])],
+                              along), width))
         ordinates = numbers @ _ps.basis(centre).T
         rows = flatnonzero(back == slot)
         (pieces, inside) = _ps.sub_weights(weight[:, rows], centre)
@@ -1495,41 +1508,59 @@ def estimate_gradient(geom, prop, order, /):
         geom.coords.shape[0], count)
 
 
-def _gradient_from_operator(operator, values, dim, count, /):
-    '''One property's estimated gradient, from an operator and its values.
+def _operator_product(operator, values, width, /):
+    """A SciPy operator applied to values, in the values' own backend.
 
-    The channels are flattened because the operator is applied to each of them
-    at once: a matrix product with the operator's transpose is one call where a
-    product per channel would be as many as there are channels.
-    '''
-    channels = tuple(values.shape[:-1])
-    width = 1
-    for entry in channels:
-        width *= entry
-    # A SciPy matrix times a torch tensor converts the tensor --- and fails
-    # outright for one that requires a gradient --- so when the values are a
-    # tensor the operator is carried into their backend and applied there. The
-    # estimate is a fixed linear operator, so this is a matrix product in both
-    # cases, and the tensor's derivative with respect to the values follows from
-    # it.
+    A SciPy matrix times a torch tensor converts the tensor --- and fails
+    outright for one that requires a gradient --- so when the values are a tensor
+    the operator is carried into their backend and applied there. The product is
+    taken the other way round from SciPy's, because a sparse product puts its
+    sparse operand on the left: the operator is (R, N), so it multiplies the
+    values' transpose and the answer is transposed back.
+
+    Parameters
+    ----------
+    operator : scipy.sparse.spmatrix
+        A ``(R, N)`` operator over the geometry's coordinates.
+    values : array-like
+        An ``(width, N)`` matrix of values.
+    width : int
+        How many rows ``values`` has.
+
+    Returns
+    -------
+    array-like
+        The ``(width, R)`` result, in the values' backend.
+    """
     if hasattr(values, 'requires_grad'):
         import torch
-        # The product is taken the other way round, because a sparse product
-        # puts its sparse operand on the left: ``operator`` is (D*N, N), so it
-        # multiplies the values' transpose and the answer is transposed back.
         # The operator is a constant and the values are the caller's, so it is
-        # the operator that takes the values' dtype rather than the reverse: the
-        # rule is that a tensor's dtype is the caller's choice, and one SciPy
+        # the operator that takes their dtype rather than the reverse: one SciPy
         # builds in float64 would otherwise refuse to meet a float32 tensor.
         application = torch.sparse_csr_tensor(
             torch.as_tensor(operator.indptr),
             torch.as_tensor(operator.indices),
             torch.as_tensor(operator.data, dtype=values.dtype),
             size=tuple(operator.shape))
-        applied = torch.sparse.mm(
-            application, values.reshape((width, count)).T).T       # (C, D*N)
-    else:
-        applied = values.reshape((width, count)) @ operator.T      # (C, D*N)
+        return torch.sparse.mm(application, values.T).T
+    return values @ operator.T
+
+
+def _gradient_from_operator(operator, values, dim, count, /):
+    """One property's estimated gradient, from an operator and its values.
+
+    The channels are flattened because the operator is applied to each of them
+    at once: a matrix product with the operator's transpose is one call where a
+    product per channel would be as many as there are channels.
+    """
+    channels = tuple(values.shape[:-1])
+    width = 1
+    for entry in channels:
+        width *= entry
+    # The values are handed back rather than converted: the operator is applied
+    # in their backend, so a tensor reaches that product and keeps its graph.
+    applied = _operator_product(operator, values.reshape((width, count)),
+                                width)                             # (C, D*N)
     return applied.reshape((width, dim, count)).reshape(
         channels + (dim, count))
 

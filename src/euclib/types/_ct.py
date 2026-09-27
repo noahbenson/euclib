@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from math import factorial
 
+import immlib.math as im
 from numpy import (
     argmin, array, asarray, einsum, eye, linalg, ones, stack,
     zeros)
@@ -91,10 +92,13 @@ def evaluate(controls, w, /):
     library, so the controls are ``(C..., 10)`` and the sum is over the last
     axis alone. A ``(3, Q)`` matrix of weights answers ``(C..., Q)``.
     """
-    w = asarray(w)
+    # Through immlib, because the control values may be a tensor: the
+    # interpolation's data reaches this contraction, and a numpy ``einsum`` on a
+    # tensor reaches its dispatch instead of computing.
+    w = im.mag(im.to_array(w)) if hasattr(w, 'requires_grad') else asarray(w)
     if w.ndim == 1:
-        return einsum('w,...w->...', bernstein(w), controls)
-    return einsum('wq,...w->...q', bernstein(w), controls)
+        return im.einsum('w,...w->...', bernstein(w), controls)
+    return im.einsum('wq,...w->...q', bernstein(w), controls)
 
 
 def directional(controls, w, axis, /):
