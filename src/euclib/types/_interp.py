@@ -423,7 +423,10 @@ def _interp_simplex(geom, prop, loc, method, order, gradient=None, /):
     '''
     index = asarray(loc.index)
     corners = geom.topo.indices[:, index]              # (K+1, Q)
-    values = asarray(prop.value)[(Ellipsis, corners)]  # (C..., K+1, Q)
+    # Handed back as it is rather than converted, exactly as on a grid: a
+    # property's values may be a tensor, and converting would fail for one that
+    # requires a gradient and throw away the backend the fits must follow.
+    values = prop.value[(Ellipsis, corners)]          # (C..., K+1, Q)
     q = index.shape[0]
     cols = arange(q)
     if geom.order == 0:
@@ -436,10 +439,14 @@ def _interp_simplex(geom, prop, loc, method, order, gradient=None, /):
         return (fit(geom, loc, values, corners, gradient, order,
                     whole=prop.value),
                 corners, ones(corners.shape, dtype=bool))
-    weight = asarray(loc.weight)
+    # The weights are handed back as they are, like the values: they are built
+    # from the *positions*, so a tensor position makes them tensors, and the
+    # gradient with respect to the position is their derivative.
+    weight = loc.weight
     # A local coordinate stores the first K barycentric weights; the last
     # corner's weight is what they leave of the unit sum.
-    full = concatenate([weight, (1.0 - weight.sum(axis=0))[None, :]], axis=0)
+    full = im.concatenate([weight, im.reshape(
+        im.subtract(1.0, im.sum(weight, axis=0)), (1, -1))], axis=0)
     if order == 0:
         best = full.argmax(axis=0)
         res = values[(Ellipsis, best, cols)]
@@ -450,8 +457,12 @@ def _interp_simplex(geom, prop, loc, method, order, gradient=None, /):
         # dimensions however many channel dimensions precede them. A corner
         # whose weight is zero must not contribute, or a missing value there
         # would poison the result through 0 * nan.
-        drawn = full > 0
-        res = where(drawn, values * full, zeros(1)).sum(axis=-2)
+        # Through immlib, so a tensor of values mixed with numpy weights is
+        # promoted rather than reaching numpy's reflected operator, and the zero
+        # it is guarded against is one in the values' own backend.
+        drawn = im.greater(full, 0)
+        res = im.mag(im.sum(im.where(drawn, im.multiply(values, full),
+                                     im.multiply(values, 0.0)), axis=-2))
     return (res, corners, drawn)
 
 

@@ -938,6 +938,59 @@ class TestATensorPosition(TestCase):
         self.assertFalse(isinstance(got, torch.Tensor) and got.requires_grad)
 
 
+class TestASimplexTensorProperty(TestCase):
+    '''A tensor-valued property on a simplex element, as far as the pass has got.
+
+    The grid is done; the simplex elements are being translated. What works here
+    is the entry, which hands the values back rather than converting them, and
+    the linear combination of a position's corner weights --- orders 0 and 1.
+    The fits above linear are the next piece, and their being listed separately
+    here is the report of where the boundary currently is.
+    '''
+
+    def _torch(self):
+        try:
+            import torch
+        except ImportError:                                  # pragma: no cover
+            self.skipTest("torch is not installed")
+        return torch
+
+    def _path(self, count=5):
+        return SegPath(stack([arange(count, dtype=float), zeros(count)]),
+                       SegTopology([list(range(count - 1)),
+                                    list(range(1, count))]))
+
+    def test_a_tensor_property_carries_its_gradient_at_orders_zero_and_one(self):
+        torch = self._torch()
+        count = 5
+        at = self._path(count).topo.Loc(index=array([1]),
+                                        weight=array([[0.4]]))
+        for method in (('nearest', 0), ('polynomial', 1), ('bezier', 1)):
+            with self.subTest(method=method):
+                values = torch.tensor([1., 2., 3., 4., 5.],
+                                      requires_grad=True)
+                got = self._path(count).withprop('v', values).prop(
+                    'v', at=at, interp=method)
+                got = got.m if hasattr(got, 'm') else got
+                self.assertTrue(got.requires_grad)
+                got.sum().backward()
+                self.assertIsNotNone(values.grad)
+
+    def test_the_answer_matches_the_numpy_path(self):
+        torch = self._torch()
+        count = 5
+        plain = sin(arange(count, dtype=float))
+        at = self._path(count).topo.Loc(index=array([1, 2, 3]),
+                                        weight=array([[0.4, 0.1, 0.7]]))
+        by_numpy = ravel(asarray(self._path(count).withprop('v', plain).prop(
+            'v', at=at, interp=('polynomial', 1))))
+        got = self._path(count).withprop(
+            'v', torch.tensor(plain)).prop('v', at=at,
+                                           interp=('polynomial', 1))
+        got = got.m if hasattr(got, 'm') else got
+        self.assertLess(np.abs(np.asarray(got.detach()) - by_numpy).max(), 1e-12)
+
+
 class TestUnimplementedOrders(TestCase):
     '''Orders 2 and 3 are refused rather than approximated.'''
 
