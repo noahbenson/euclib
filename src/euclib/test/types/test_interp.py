@@ -774,9 +774,12 @@ class TestATensorValuedProperty(TestCase):
     survives. This checks the first of the three -- the values -- for the methods
     that convolve a kernel, which is where the translation has reached.
 
-    The splines are not among them yet: they are the one method that transforms
-    the *data* before convolving it, and their prefilter is still numpy. It is
-    the next piece of the translation rather than a separate question.
+    The splines are included, and they are the interesting case: theirs is the one
+    method that transforms the *data* before convolving it, so their prefilter is
+    part of the differentiable path rather than beside it. The prefilter's two
+    recursions are Python loops over the array, which torch tracks like any other
+    in-place update, so they needed no rewriting --- only an allocation that
+    follows the values' backend rather than numpy's.
     '''
 
     def _torch(self):
@@ -793,7 +796,8 @@ class TestATensorValuedProperty(TestCase):
         grid = Grid(eye(2), GridTopology((count,))).withprop('v', values)
         at = grid.topo.Loc(sx=array([2.5]))
         for method in (('nearest', 0), ('polynomial', 1), ('catmull-rom', 3),
-                       ('lanczos', 2)):
+                       ('spline', 2), ('spline', 3), ('lanczos', 2),
+                       ('lanczos', 3)):
             with self.subTest(method=method):
                 got = grid.prop('v', at=at, interp=method)
                 got = got.m if hasattr(got, 'm') else got

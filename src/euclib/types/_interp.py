@@ -1764,7 +1764,8 @@ def _interp_grid(geom, prop, loc, method, order, border, /):
         else:
             (coefficients, first) = _grid.prefilter(values, shape, border,
                                                     order)
-        coefficients = asarray(coefficients)
+        # Handed back as it is, like the values: the coefficients may be a tensor
+        # that requires a gradient, and converting would both fail and lose it.
         padded = tuple(coefficients.shape[-len(shape):])
         shifted = [(p - first[axis]) for (axis, p) in enumerate(parts)]
         return _convolve_cells(coefficients, shifted, padded, kernel,

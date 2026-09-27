@@ -35,8 +35,22 @@ for every extension and the answer is exact to the rate raised to the margin.
 
 from __future__ import annotations
 
+import immlib.math as im
+from immlib import quant
 from numpy import (
-    abs, argsort, asarray, empty, ones_like, pi, sin, sqrt, where, zeros)
+    abs, argsort, asarray, ones_like, pi, sin, sqrt, where, zeros)
+
+
+def _zeros_for(like, shape, /):
+    """An array of zeros in the backend and dtype of another array.
+
+    ``immlib.math`` deliberately carries no allocator, because naming the backend
+    per call is the same as calling torch or numpy and a caller who knows the
+    backend may as well call it. A *quantity* does carry one, so this wraps the
+    array, allocates, and hands back the magnitude --- which is the backend, the
+    dtype and, where it matters, the device of the array it follows.
+    """
+    return quant(like).new_zeros(shape).m
 
 # The bases ##################################################################
 
@@ -166,11 +180,11 @@ def _recursions(values, r, /):
     precision anywhere the data itself extends far enough.
     '''
     width = values.shape[-1]
-    forward = zeros(values.shape)
+    forward = _zeros_for(values, values.shape)
     forward[..., 0] = values[..., 0] / (1.0 - r)
     for k in range(1, width):
         forward[..., k] = values[..., k] + r * forward[..., k - 1]
-    backward = zeros(values.shape)
+    backward = _zeros_for(values, values.shape)
     backward[..., -1] = forward[..., -1] / (1.0 - r)
     for k in range(width - 2, -1, -1):
         backward[..., k] = r * (backward[..., k + 1] - forward[..., k])
@@ -232,7 +246,10 @@ def prefilter(values, spatial_shape, border, degree, /):
         is ``-MARGIN`` for each of them.
     '''
     (r, scale) = _rate(degree)
-    out = asarray(values, dtype='float64')
+    # The values are used as they are, including their dtype: a property whose
+    # values are float32 is interpolated in float32 rather than quietly widened,
+    # so that the answer is what the caller's arithmetic can express.
+    out = asarray(values) if not hasattr(values, 'shape') else values
     axes = tuple(range(out.ndim - len(spatial_shape), out.ndim))
     for axis in axes:
         out = _filter_axis(out, axis, r, scale, border)
@@ -245,7 +262,7 @@ def _filter_axis(values, axis, r, scale, border, /):
     (lead, length) = (moved.shape[:-1], moved.shape[-1])
     flat = moved.reshape(-1, length)
     width = 2 * MARGIN + length
-    padded = empty((flat.shape[0], width))
+    padded = _zeros_for(flat, (flat.shape[0], width))
     padded[:, MARGIN:MARGIN + length] = flat
     _extend_into(padded, MARGIN, border)
     backward = _recursions(padded, r)
@@ -284,14 +301,19 @@ def _extend_into(padded, margin, border, /):
 
 def _move_front(values, axis, /):
     '''The array with one axis moved to the end, as a contiguous copy.'''
-    order = [x for x in range(values.ndim) if x != axis] + [axis]
-    return values.transpose(order).copy()
+    # A tuple, because both backends' permutation takes the axes as one and
+    # numpy will not read a list of them where a shape is expected.
+    order = tuple([x for x in range(values.ndim) if x != axis] + [axis])
+    # ``immlib.math`` wraps its result in a quantity; the axis moves here are
+    # bookkeeping on the array itself, so the magnitude is what is wanted.
+    return im.mag(im.permute(values, order))
 
 
 def _move_back(values, axis, ndim, /):
     '''The inverse of `_move_front`.'''
-    order = argsort([x for x in range(ndim) if x != axis] + [axis])
-    return values.transpose(order)
+    order = tuple(int(x) for x in
+                  argsort([x for x in range(ndim) if x != axis] + [axis]))
+    return im.mag(im.permute(values, order))
 
 
 # Exports ####################################################################
