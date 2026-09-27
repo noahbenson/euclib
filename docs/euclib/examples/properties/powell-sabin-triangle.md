@@ -81,17 +81,25 @@ Join an interior point $Z$ of the triangle to its three corners and to a point
 $S$ on each edge. That makes **six** mini-triangles — one per half-edge, each
 with $Z$ as its third corner — and each carries a quadratic Bézier patch.
 
-The two choices of point are not free. Powell and Sabin's is:
+The interior point is Powell and Sabin's: it is the triangle's **incenter**. The
+point on an edge is a freer choice than it looks, and the condition on it is only
+that the two triangles sharing the edge **agree** about it — the split has to be
+*conforming*, exactly as the Clough–Tocher edge direction had to be. Two choices
+satisfy that:
 
-- $Z$ is the triangle's **incenter**.
-- $S$ on an edge shared with a neighbouring triangle is where the segment joining
-  the two triangles' incenters crosses the edge.
+- the edge's **midpoint**, which both triangles find without consulting each
+  other, and which is what `euclib` uses; and
+- the classical recipe, the point where the segment joining the two triangles'
+  incenters crosses the edge, which both triangles also agree about since the
+  segment is the same one either way.
 
-The second is what makes the method work on a *mesh* rather than on a single
-triangle: both triangles sharing an edge compute the same $S$, since the segment
-between their incenters is the same segment whichever one asks. The split is
-therefore **conforming** — the two sides cut their common edge in the same place
-— which is the same requirement the Clough–Tocher edge direction had to meet.
+The midpoint is the one that survives a mesh embedded in three dimensions. On a
+surface mesh the two neighbouring triangles lie in different planes, so the
+segment joining their incenters and their shared edge generally do not meet at
+all, and the classical recipe has nothing to say; the midpoint is on the edge by
+construction, in any dimension. The check below measures the continuity for
+*both* choices and finds the same answer, which is the sense in which the choice
+is free.
 
 ## The numbers, and how many there are
 
@@ -369,16 +377,25 @@ one = {'A': A, 'B': B, 'C': C}
 # The second triangle names its corners so that its edge AB is the same segment.
 two = {'A': B, 'B': A, 'C': D}
 
-shared = crossing(one, two)
-def split_of(corner_set):
+def crossing(first, second):
+    """Where the segment joining two triangles' incenters crosses their shared
+    edge --- the classical choice of the point on it."""
+    (P, Q) = (first['A'], first['B'])
+    (Z1, Z2) = (incenter(first), incenter(second))
+    n = np.array([-(Q - P)[1], (Q - P)[0]])
+    s = -float(n @ (Z1 - P)) / float(n @ (Z2 - Z1))
+    return Z1 + s * (Z2 - Z1)
+
+def split_of(corner_set, shared):
     return Split(corner_set, incenter(corner_set),
                  {'AB': shared,
                   'BC': (corner_set['B'] + corner_set['C']) / 2.0,
                   'CA': (corner_set['C'] + corner_set['A']) / 2.0})
 
-(first, second) = (split_of(one), split_of(two))
-print(f"  the split point on the shared edge is at"
-      f" {float((shared - A) @ (B - A) / ((B - A) @ (B - A))):.4f}"
+(first, second) = (split_of(one, crossing(one, two)),
+                   split_of(two, crossing(one, two)))
+print(f"  the point the construction splits the shared edge at:"
+      f" {float((crossing(one, two) - A) @ (B - A) / ((B - A) @ (B - A))):.4f}"
       f" of the way along it, and both triangles use it")
 
 def f(p):
@@ -435,6 +452,27 @@ for u in np.linspace(0.0, 1.0, 11):
 print(f"  worst disagreement anywhere on the edge: {worst:.2e}")
 ```
 
+**And the choice of the point on the edge does not matter.** The claim above that
+either conforming choice serves is measured here rather than asserted: the same
+edge, split at the crossing and at the midpoint, and the same continuity either
+way.
+
+```{code-cell}
+for (label, shared) in (("crossing", crossing(one, two)),
+                        ("midpoint", (A + B) / 2.0)):
+    (left, right) = (split_of(one, shared), split_of(two, shared))
+    (left_ords, left_res) = left.solve(*data(one))
+    (right_ords, right_res) = right.solve(*data(two))
+    worst = 0.0
+    for u in np.linspace(0.0, 1.0, 21):
+        point = P + u * (Q - P)
+        worst = max(worst, abs(float(left.gradient_at(left_ords, point) @ n)
+                               - float(right.gradient_at(right_ords, point) @ n)))
+    print(f"  split at the {label:8s} ({float((shared - A) @ (B - A) / ((B - A) @ (B - A))):.4f}"
+          f" along): worst disagreement {worst:.2e},"
+          f" solve residuals {left_res:.1e} and {right_res:.1e}")
+```
+
 Note what the numbers are: they run *linearly* from one end of the edge to the
 other, with nothing happening at the split point at $0.4486$ of the way along. A
 piecewise-linear derivative would show a kink there; this is Farin's "each
@@ -442,17 +480,51 @@ cross-boundary derivative is just one linear function instead of being piecewise
 linear", and it is the reason two triangles agree without either of them
 estimating anything.
 
+**And the library agrees with this page.** Everything above is the construction
+written out here, so the last check is that `euclib`'s own interpolation of the
+same mesh gives the same field.
+
+```{code-cell}
+import euclib as el
+
+# The same two triangles, as a mesh: the corners in order, and each triangle
+# naming its own.
+corners = np.stack([A, B, C, D], axis=1)
+mesh = el.trimesh(corners, np.array([[0, 1], [1, 0], [2, 3]]))
+carried = mesh.withprop('f', np.array([[f(corners[:, i]) for i in range(4)]]),
+                        gradient=np.stack([df(corners[:, i])
+                                           for i in range(4)],
+                                          axis=-1)[None, :, :])
+worst = 0.0
+for u in np.linspace(0.05, 0.95, 12):
+    for v in np.linspace(0.05, 0.95, 12):
+        if u + v > 1.0:
+            continue
+        point = A + u * (B - A) + v * (C - A)
+        got = float(np.ravel(np.asarray(carried.prop(
+            'f', at=point.reshape(2, 1), interp=('powell-sabin', 2))))[0])
+        worst = max(worst, abs(got - f(point)))
+print(f"  difference between the library and the field, over"
+      f" {int(12 * 13 / 2)} positions: {worst:.3e}")
+```
+
 ## Triangles in space
 
-As with Clough–Tocher, nothing here is specific to a triangle drawn in a
-coordinate plane. Every number above is either a **value** or a derivative in a
-direction the geometry defines — a `direction` in the code is a vector in space,
-and the 'across' direction is the edge turned a quarter turn *within the
-triangle's plane*. A triangle in three-dimensional space has a plane of its own,
-so the construction is unchanged; only the coordinates the arithmetic happens in
-change. `euclib` builds the split in the plane the triangle lies in, whatever
-dimension the geometry is embedded in, so a mesh standing in space is handled by
-the same code as one lying flat.
+Nothing above named a coordinate. Every number the element is built from is a
+value or a derivative along a direction the triangle's own edges define, and the
+whole construction is barycentric arithmetic: the split's vertices are named by
+their barycentric weights, the derivative along an edge is the standard
+Bernstein difference rule applied to a barycentric difference, and the triangle's
+shape enters in exactly one place, the incenter. So a triangle standing in space
+is not a modification of the construction or a case to be handled — it is the
+same construction, and the same code.
+
+That is worth stating plainly because it is what the Clough–Tocher element had to
+be rebuilt to earn. Its twelve numbers included components of a gradient in
+whatever directions the geometry happened to be named in, and a triangle merely
+turned in space came back wrong by a fifth of the field's own scale. The fix
+there was to state its numbers as slopes along edges. This element is stated that
+way from the start, and it needed no fix.
 
 :::{admonition} Where this comes from
 :class: note

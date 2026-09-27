@@ -133,13 +133,16 @@ INTERP_SUPPORTED_SEGMENT = (('nearest', 0), ('polynomial', 1),
 #: derivation. It also takes ``'clough-tocher'`` at order 3, which splits the
 #: triangle into three and fits a cubic on each so that the field's *slope* is
 #: continuous across an edge and not only its value; the scheme is cubic, so
-#: that is the one order it answers at. A prism mesh reports a triangle's order
+#: that is the one order it answers at. It also takes ``'powell-sabin'`` at
+#: order 2, which splits the triangle into six quadratics and needs nothing the
+#: vertices do not carry --- see ``examples/properties/powell-sabin-triangle.md``.
+#: A prism mesh reports a triangle's order
 #: with a third local dimension and its own interpolation is deferred, so it
 #: does not get these.
 INTERP_SUPPORTED_TRIANGLE = (('nearest', 0), ('polynomial', 1),
                              ('polynomial', 2), ('polynomial', 3),
                              ('bezier', 1), ('bezier', 2), ('bezier', 3),
-                             ('clough-tocher', 3))
+                             ('clough-tocher', 3), ('powell-sabin', 2))
 
 #: The interpolations a *tetrahedron* supports. A cubic's twenty control values
 #: come from the sixteen conditions a tetrahedron's four values and four

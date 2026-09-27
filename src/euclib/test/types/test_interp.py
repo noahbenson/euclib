@@ -1184,3 +1184,145 @@ class TestCloughTocherOnATriangleInSpace(TestCase):
         support = supported_interp(
             trimesh(self.TRIANGLE, array([[0], [1], [2]])).topo)
         self.assertIn(('clough-tocher', 3), support)
+
+
+class TestPowellSabin(TestCase):
+    '''The Powell-Sabin method through the engine.
+
+    The element itself is tested in ``test_ps``; what these check is that the
+    engine reaches it, that it is offered where it belongs and nowhere else, and
+    that the field it produces is the one the element was verified to compute.
+    The scheme is quadratic --- the piecewise *cubic* one that is C1 across a
+    split of the same kind is Clough-Tocher's --- so order 2 is the only order it
+    answers at.
+    '''
+
+    #: A square of four corners in two triangles, sharing the diagonal.
+    COORDS = array([[0., 1., 0., 1.], [0., 0., 1., 1.]])
+
+    QUADRATIC = staticmethod(lambda x, y: (0.4 * x ** 2 - 0.3 * x * y
+                                           + 0.25 * y ** 2 + 0.8 * x
+                                           - 0.2 * y + 0.5))
+    GRADIENT = staticmethod(lambda x, y: array([0.8 * x - 0.3 * y + 0.8,
+                                                -0.3 * x + 0.5 * y - 0.2]))
+
+    def _mesh(self):
+        from euclib import trimesh
+        mesh = trimesh(self.COORDS, array([[0, 1], [1, 3], [2, 2]]))
+        coords = self.COORDS
+        count = coords.shape[1]
+        values = array([[self.QUADRATIC(coords[0, i], coords[1, i])
+                         for i in range(count)]])
+        supplied = stack([self.GRADIENT(coords[0, i], coords[1, i])
+                          for i in range(count)], axis=-1)[None, :, :]
+        return mesh.withprop('f', values, gradient=supplied)
+
+    def test_a_triangle_offers_it_at_order_two_and_no_other(self):
+        from euclib.abc import supported_interp
+        from euclib import trimesh
+        support = supported_interp(trimesh(self.COORDS,
+                                           array([[0, 1], [1, 3], [2, 2]])).topo)
+        self.assertIn(('powell-sabin', 2), support)
+        for order in (0, 1, 3):
+            with self.subTest(order=order):
+                self.assertNotIn(('powell-sabin', order), support)
+
+    def test_a_quadratic_is_reproduced(self):
+        # The element holds the quadratics and its nine numbers over-determine
+        # one, so a quadratic comes back exactly.
+        mesh = self._mesh()
+        for (x, y) in ((0.2, 0.3), (0.7, 0.1), (0.55, 0.4), (0.05, 0.9),
+                       (0.3, 0.3)):
+            with self.subTest(point=(x, y)):
+                got = float(ravel(asarray(mesh.prop(
+                    'f', at=array([[x], [y]]),
+                    interp=('powell-sabin', 2))))[0])
+                self.assertAlmostEqual(got, self.QUADRATIC(x, y), places=12)
+
+    def test_the_values_at_the_corners_are_interpolated(self):
+        mesh = self._mesh()
+        coords = self.COORDS
+        for node in range(coords.shape[1]):
+            with self.subTest(node=node):
+                got = float(ravel(asarray(mesh.prop(
+                    'f', at=coords[:, node].reshape(2, 1),
+                    interp=('powell-sabin', 2))))[0])
+                self.assertAlmostEqual(
+                    got, self.QUADRATIC(coords[0, node], coords[1, node]),
+                    places=12)
+
+    def test_a_property_with_only_values_is_fitted_from_estimates(self):
+        '''The element reads its triangle and nothing else, so nothing about the
+        mesh can stop it answering.
+
+        This is the structural difference from Clough-Tocher, and it is worth a
+        test rather than a sentence. That element's twelfth datum is the
+        derivative *across* an edge, which is a function of the whole mesh: its
+        fit takes the property's values at every coordinate and refuses without
+        them, because a triangle's patch is built from edges it does not own.
+        This one takes its nine numbers from the triangle it is on, so the engine
+        can fit a property that carries values and no gradients, and the corner
+        values come back exactly whether the slopes were supplied or estimated.
+        '''
+        from euclib import trimesh
+        mesh = trimesh(self.COORDS, array([[0, 1], [1, 3], [2, 2]]))
+        coords = self.COORDS
+        count = coords.shape[1]
+        carried = mesh.withprop('f', array(
+            [[self.QUADRATIC(coords[0, i], coords[1, i])
+              for i in range(count)]]))
+        for node in range(count):
+            with self.subTest(node=node):
+                got = float(ravel(asarray(carried.prop(
+                    'f', at=coords[:, node].reshape(2, 1),
+                    interp=('powell-sabin', 2))))[0])
+                self.assertAlmostEqual(
+                    got, self.QUADRATIC(coords[0, node], coords[1, node]),
+                    places=12)
+
+
+class TestPowellSabinOnATriangleInSpace(TestCase):
+    '''The method on a mesh that does not lie in a coordinate plane.
+
+    The element is barycentric throughout --- every number it is built from is a
+    value or a derivative along a direction the triangle's own edges define ---
+    so a triangle in space is the same problem as one in a plane, and the same
+    answer. This is the check that it is: the Clough-Tocher element had to be
+    rebuilt to earn this, and this one was built with it from the start.
+    '''
+
+    #: A triangle carried off every coordinate plane, with no symmetry to hide
+    #: behind.
+    TRIANGLE = array([[0.0, 1.2, 0.4], [0.3, 0.3, 1.1], [0.7, 0.6, -0.2]])
+
+    def _along(self):
+        return np.stack([self.TRIANGLE[:, 1] - self.TRIANGLE[:, 0],
+                         self.TRIANGLE[:, 2] - self.TRIANGLE[:, 0]], axis=1)
+
+    def _inplane(self, point):
+        return np.linalg.pinv(self._along()) @ (point - self.TRIANGLE[:, 0])
+
+    def _field(self, point):
+        (u, v) = self._inplane(point)
+        return (0.4 * u ** 2 - 0.3 * u * v + 0.25 * v ** 2
+                + 0.8 * u - 0.2 * v + 0.5)
+
+    def _gradient(self, point):
+        (u, v) = self._inplane(point)
+        inplane = array([0.8 * u - 0.3 * v + 0.8, -0.3 * u + 0.5 * v - 0.2])
+        return np.linalg.pinv(self._along()).T @ inplane
+
+    def test_a_quadratic_of_the_triangles_own_plane_is_reproduced(self):
+        from euclib import trimesh
+        mesh = trimesh(self.TRIANGLE, array([[0], [1], [2]]))
+        values = array([[self._field(self.TRIANGLE[:, c]) for c in range(3)]])
+        slopes = stack([self._gradient(self.TRIANGLE[:, c])
+                        for c in range(3)], axis=-1)[None, :, :]
+        carried = mesh.withprop('q', values, gradient=slopes)
+        for (u, v) in ((0.2, 0.2), (0.5, 0.3), (0.3, 0.5), (0.1, 0.6)):
+            with self.subTest(inplane=(u, v)):
+                point = self.TRIANGLE[:, 0] + self._along() @ array([u, v])
+                got = float(ravel(asarray(carried.prop(
+                    'q', at=point.reshape(3, 1),
+                    interp=('powell-sabin', 2))))[0])
+                self.assertAlmostEqual(got, self._field(point), places=12)

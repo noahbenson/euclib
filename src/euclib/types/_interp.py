@@ -51,7 +51,7 @@ from numpy import (
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
     INTERP_SUPPORTED, UNSET, normalize_interp)
-from . import _ct
+from . import _ct, _ps
 from ._geom import Grid, SegPath, TetMesh, TriMesh
 
 
@@ -356,6 +356,8 @@ def _element_fit(geom, method, /):
         # A triangle is the element this scheme splits; there is no segmented
         # or tetrahedral form of it.
         return clough_tocher_fit
+    if method == 'powell-sabin' and isinstance(geom, TriMesh):
+        return powell_sabin_fit
     raise NotImplementedError(
         f"no quadratic or cubic fit is built for {method!r} on"
         f" {type(geom).__name__}")
@@ -1166,6 +1168,83 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
             if at.size == 0:
                 continue
             got = _ct.evaluate(controls[:, k * 10:(k + 1) * 10], inside[at].T)
+            res[(Ellipsis, rows[at])] = got.reshape(channels + (at.size,))
+    return res
+
+
+def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
+                     whole=None):
+    '''Fits a C1 piecewise quadratic through one triangle's data.
+
+    The element is the Powell-Sabin one: the triangle is split into six by
+    joining its incenter to its three corners and to the midpoint of each edge,
+    and each sixth carries a quadratic Bezier patch. Its nine numbers are the
+    value at each corner and the derivative there along each of the triangle's
+    two edges, and they determine a piecewise quadratic that is C1 across the
+    edges the pieces share. The construction is in ``euclib.types._ps``, with the
+    derivation on the method's documentation page.
+
+    **It needs nothing else.** The Clough-Tocher element's twelve numbers include
+    the derivative *across* each edge, which a property does not carry and which
+    therefore has to be estimated from the mesh --- which is what its ``whole``
+    argument and its per-edge operator are for. This element does not read the
+    mesh at all: nine numbers at three corners is exactly the freedom the split
+    leaves, so ``whole`` is accepted and ignored, and a triangle's patch is built
+    from its own corners alone.
+
+    The split's point on an edge is that edge's *midpoint*. Both triangles
+    sharing an edge compute it the same way without consulting each other, which
+    is what conformity needs, and it is the only choice available in a mesh
+    embedded in three dimensions --- where the segment joining two triangles'
+    incenters, the classical recipe for it, need not meet their shared edge at
+    all.
+
+    This is the *quadratic* scheme, so it answers at order 2 and no other. The
+    cubic scheme that is C1 across a split of the same kind is Clough-Tocher's.
+    '''
+    coords = asarray(geom.coords)
+    dim = coords.shape[0]
+    channels = tuple(values.shape[:-2])
+    width = 1
+    for entry in channels:
+        width *= entry
+    indices = asarray(geom.topo.indices)
+    index = asarray(loc.index)
+    weight = asarray(loc.weight)
+    (elements, back) = unique(index, return_inverse=True)
+    (_, first) = unique(back, return_index=True)
+    res = zeros(channels + (index.shape[0],))
+    for (slot, element) in enumerate(elements):
+        here = indices[:, element]
+        # The triangle's shape enters the element in exactly one place --- the
+        # incenter --- and the incenter is the side lengths. Everything else is
+        # barycentric arithmetic on the corners, which is to say it is the same
+        # for every triangle.
+        sides = asarray([sqrt(((coords[:, here[two]] - coords[:, here[one]]) ** 2)
+                              .sum())
+                         for (one, two) in ((1, 2), (2, 0), (0, 1))])
+        centre = _ps.centre_weights(sides)
+        # The nine numbers, in the order the element reads them: for each corner,
+        # its value and the derivative along each of the triangle's two edges
+        # from it.
+        numbers = zeros((width, 9))
+        for vertex in range(3):
+            numbers[:, 3 * vertex] = values[
+                (Ellipsis, vertex, first[slot])].reshape(width)
+            for (place, other) in enumerate(_ps.neighbours_of(vertex)):
+                along = (coords[:, here[other]]
+                         - coords[:, here[vertex]]).reshape(dim)
+                numbers[:, 3 * vertex + 1 + place] = einsum(
+                    '...d,d->...', slopes[(Ellipsis, slice(None), here[vertex])],
+                    along).reshape(width)
+        ordinates = numbers @ _ps.basis(centre).T
+        rows = flatnonzero(back == slot)
+        (pieces, inside) = _ps.sub_weights(weight[:, rows], centre)
+        for k in range(len(_ps.PIECES)):
+            at = flatnonzero(pieces == k)
+            if at.size == 0:
+                continue
+            got = _ps.evaluate(ordinates[:, _ps.SLOTS[k]], inside[at].T)
             res[(Ellipsis, rows[at])] = got.reshape(channels + (at.size,))
     return res
 

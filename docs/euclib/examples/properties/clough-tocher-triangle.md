@@ -388,6 +388,9 @@ a separate method in `euclib`.
 :::
 
 :::{seealso}
+- [Powell–Sabin interpolation on a triangle](powell-sabin-triangle.md) for the
+  other answer to the same problem, which splits a triangle into six quadratics
+  and needs no datum the vertices do not carry.
 - [Bézier interpolation on a triangle](bezier-triangle.md) for the control-value
   construction this page takes as given.
 - [Bézier interpolation on a tetrahedron](bezier-tetrahedron.md) for the same
