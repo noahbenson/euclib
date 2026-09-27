@@ -15,7 +15,6 @@ them and records its choice in ``using_c_extension`` and ``backend_error``.
 
 from __future__ import annotations
 
-from . import _math
 from ._core import (
     using_c_extension,
     backend_error,
@@ -43,7 +42,7 @@ from ._spatial import SpatialTree
 # Exports ####################################################################
 
 __all__ = (
-    'using_c_extension', 'backend_error', '_math',
+    'using_c_extension', 'backend_error',
     'is_pointdata', 'unique_columns', 'unique_coords',
     'simplex_measures',
     'bounds_of', 'simplex_boxes', 'split_cells',
