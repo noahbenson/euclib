@@ -41,8 +41,9 @@ from ._core import MetaObject, calc, normalize_backend, plantypeABC
 from ..utils import (
     SpatialTree, content_hash, simplex_boxes, values_equal, simplex_measures)
 from ._property import (
-    INTERP_QUALITATIVE, INTERP_SUPPORTED, INTERP_SUPPORTED_SEGMENT,
-    INTERP_SUPPORTED_TETRAHEDRON, INTERP_SUPPORTED_TRIANGLE, Property, UNSET,
+    INTERP_QUALITATIVE, INTERP_SUPPORTED, INTERP_SUPPORTED_GRID,
+    INTERP_SUPPORTED_SEGMENT, INTERP_SUPPORTED_TETRAHEDRON,
+    INTERP_SUPPORTED_TRIANGLE, Property, UNSET,
     is_property)
 from ._topo import Topology, SimplexTopology
 
@@ -113,6 +114,11 @@ def supported_interp(topo, /):
         The interpolation method and order pairs that are valid.
     '''
     order = getattr(topo, 'order', None)
+    if order is None:
+        # A grid has no simplices and so no order at all: its cells are the unit
+        # boxes of an index space and its interpolation is a separable kernel.
+        # Nothing else reports no order, so this is the grid's branch.
+        return INTERP_SUPPORTED_GRID
     if order == 0:
         return (INTERP_QUALITATIVE,)
     if order == 1:

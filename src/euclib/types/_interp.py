@@ -272,7 +272,10 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     # property's, and a property that carries none has one estimated from the
     # values around the geometry.
     fitted = None
-    if order >= 2 and geom.order in (1, 2, 3):
+    # A grid has no `order` and needs no gradient: every method it supports is
+    # a generalised *value*, so the estimate is not merely unused but
+    # meaningless there.
+    if order >= 2 and getattr(geom, 'order', None) in (1, 2, 3):
         if gradient is not UNSET and gradient is not None:
             fitted = asarray(gradient)
         elif prop.gradient is not None:

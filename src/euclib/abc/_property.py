@@ -114,6 +114,16 @@ INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1), ('polynomial', 2),
                     ('polynomial', 3), ('bezier', 1), ('bezier', 2),
                     ('bezier', 3))
 
+#: The interpolations a *grid* supports. A grid has no simplices: its cells are
+#: the unit boxes of an index space, so its interpolation is a separable kernel
+#: --- one one-dimensional kernel applied along each axis --- rather than a fit
+#: on an element. What that buys is that the methods are the image-processing
+#: ones, and what it costs is that they are value-only: none of them can use a
+#: gradient, because none of them is built from one. See
+#: ``examples/properties/grid-linear.md`` for the index space they work in and
+#: the two that are built so far.
+INTERP_SUPPORTED_GRID = (('nearest', 0), ('polynomial', 1), ('bezier', 1))
+
 #: The interpolations a *segment* supports. The element-wise schemes are built
 #: one element at a time, and a segment is the first: a cubic is exactly
 #: determined by the values and slopes at its two ends, and a quadratic's one
