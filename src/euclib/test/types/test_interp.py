@@ -1013,7 +1013,7 @@ class TestASimplexTensorProperty(TestCase):
                 ('tetrahedron', TetMesh(
                     array([[0., 1., 0., 0.], [0., 0., 1., 0.],
                            [0., 0., 0., 1.]]),
-                    TetTopology(array([[0, 1, 2, 3]]), coord_count=4)))):
+                    TetTopology(array([[0], [1], [2], [3]]), coord_count=4)))):
             with self.subTest(element=label):
                 count = geom.topo.coord_count
                 for order in (2, 3):
