@@ -21,6 +21,7 @@ introduces grids; prisms likewise, with their elevation coordinate.
 
 from __future__ import annotations
 
+import immlib.math as im
 from numpy import asarray, concatenate, stack
 
 from ..abc import (
@@ -570,7 +571,12 @@ class GridTopology(Topology):
             The local coordinate.
         '''
         loc = self.Loc.from_value(locs)
-        parts = [asarray(getattr(loc, f)) for f in self.Loc._fields]
+        # The components are read as plain arrays *for this check only*: their
+        # shapes are compared and the coordinate itself is returned untouched, so
+        # a position given as a tensor that requires a gradient keeps it. Taking
+        # them with `asarray` would raise on such a tensor rather than let the
+        # interpolation carry the gradient through.
+        parts = [im.to_array(getattr(loc, f)) for f in self.Loc._fields]
         shape = parts[0].shape
         for (f, p) in zip(self.Loc._fields[1:], parts[1:]):
             if p.shape != shape:

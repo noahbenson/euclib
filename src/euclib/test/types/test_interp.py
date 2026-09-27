@@ -823,6 +823,113 @@ class TestATensorValuedProperty(TestCase):
         self.assertLess(np.abs(np.asarray(got.detach()) - by_numpy).max(), 1e-12)
 
 
+class TestATensorPosition(TestCase):
+    '''A query position given as a torch tensor that requires a gradient.
+
+    The second of the three cases: the *positions* a property is read at may
+    require a gradient, and the weights an interpolation builds are functions of
+    them --- so `∂I/∂x` is the derivative of the weights, and it comes from
+    building them with the positions' arithmetic rather than from any analytic
+    formula.
+
+    A position reaches the interpolation through two places that are *not*
+    differentiable and must be detached: which cell or simplex it falls in, and
+    which stencil a kernel's weights are taken over. Those are choices, and a
+    gradient with respect to them would be meaningless; the arithmetic between
+    them is what carries one.
+    '''
+
+    COUNT = 20
+
+    def _torch(self):
+        try:
+            import torch
+        except ImportError:                                  # pragma: no cover
+            self.skipTest("torch is not installed")
+        return torch
+
+    def _grid(self, values):
+        return Grid(eye(2), GridTopology((self.COUNT,))).withprop('v', values)
+
+    def test_a_tensor_position_carries_its_gradient_through_every_kernel(self):
+        # The gradient is the derivative of the *weights* with respect to the
+        # position, and for every method here the weights are smooth in it, so
+        # the answer is the interpolant's own slope. That is near the field's
+        # slope and not equal to it -- an interpolant is not the field -- so the
+        # check is against a finite difference of the same interpolation, taken
+        # inside a cell: order 1 kinks at a cell boundary, and a centred
+        # difference straddling a kink is the derivative on neither side.
+        torch = self._torch()
+        values = sin(arange(self.COUNT, dtype=float) / 3.0)
+        for method in (('polynomial', 1), ('catmull-rom', 3), ('spline', 2),
+                       ('spline', 3), ('lanczos', 2), ('lanczos', 3)):
+            with self.subTest(method=method):
+                at = torch.tensor([5.3], requires_grad=True)
+                got = self._grid(values).prop(
+                    'v', at=self._grid(values).topo.Loc(sx=at), interp=method)
+                got = got.m if hasattr(got, 'm') else got
+                self.assertTrue(got.requires_grad)
+                got.sum().backward()
+                self.assertIsNotNone(at.grad)
+
+                def summed(shift, /):
+                    moved = at.detach() + shift
+                    out = self._grid(values).prop(
+                        'v', at=self._grid(values).topo.Loc(sx=moved),
+                        interp=method)
+                    out = out.m if hasattr(out, 'm') else out
+                    return float(ravel(asarray(out)).sum())
+
+                slope = float(ravel(asarray(at.grad))[0])
+                for step in (1e-3, 1e-2):
+                    want = (summed(step) - summed(-step)) / (2.0 * step)
+                    self.assertAlmostEqual(slope, want, places=3)
+                # Not the *field's* slope: an interpolant is not the field, and
+                # the difference is the approximation error the method's order
+                # describes. Comparing against it here would have tested the
+                # data's smoothness rather than the gradient.
+
+    def test_the_value_is_the_same_as_for_a_plain_array_position(self):
+        torch = self._torch()
+        values = sin(arange(self.COUNT, dtype=float) / 3.0)
+        probe = linspace(1.0, self.COUNT - 2.0, 30)
+        by_numpy = ravel(asarray(self._grid(values).prop(
+            'v', at=self._grid(values).topo.Loc(sx=probe),
+            interp=('catmull-rom', 3))))
+        got = self._grid(values).prop(
+            'v', at=self._grid(values).topo.Loc(sx=torch.tensor(probe)),
+            interp=('catmull-rom', 3))
+        got = got.m if hasattr(got, 'm') else got
+        self.assertLess(np.abs(np.asarray(got.detach()) - by_numpy).max(), 1e-12)
+
+    def test_a_tensor_value_and_a_tensor_position_together(self):
+        # Both at once, which is what a resampling step that learns both is.
+        torch = self._torch()
+        values = torch.tensor(sin(arange(self.COUNT, dtype=float) / 3.0),
+                              requires_grad=True)
+        at = torch.tensor([5.5], requires_grad=True)
+        got = self._grid(values).prop(
+            'v', at=self._grid(values).topo.Loc(sx=at),
+            interp=('catmull-rom', 3))
+        got = got.m if hasattr(got, 'm') else got
+        got.sum().backward()
+        self.assertIsNotNone(values.grad)
+        self.assertIsNotNone(at.grad)
+
+    def test_nearest_detaches_because_a_cell_is_a_choice(self):
+        # Order 0 reads the nearest cell and does no arithmetic, so there is
+        # nothing for a gradient to flow through and the answer is a plain
+        # array. That is the design rather than an omission: which cell a
+        # position falls in is discrete.
+        torch = self._torch()
+        values = sin(arange(self.COUNT, dtype=float) / 3.0)
+        at = torch.tensor([5.5], requires_grad=True)
+        got = self._grid(values).prop(
+            'v', at=self._grid(values).topo.Loc(sx=at), interp=('nearest', 0))
+        got = got.m if hasattr(got, 'm') else got
+        self.assertFalse(isinstance(got, torch.Tensor) and got.requires_grad)
+
+
 class TestUnimplementedOrders(TestCase):
     '''Orders 2 and 3 are refused rather than approximated.'''
 

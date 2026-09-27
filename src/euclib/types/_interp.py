@@ -210,8 +210,14 @@ def _outside(geom, query, loc, /):
 
 
 def _flat(x, /):
-    '''Returns a value as a 1-dimensional NumPy array.'''
-    return asarray(x).reshape(-1)
+    '''Returns a value as a 1-dimensional array, in its own backend.
+
+    A position may be a tensor that requires a gradient, and the weights an
+    interpolation builds are functions of the positions --- so this ravels
+    through immlib and hands the array back as it is, rather than converting it
+    to numpy and cutting the gradient off at the entrance.
+    '''
+    return im.mag(im.ravel(x))
 
 
 # Interpolation ##############################################################
@@ -1775,8 +1781,14 @@ def _interp_grid(geom, prop, loc, method, order, border, /):
 
 
 def _nearest_cell(p, s, /):
-    '''The index of the cell nearest an index-space position.'''
-    return asarray(floor(p + 0.5)).clip(0, s - 1).astype(int)
+    '''The index of the cell nearest an index-space position.
+
+    The position is taken as a plain array first, detaching it if it is a tensor:
+    which cell a position falls in is a *choice*, and nothing downstream of the
+    choice is differentiable with respect to it. The same applies to the stencil
+    a kernel's weights are taken over.
+    '''
+    return asarray(floor(im.to_array(p) + 0.5)).clip(0, s - 1).astype(int)
 
 
 def _fold(index, size, border, /):
@@ -1827,7 +1839,7 @@ def linear_kernel(t, /):
     makes the method interpolating, and it is supported on one cell, so a
     position draws on the two samples that straddle it.
     '''
-    return maximum(1.0 - abs(asarray(t, dtype='float64')), 0.0)
+    return im.maximum(im.subtract(1.0, abs(t)), 0.0)
 
 
 def cubic_kernel(t, alpha=-0.5, /):
@@ -1851,13 +1863,20 @@ def cubic_kernel(t, alpha=-0.5, /):
     numpy.ndarray
         The weights.
     '''
-    t = abs(asarray(t, dtype='float64'))
-    inside = where(t <= 1.0,
-                   (alpha + 2.0) * t ** 3 - (alpha + 3.0) * t ** 2 + 1.0, 0.0)
-    outside = where((t > 1.0) & (t < 2.0),
-                    alpha * t ** 3 - 5.0 * alpha * t ** 2
-                    + 8.0 * alpha * t - 4.0 * alpha, 0.0)
-    return inside + outside
+    t = abs(t)
+    # Both range guards, and through immlib: a kernel is evaluated at a distance
+    # from a position, so a tensor position has to stay a tensor here, and the
+    # outer piece must be zero across the inner range rather than added to it.
+    inside = im.where(im.less_equal(t, 1.0),
+                      im.add(im.subtract(im.multiply(alpha + 2.0, im.pow(t, 3)),
+                                         im.multiply(alpha + 3.0, im.pow(t, 2))),
+                             1.0), 0.0)
+    outside = im.where(im.multiply(im.greater(t, 1.0), im.less(t, 2.0)),
+                       im.add(im.subtract(im.multiply(alpha, im.pow(t, 3)),
+                                          im.multiply(5.0 * alpha, im.pow(t, 2))),
+                              im.subtract(im.multiply(8.0 * alpha, t),
+                                          4.0 * alpha)), 0.0)
+    return im.add(inside, outside)
 
 
 #: The one-dimensional kernel each grid method convolves with, its half-width in
@@ -2053,10 +2072,17 @@ def _convolve_cells(values, parts, shape, kernel, start, count, border,
             # The lowest cell of the stencil, unclipped: a position near an edge
             # has cells past the end, and the extension is what decides which
             # real cells those are.
-            low = floor(p).astype(int) + start
+            # A plain array, by the same reasoning as `_nearest_cell`: the cell
+            # is chosen, not measured.
+            low = floor(im.to_array(p)).astype(int) + start
             base.append(low)
             offsets = arange(count)
-            weights.append(kernel(p[:, None] - (low[:, None] + offsets[None, :])))
+            # Through immlib: the distance between a position and a stencil cell
+            # is the one place the position enters, so a tensor position has to
+            # stay a tensor here. A plain subtraction would reach numpy's
+            # reflected operator and convert it.
+            weights.append(kernel(im.subtract(
+                p[:, None], low[:, None] + offsets[None, :])))
     # The two accumulators are started from the first term rather than from an
     # array of zeros: the values decide the backend, and allocating one that
     # follows them would mean reaching for their own arithmetic anyway. Every

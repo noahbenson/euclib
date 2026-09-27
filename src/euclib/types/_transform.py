@@ -19,6 +19,7 @@ linear, and what makes it map straight lines to straight lines.
 
 from __future__ import annotations
 
+import immlib.math as im
 from numpy import allclose, asarray, eye, linalg, zeros
 from immlib import to_array, to_tensor
 
@@ -358,7 +359,13 @@ class Affine(Transform):
             raise ValueError(
                 f"this transform acts on {self.dim}-dimensional positions, but"
                 f" was given {coords.shape[0]}-dimensional ones")
-        return self.linear @ coords + self.translation[:, None]
+        # Through immlib, so that a position given as a tensor stays one: the
+        # matrix and the translation are this transform's own and are numpy, and
+        # the promotion is what carries them to the positions' backend rather
+        # than the reverse. The result is handed back as an array, because that
+        # is what a transform of an array of positions is.
+        return im.mag(im.add(im.matmul(self.linear, coords),
+                             self.translation[:, None]))
 
     @calc('inverse_matrix')
     def proc_inverse_matrix(matrix):
