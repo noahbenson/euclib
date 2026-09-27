@@ -765,6 +765,60 @@ class TestSegmentCatmullRom(TestCase):
                 self.assertNotIn(('catmull-rom', order), support)
 
 
+class TestATensorValuedProperty(TestCase):
+    '''A property whose values are a torch tensor that requires a gradient.
+
+    The reason the interpolation path was rewritten against ``immlib.math``:
+    the values, the positions and a geometry's coordinates may each be a tensor,
+    and if the weights are built with the inputs' arithmetic then the gradient
+    survives. This checks the first of the three -- the values -- for the methods
+    that convolve a kernel, which is where the translation has reached.
+
+    The splines are not among them yet: they are the one method that transforms
+    the *data* before convolving it, and their prefilter is still numpy. It is
+    the next piece of the translation rather than a separate question.
+    '''
+
+    def _torch(self):
+        try:
+            import torch
+        except ImportError:                                  # pragma: no cover
+            self.skipTest("torch is not installed")
+        return torch
+
+    def test_a_tensor_valued_grid_interpolates_and_carries_its_gradient(self):
+        torch = self._torch()
+        count = 12
+        values = torch.linspace(0.0, 3.0, count).requires_grad_(True)
+        grid = Grid(eye(2), GridTopology((count,))).withprop('v', values)
+        at = grid.topo.Loc(sx=array([2.5]))
+        for method in (('nearest', 0), ('polynomial', 1), ('catmull-rom', 3),
+                       ('lanczos', 2)):
+            with self.subTest(method=method):
+                got = grid.prop('v', at=at, interp=method)
+                got = got.m if hasattr(got, 'm') else got
+                self.assertIsInstance(got, torch.Tensor)
+                self.assertTrue(got.requires_grad)
+                got.sum().backward()
+                self.assertIsNotNone(values.grad)
+                values.grad = None
+
+    def test_the_answer_is_the_same_as_for_a_numpy_property(self):
+        # The backend must not change the answer, only who can differentiate it.
+        torch = self._torch()
+        count = 12
+        plain = sin(arange(count, dtype=float) / 3.0)
+        tensor = torch.tensor(plain, requires_grad=True)
+        at = Grid(eye(2), GridTopology((count,))).topo.Loc(
+            sx=linspace(1.0, count - 2.0, 25))
+        by_numpy = ravel(asarray(Grid(eye(2), GridTopology((count,))).withprop(
+            'v', plain).prop('v', at=at, interp=('catmull-rom', 3))))
+        got = Grid(eye(2), GridTopology((count,))).withprop(
+            'v', tensor).prop('v', at=at, interp=('catmull-rom', 3))
+        got = got.m if hasattr(got, 'm') else got
+        self.assertLess(np.abs(np.asarray(got.detach()) - by_numpy).max(), 1e-12)
+
+
 class TestUnimplementedOrders(TestCase):
     '''Orders 2 and 3 are refused rather than approximated.'''
 

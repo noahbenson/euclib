@@ -48,6 +48,12 @@ from numpy import (
     flatnonzero, floor, linalg, maximum, minimum, moveaxis, ones, prod,
     ravel_multi_index, sqrt, unique, where, zeros)
 
+# ``immlib.math`` under a short name, as the backend-following operations are
+# called qualified: this module uses numpy's ``where`` for its own arithmetic
+# (which is numpy's and stays numpy's) and immlib's for the interpolation's,
+# and the two must not be confused.
+import immlib.math as im
+
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
     normalize_border,
@@ -1727,7 +1733,12 @@ def _interp_grid(geom, prop, loc, method, order, border, /):
     '''
     shape = tuple(geom.shape)
     parts = [_flat(getattr(loc, f)) for f in loc._fields]
-    values = asarray(prop.value)
+    # The values are handed back as they are rather than converted to numpy: a
+    # property's values may be a torch tensor, and converting would both fail
+    # for one that requires a gradient and throw away the backend the
+    # interpolation's arithmetic has to follow. A property normalizes its value
+    # when it is built, so this is only a guard for the list a caller may pass.
+    values = prop.value
     if order == 0:
         idx = tuple(_nearest_cell(p, s) for (p, s) in zip(parts, shape))
         return (values[(Ellipsis,) + idx], [idx])
@@ -2045,8 +2056,15 @@ def _convolve_cells(values, parts, shape, kernel, start, count, border,
             base.append(low)
             offsets = arange(count)
             weights.append(kernel(p[:, None] - (low[:, None] + offsets[None, :])))
-    res = zeros(values.shape[:values.ndim - d] + (q,))
-    total = zeros(q)
+    # The two accumulators are started from the first term rather than from an
+    # array of zeros: the values decide the backend, and allocating one that
+    # follows them would mean reaching for their own arithmetic anyway. Every
+    # step below goes through ``immlib.math``, whose operations select the
+    # backend from their arguments --- so if the property's values are a torch
+    # tensor and the weights are numpy, the mixture is promoted to torch and the
+    # gradient with respect to the values survives.
+    res = None
+    total = None
     drawn = []
     for combo in product(range(count), repeat=d):
         weight = ones(q)
@@ -2059,19 +2077,22 @@ def _convolve_cells(values, parts, shape, kernel, start, count, border,
         # weight being *zero* and not on its sign: a cubic kernel's weights are
         # negative on part of its stencil, and that is where its sharpness comes
         # from, so discarding them would quietly turn the method into a blurrier
-        # one.
-        term = values[(Ellipsis,) + tuple(idx)] * weight
-        res = res + where(weight != 0, term, zeros(term.shape))
-        total = total + weight
+        # one. The zero it is compared against is the term's own, so that it is
+        # a zero in the values' backend.
+        term = im.multiply(values[(Ellipsis,) + tuple(idx)], weight)
+        term = im.where(weight != 0, term, im.multiply(term, 0))
+        res = term if res is None else im.add(res, term)
+        total = weight if total is None else im.add(total, weight)
         drawn.append(tuple(idx))
     if normalize:
         # The weights of a normalized kernel sum to one at every position, so
         # dividing by their sum is what makes a constant field come back
         # constant. A position whose weights all vanish is left alone rather
         # than divided by zero.
-        safe = where(total != 0, total, ones(q))
-        res = where(total != 0, res / safe, res)
-    return (res, drawn)
+        nonzero = im.not_equal(total, 0)
+        safe = im.where(nonzero, total, im.add(im.multiply(total, 0.0), 1.0))
+        res = im.where(nonzero, im.divide(res, safe), res)
+    return (im.mag(res), drawn)
 
 
 def _masked_corners(mask, corners, drawn, /):
