@@ -253,6 +253,26 @@ print("Inside the samples the three agree and all give the ramp; past the last")
 print("one they part company, and by more than the linear method's rules did.")
 ```
 
+**And the library agrees with this page.** The construction above is written out
+here; the last check is that `euclib`'s own cubic convolution gives the same
+field, and that it is the same method the page's weights produce.
+
+```{code-cell}
+wide = np.arange(40.0)
+probe = np.linspace(10.0, 30.0, 300)
+carried = el.grid((wide.shape[0],)).withprop('v', quadratic(wide))
+got = np.ravel(np.asarray(carried.prop(
+    'v', at=carried.topo.Loc(sx=probe), interp=('catmull-rom', 3))))
+print(f"  the library against this page's convolution, over {probe.size}"
+      f" positions: {np.abs(got - convolve(quadratic(wide), probe, -0.5)).max():.3e}")
+print(f"  the library against the quadratic itself:"
+      f" {np.abs(got - quadratic(probe)).max():.3e}")
+plain = np.ravel(np.asarray(carried.prop(
+    'v', at=carried.topo.Loc(sx=probe), interp=('polynomial', 1))))
+print(f"  ...and linear interpolation of the same data, for scale:"
+      f" {np.abs(plain - quadratic(probe)).max():.3e}")
+```
+
 :::{admonition} Where this comes from
 :class: note
 The kernel is R. Keys', *Cubic Convolution Interpolation for Digital Image

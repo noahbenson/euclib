@@ -205,9 +205,8 @@ not exist. Linear interpolation's stencil is small, so it only ever wants one �
 but it does want one, and what it gets is a choice rather than a detail. The
 order-1 path as it stands clamps its stencil to the grid, which is one policy
 among several. The standard three — constant, half-sample symmetric, and
-whole-sample symmetric — and how a property chooses between them are set out on
-the page that follows this one, *Interpolating a Grid: the Boundary*, which is
-next to be written.
+whole-sample symmetric — and how a property chooses between them are the subject
+of [the boundary page](grid-boundary.md), which is the one that follows this.
 
 :::{admonition} Where this comes from
 :class: note

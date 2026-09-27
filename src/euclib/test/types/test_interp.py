@@ -223,6 +223,89 @@ class TestGridInterpolation(TestCase):
         self.assertFalse(isnan(_scalar(g, 'v', array([[3.], [3.]]))))
 
 
+class TestGridCubic(TestCase):
+    '''Cubic convolution, the method between the samples.'''
+
+    #: A wide axis, so that positions away from the boundary are the ones tested.
+    COUNT = 40
+
+    def _sampled(self, field, /):
+        return Grid(eye(2), GridTopology((self.COUNT,))).withprop(
+            'v', field(arange(self.COUNT, dtype=float)))
+
+    def _read(self, field, positions, /, **kw):
+        carried = self._sampled(field)
+        at = carried.topo.Loc(sx=positions)
+        return ravel(asarray(carried.prop('v', at=at, **kw)))
+
+    def test_it_reproduces_the_quadratics(self):
+        # What pins the kernel's free parameter down, and the whole reason the
+        # method is worth having over linear interpolation.
+        quadratic = lambda t: -0.7 * t ** 2 + 0.4 * t + 1.1
+        probe = linspace(10.0, 30.0, 200)
+        got = self._read(quadratic, probe, interp=('catmull-rom', 3))
+        self.assertLess(np.abs(got - quadratic(probe)).max(), 1e-9)
+
+    def test_it_does_not_reproduce_the_cubics(self):
+        # Its approximation order is one less than the degree of its pieces, so
+        # a cubic is close and not exact -- and *closer* than linear gets.
+        cubic = lambda t: 0.3 * t ** 3 - 0.7 * t ** 2 + 0.4 * t + 1.1
+        probe = linspace(10.0, 30.0, 200)
+        got = self._read(cubic, probe, interp=('catmull-rom', 3))
+        linear = self._read(cubic, probe, interp=('polynomial', 1))
+        worst = np.abs(got - cubic(probe)).max()
+        self.assertLess(worst, 0.1)
+        self.assertGreater(np.abs(linear - cubic(probe)).max(), 10.0 * worst)
+
+    def test_it_interpolates_the_samples(self):
+        rng = default_rng(3)
+        data = rng.normal(size=self.COUNT)
+        carried = Grid(eye(2), GridTopology((self.COUNT,))).withprop('v', data)
+        at = carried.topo.Loc(sx=arange(self.COUNT, dtype=float))
+        got = ravel(asarray(carried.prop('v', at=at,
+                                         interp=('catmull-rom', 3))))
+        self.assertLess(np.abs(got - data).max(), 1e-10)
+
+    def test_its_slope_is_continuous_across_a_sample(self):
+        # The property the method is chosen for: linear interpolation's slope
+        # jumps at every sample, this one's does not.  The measure is the second
+        # difference across a sample, which for a smooth field is the curvature.
+        smooth = lambda t: np.cos(t / 4.0)
+        probe = linspace(10.0, 30.0, 400)
+        got = self._read(smooth, probe, interp=('catmull-rom', 3))
+        d2 = np.diff(got, 2) / (probe[1] - probe[0]) ** 2
+        self.assertLess(np.abs(d2).max(), 0.1)
+        linear = self._read(smooth, probe, interp=('polynomial', 1))
+        d2 = np.diff(linear, 2) / (probe[1] - probe[0]) ** 2
+        self.assertGreater(np.abs(d2).max(), 0.1)
+
+    def test_the_boundary_rule_is_used_over_a_wider_span(self):
+        # Four cells wide reaches two cells out, so a position a whole cell
+        # inside the last sample already has a stencil past the end -- where the
+        # two-cell linear stencil had half a cell of room.
+        ramp = lambda t: 1.0 + t
+        for sx in (38.0, 38.5, 39.0):
+            with self.subTest(sx=sx):
+                got = [float(self._read(ramp, array([sx]), interp=('catmull-rom', 3),
+                                        border=one)[0])
+                       for one in ('constant', 'half-symmetric')]
+                self.assertAlmostEqual(got[0], got[1], places=5)
+        # And past the last sample the three do differ, where the two-cell
+        # linear stencil made two of them agree everywhere.
+        (here, there) = (
+            float(self._read(ramp, array([39.4]), interp=('catmull-rom', 3),
+                             border='constant')[0]),
+            float(self._read(ramp, array([39.4]), interp=('catmull-rom', 3),
+                             border='whole-symmetric')[0]))
+        self.assertGreater(abs(here - there), 1e-3)
+
+    def test_a_triangle_reports_it_is_not_implemented(self):
+        from euclib.abc import supported_interp
+        mesh = TriMesh(array([[0., 1., 0.], [0., 0., 1.]]), TriTopology(
+            array([[0], [1], [2]])))
+        self.assertNotIn(('catmull-rom', 3), supported_interp(mesh.topo))
+
+
 class TestGridBoundary(TestCase):
     '''What a grid's interpolation finds past its own edges.
 

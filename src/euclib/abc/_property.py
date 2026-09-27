@@ -122,7 +122,8 @@ INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1), ('polynomial', 2),
 #: gradient, because none of them is built from one. See
 #: ``examples/properties/grid-linear.md`` for the index space they work in and
 #: the two that are built so far.
-INTERP_SUPPORTED_GRID = (('nearest', 0), ('polynomial', 1), ('bezier', 1))
+INTERP_SUPPORTED_GRID = (('nearest', 0), ('polynomial', 1), ('bezier', 1),
+                         ('catmull-rom', 3))
 
 #: The interpolations a *segment* supports. The element-wise schemes are built
 #: one element at a time, and a segment is the first: a cubic is exactly

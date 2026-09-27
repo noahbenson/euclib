@@ -40,7 +40,7 @@ work.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from itertools import combinations
+from itertools import combinations, product
 from math import factorial
 
 from numpy import (
@@ -293,7 +293,7 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
             fitted = estimate_gradient(geom, prop, order)
     (loc, outside) = to_loc(geom, at)
     if isinstance(geom, Grid):
-        (res, drawn) = _interp_grid(geom, prop, loc, order, border)
+        (res, drawn) = _interp_grid(geom, prop, loc, method, order, border)
         missed = _masked_grid(mask, drawn)
     else:
         (res, corners, drawn) = _interp_simplex(geom, prop, loc, method,
@@ -1617,7 +1617,7 @@ def _monomial_design(step, frame, room, degree, /):
     return (basis, linear, design)
 
 
-def _interp_grid(geom, prop, loc, order, border, /):
+def _interp_grid(geom, prop, loc, method, order, border, /):
     '''Interpolates a grid's property at index-space coordinates.
 
     Returns
@@ -1635,7 +1635,11 @@ def _interp_grid(geom, prop, loc, order, border, /):
     if order == 0:
         idx = tuple(_nearest_cell(p, s) for (p, s) in zip(parts, shape))
         return (values[(Ellipsis,) + idx], [idx])
-    return _blend_cells(values, parts, shape, border)
+    if (method, order) not in GRID_KERNELS:
+        raise NotImplementedError(
+            f"no kernel is built for {method!r} on a grid at order {order}")
+    (kernel, half) = GRID_KERNELS[(method, order)]
+    return _convolve_cells(values, parts, shape, kernel, half, border)
 
 
 def _nearest_cell(p, s, /):
@@ -1684,45 +1688,123 @@ def _fold(index, size, border, /):
     return minimum(index % period, (period - index) % period)
 
 
-def _blend_cells(values, parts, shape, border, /):
-    '''Blends a grid property linearly across the cells around each position.
+def linear_kernel(t, /):
+    '''The triangular kernel a linear interpolation convolves with.
 
-    Each axis contributes the two cells that straddle the position, weighted by
-    how near each is; the result is the sum over the 2**D combinations of cells.
-    A position near an edge straddles a cell that does not exist, and what
-    stands in for it is the ``border`` extension's business --- the two stencil
-    cells may even be the same real one, which is why the weights are added
-    rather than assigned.
+    Its value at an integer is one at zero and zero at the others, which is what
+    makes the method interpolating, and it is supported on one cell, so a
+    position draws on the two samples that straddle it.
+    '''
+    return maximum(1.0 - abs(asarray(t, dtype='float64')), 0.0)
+
+
+def cubic_kernel(t, alpha=-0.5, /):
+    '''The cubic convolution kernel, two pieces supported on two cells.
+
+    The standard one, on the standard parameter: with ``alpha`` of minus a half
+    the kernel's moments up to the second vanish, so the method reproduces
+    quadratics and has approximation order 3. It interpolates --- one at zero,
+    zero at the other integers --- and is C1 at the knots.
+
+    Parameters
+    ----------
+    t : array-like
+        The distances to evaluate at.
+    alpha : float, optional
+        The slope of the kernel at a knot. The default is the one that
+        reproduces quadratics.
+
+    Returns
+    -------
+    numpy.ndarray
+        The weights.
+    '''
+    t = abs(asarray(t, dtype='float64'))
+    inside = where(t <= 1.0,
+                   (alpha + 2.0) * t ** 3 - (alpha + 3.0) * t ** 2 + 1.0, 0.0)
+    outside = where((t > 1.0) & (t < 2.0),
+                    alpha * t ** 3 - 5.0 * alpha * t ** 2
+                    + 8.0 * alpha * t - 4.0 * alpha, 0.0)
+    return inside + outside
+
+
+#: The one-dimensional kernel each grid method convolves with, its half-width in
+#: cells, and whether it reproduces the data at the samples. A method that is not
+#: here is either order 0, whose rule is not a convolution, or not built.
+GRID_KERNELS = {
+    ('polynomial', 1): (linear_kernel, 1),
+    ('bezier', 1): (linear_kernel, 1),
+    ('catmull-rom', 3): (cubic_kernel, 2),
+}
+
+
+def _convolve_cells(values, parts, shape, kernel, half, border, /):
+    '''Blends a grid property with a separable kernel across the cells around
+    each position.
+
+    The kernel is one-dimensional and applied along each axis in turn, which is
+    what "separable" means: a position's weight for a cell is the product of its
+    one-dimensional weights along the axes, and the result is the sum over the
+    ``(2*half)**D`` cells of the stencil. A position near an edge straddles cells
+    that do not exist, and what stands in for them is the ``border`` extension's
+    business --- two stencil offsets may even name the same real cell, which is
+    why the terms are added rather than assigned.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        The property's values, with its channel dimensions leading.
+    parts : sequence of numpy.ndarray
+        The index-space position along each axis, as a length-``Q`` vector.
+    shape : tuple of int
+        The grid's extent.
+    kernel : callable
+        The one-dimensional kernel, taking distances.
+    half : int
+        Its half-width in cells: one for linear, two for cubic.
+    border : str
+        One of ``euclib.abc.BORDER_EXTENSIONS``.
+
+    Returns
+    -------
+    res : numpy.ndarray
+        The values, one per position, with the channel dimensions leading.
+    drawn : list of tuple of numpy.ndarray
+        The cell indices the result draws on, as one index array per axis.
     '''
     d = len(shape)
     q = parts[0].shape[0]
-    low = []
-    frac = []
+    base = []
+    weights = []
     for (p, s) in zip(parts, shape):
         if s < 2:
             # A single-cell axis has nowhere to blend to.
-            low.append(zeros(q, dtype=int))
-            frac.append(zeros(q))
+            base.append(zeros(q, dtype=int))
+            weights.append(ones((q, 2 * half)))
         else:
-            # The cell *below* the position, unclipped: a position in the last
-            # half-step has its upper cell past the end, and the extension is
-            # what decides which real cell that is.
-            base = floor(p).astype(int)
-            low.append(base)
-            frac.append(p - base)
+            # The lowest cell of the stencil, unclipped: a position near an edge
+            # has cells past the end, and the extension is what decides which
+            # real cells those are.
+            low = floor(p).astype(int) - (half - 1)
+            base.append(low)
+            offsets = arange(2 * half)
+            weights.append(kernel(p[:, None] - (low[:, None] + offsets[None, :])))
     res = zeros(values.shape[:values.ndim - d] + (q,))
     drawn = []
-    for bits in range(2 ** d):
-        weight = zeros(q) + 1.0
+    for combo in product(range(2 * half), repeat=d):
+        weight = ones(q)
         idx = []
-        for ax in range(d):
-            upper = (bits >> ax) & 1
-            idx.append(_fold(low[ax] + upper, shape[ax], border))
-            weight = weight * (frac[ax] if upper else (1.0 - frac[ax]))
+        for (ax, offset) in enumerate(combo):
+            idx.append(_fold(base[ax] + offset, shape[ax], border))
+            weight = weight * (weights[ax][:, offset] if shape[ax] >= 2 else 1.0)
         # A cell whose weight is zero must not contribute, or a missing value
-        # there would poison the result through 0 * nan.
+        # there would poison the result through 0 * nan. The test is on the
+        # weight being *zero* and not on its sign: a cubic kernel's weights are
+        # negative on part of its stencil, and that is where its sharpness comes
+        # from, so discarding them would quietly turn the method into a blurrier
+        # one.
         term = values[(Ellipsis,) + tuple(idx)] * weight
-        res = res + where(weight > 0, term, zeros(term.shape))
+        res = res + where(weight != 0, term, zeros(term.shape))
         drawn.append(tuple(idx))
     return (res, drawn)
 
