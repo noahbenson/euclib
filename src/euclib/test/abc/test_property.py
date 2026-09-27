@@ -382,4 +382,5 @@ class TestProperty(TestCase):
         self.assertEqual(
             set(Property.plan.inputs),
             {'value', 'spatial_shape', 'backend', 'vartype', 'interp', 'extrap',
-             'dtype', 'mask', 'null', 'unit', 'detach', 'gradient', 'hessian'})
+             'border', 'dtype', 'mask', 'null', 'unit', 'detach', 'gradient',
+             'hessian'})

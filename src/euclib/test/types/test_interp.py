@@ -223,6 +223,98 @@ class TestGridInterpolation(TestCase):
         self.assertFalse(isnan(_scalar(g, 'v', array([[3.], [3.]]))))
 
 
+class TestGridBoundary(TestCase):
+    '''What a grid's interpolation finds past its own edges.
+
+    A position within half a cell of the edge straddles a cell that does not
+    exist, and the three standard extensions say different things about what
+    stands in for it. At order 1 two of them coincide --- the stencil is only
+    two cells wide, and folding the one cell past the end gives the edge cell
+    for *constant* and for *half-symmetric* alike --- which is a fact about
+    narrow kernels and not a defect, and is what the first test pins down.
+    '''
+
+    #: A ramp, so that folding and continuing can be told apart.
+    RAMP = array([1., 2., 3., 4., 5.])
+
+    def _ramp(self, **kw):
+        return Grid(eye(2), GridTopology((5,))).withprop('v', self.RAMP, **kw)
+
+    def _at(self, geom, sx, /, **kw):
+        return _scalar(geom, 'v', array([[sx]]), **kw)
+
+    def test_the_interior_does_not_depend_on_the_extension(self):
+        for sx in (0.0, 1.5, 3.25, 4.0):
+            with self.subTest(sx=sx):
+                got = [self._at(self._ramp(), sx, border=one)
+                       for one in ('constant', 'half-symmetric',
+                                   'whole-symmetric')]
+                self.assertAlmostEqual(got[0], got[1])
+                self.assertAlmostEqual(got[1], got[2])
+                self.assertAlmostEqual(got[0], 1.0 + sx)
+
+    def test_constant_and_half_symmetric_agree_at_order_one(self):
+        # Both fold the one cell past the end onto the edge cell, so with a
+        # two-cell stencil they are the same method. They part company as soon
+        # as a kernel reaches two cells out, which is what the page computes.
+        # A grid reaches only half a cell past its last sample, so that is as
+        # far as these can be asked; a wider kernel reaches further, which is
+        # what the page computes.
+        for sx in (4.25, 4.4, 4.5):
+            with self.subTest(sx=sx):
+                self.assertAlmostEqual(
+                    self._at(self._ramp(), sx, border='constant'),
+                    self._at(self._ramp(), sx, border='half-symmetric'))
+
+    def test_whole_symmetric_mirrors_the_data_about_the_edge(self):
+        # The value a distance d past the last sample is the value d before it,
+        # which for this ramp means the slope reverses rather than continues.
+        for d in (0.25, 0.4, 0.5):
+            with self.subTest(d=d):
+                self.assertAlmostEqual(
+                    self._at(self._ramp(), 4.0 + d, border='whole-symmetric'),
+                    5.0 - d)
+
+    def test_the_border_can_be_set_on_the_property_or_on_the_read(self):
+        carried = self._ramp(interp=('polynomial', 1), border='whole-symmetric')
+        # The property's own extension is used when none is given...
+        self.assertAlmostEqual(self._at(carried, 4.5), 4.5)
+        # ...and a read may override it.
+        self.assertAlmostEqual(
+            self._at(carried, 4.5, border='half-symmetric'), 5.0)
+
+    def test_the_default_is_half_symmetric(self):
+        from euclib.abc import BORDER_DEFAULT
+        self.assertEqual(BORDER_DEFAULT, 'half-symmetric')
+        self.assertAlmostEqual(self._at(self._ramp(), 4.5), 5.0)
+
+    def test_an_unknown_extension_is_refused(self):
+        from euclib.abc._property import normalize_border
+        for bad in ('nonsense', 'reflect', ''):
+            with self.subTest(border=bad):
+                with self.assertRaises(ValueError):
+                    normalize_border(bad)
+        # ...and a read that asks for one is refused too, before it computes.
+        with self.assertRaises(ValueError):
+            self._at(self._ramp(), 4.5, border='nonsense')
+
+    def test_a_two_dimensional_grid_extends_each_axis_on_its_own(self):
+        # A corner is past two edges at once, and each axis folds by its own
+        # rule. Half a cell out, the two extensions that repeat the edge value
+        # fold both axes onto the corner cell; whole-sample reflection folds
+        # each onto the cell before it, so the value comes from the four cells
+        # meeting one step in.
+        values = arange(16.).reshape(4, 4)
+        g = Grid(eye(3), GridTopology((4, 4))).withprop('v', values)
+        for border in ('constant', 'half-symmetric'):
+            with self.subTest(border=border):
+                self.assertAlmostEqual(
+                    _scalar(g, 'v', array([[3.5], [3.5]]), border=border), 15.0)
+        self.assertAlmostEqual(
+            _scalar(g, 'v', array([[3.5], [3.5]]), border='whole-symmetric'),
+            values[2:4, 2:4].mean())
+
+
 class TestUnimplementedOrders(TestCase):
     '''Orders 2 and 3 are refused rather than approximated.'''
 

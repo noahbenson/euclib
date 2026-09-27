@@ -168,6 +168,47 @@ INTERP_SUPPORTED_TETRAHEDRON = (('nearest', 0), ('polynomial', 1),
 #: supported; ``None`` means "no extrapolation".
 EXTRAP_ORDERS = (None, 0)
 
+#: The ways a grid's interpolation may continue its data past its own edges.
+#:
+#: A kernel reaches outside the grid whenever a position is near an edge --- a
+#: position half a step inside the last cell's centre still wants a cell that
+#: does not exist --- so an interpolation wider than one cell has to be told what
+#: to find there. These are the three standard answers, all of them *symmetric*
+#: in the sense that folding the data is the same as folding the kernel:
+#:
+#: * ``'constant'`` repeats each edge's value outward, ``. . . a a b c d e e . . .``
+#: * ``'half-symmetric'`` repeats the edge value itself, ``. . . b a a b c d e e . . .``
+#: * ``'whole-symmetric'`` reflects about the edge value, ``. . . b a b c d e d . . .``
+#:
+#: The names are Getreuer's (*Linear Methods for Image Interpolation*, IPOL 2011,
+#: section 14.1), and the default is the second, which is the usual choice for
+#: resampling an image because it is the one that commutes with flipping the data.
+BORDER_EXTENSIONS = ('constant', 'half-symmetric', 'whole-symmetric')
+
+#: The boundary extension a grid's interpolation uses when none is asked for.
+BORDER_DEFAULT = 'half-symmetric'
+
+
+def normalize_border(border, /):
+    '''Normalizes a ``border`` metadata value.
+
+    Parameters
+    ----------
+    border : str or None
+        The boundary extension. ``None`` means the default.
+
+    Returns
+    -------
+    str
+        One of ``BORDER_EXTENSIONS``.
+    '''
+    if border is None:
+        return BORDER_DEFAULT
+    if border not in BORDER_EXTENSIONS:
+        raise ValueError(
+            f"invalid border: {border!r}; expected one of {BORDER_EXTENSIONS}")
+    return border
+
 
 # Metadata Normalization #####################################################
 
@@ -605,6 +646,13 @@ class Property(planobject):
         How to handle points outside the object. ``None`` (the default) yields
         the null value; ``0`` yields the value at the nearest point on the
         object.
+    border : str or None, optional
+        How a *grid*'s interpolation continues the data past its own edges,
+        where a kernel wider than one cell needs a cell that does not exist:
+        ``'constant'``, ``'half-symmetric'`` (the default) or
+        ``'whole-symmetric'``. It is ignored by every geometry that is not a
+        grid, whose elements supply their own neighbours and have no edge to be
+        continued past.
     dtype : dtype-like or None, optional
         The value's dtype. The default, ``None``, keeps the natural dtype.
     mask : array-like or None, optional
@@ -647,8 +695,9 @@ class Property(planobject):
     '''
 
     def __init__(self, value, spatial_shape, backend=None, vartype=None,
-                 interp=UNSET, extrap=None, dtype=None, mask=None, null=UNSET,
-                 unit=None, detach=True, gradient=None, hessian=None):
+                 interp=UNSET, extrap=None, border=None, dtype=None, mask=None,
+                 null=UNSET, unit=None, detach=True, gradient=None,
+                 hessian=None):
         # Every field is assigned exactly as given; the filters below normalize
         # and validate it, and re-run whenever an input changes.
         self.value = value
@@ -657,6 +706,7 @@ class Property(planobject):
         self.vartype = vartype
         self.interp = interp
         self.extrap = extrap
+        self.border = border
         self.dtype = dtype
         self.mask = mask
         self.null = null
@@ -798,6 +848,17 @@ class Property(planobject):
         '''
         return normalize_extrap(extrap)
 
+    @calc('border', lazy=False)
+    def proc_border(border):
+        '''Validates the property's boundary extension.
+
+        Returns
+        -------
+        border : str
+            One of ``BORDER_EXTENSIONS``.
+        '''
+        return normalize_border(border)
+
     @calc('mask', lazy=False)
     def proc_mask(mask, spatial_shape):
         '''Normalizes the property's mask to a boolean array.
@@ -890,8 +951,8 @@ class Property(planobject):
         '''
         if not kwargs:
             return self
-        fields = ('backend', 'vartype', 'interp', 'extrap', 'dtype', 'mask',
-                  'null', 'unit', 'detach')
+        fields = ('backend', 'vartype', 'interp', 'extrap', 'border', 'dtype',
+                  'mask', 'null', 'unit', 'detach')
         updates = {}
         for (k, v) in kwargs.items():
             if k not in fields:
@@ -921,8 +982,8 @@ class Property(planobject):
         return Property(
             value=self.value, spatial_shape=spatial_shape, backend=self.backend,
             vartype=self.vartype, interp=self.interp, extrap=self.extrap,
-            dtype=self.dtype, mask=self.mask, null=self.null, unit=self.unit,
-            detach=self.detach)
+            border=self.border, dtype=self.dtype, mask=self.mask, null=self.null,
+            unit=self.unit, detach=self.detach)
 
     def __getitem__(self, index):
         '''Returns the value indexed along its spatial dimensions.

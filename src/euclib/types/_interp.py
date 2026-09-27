@@ -44,12 +44,13 @@ from itertools import combinations
 from math import factorial
 
 from numpy import (
-    arange, argsort, asarray, concatenate, einsum, eye, finfo, flatnonzero,
-    floor, linalg, maximum, moveaxis, ones, ravel_multi_index, sqrt, unique,
-    where, zeros)
+    arange, argsort, asarray, clip, concatenate, einsum, eye, finfo,
+    flatnonzero, floor, linalg, maximum, minimum, moveaxis, ones,
+    ravel_multi_index, sqrt, unique, where, zeros)
 
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
+    normalize_border,
     INTERP_SUPPORTED, UNSET, normalize_interp)
 from . import _ct, _ps
 from ._geom import Grid, SegPath, TetMesh, TriMesh
@@ -210,7 +211,7 @@ def _flat(x, /):
 # Interpolation ##############################################################
 
 def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
-                mask=UNSET, gradient=UNSET, hessian=UNSET):
+                mask=UNSET, border=UNSET, gradient=UNSET, hessian=UNSET):
     '''Reads a property at a set of positions.
 
     Parameters
@@ -231,6 +232,13 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         own.
     mask : array-like or None, optional
         A mask, overriding the property's own.
+    border : str or None, optional
+        How a *grid*'s interpolation continues the data past its own edges,
+        overriding the property's own: ``'constant'``, ``'half-symmetric'`` or
+        ``'whole-symmetric'``. A kernel wider than one cell reaches outside the
+        grid near an edge, and this is what it finds there. It is ignored by
+        every geometry that is not a grid, whose elements supply their own
+        neighbours and have no edge to be continued past.
     gradient : array-like or None, optional
         The gradient the fit should use, overriding any the property carries.
         An explicit ``None``, like leaving the argument out, means the property's
@@ -267,6 +275,7 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     extrap = prop.extrap if extrap is UNSET else extrap
     null = prop.null if null is UNSET else null
     mask = prop.mask if mask is UNSET else mask
+    border = prop.border if border is UNSET else normalize_border(border)
     # The fits above linear need derivative data: an element's values alone do
     # not determine a quadratic or a cubic. A caller's gradient overrides the
     # property's, and a property that carries none has one estimated from the
@@ -284,7 +293,7 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
             fitted = estimate_gradient(geom, prop, order)
     (loc, outside) = to_loc(geom, at)
     if isinstance(geom, Grid):
-        (res, drawn) = _interp_grid(geom, prop, loc, order)
+        (res, drawn) = _interp_grid(geom, prop, loc, order, border)
         missed = _masked_grid(mask, drawn)
     else:
         (res, corners, drawn) = _interp_simplex(geom, prop, loc, method,
@@ -1608,7 +1617,7 @@ def _monomial_design(step, frame, room, degree, /):
     return (basis, linear, design)
 
 
-def _interp_grid(geom, prop, loc, order, /):
+def _interp_grid(geom, prop, loc, order, border, /):
     '''Interpolates a grid's property at index-space coordinates.
 
     Returns
@@ -1626,7 +1635,7 @@ def _interp_grid(geom, prop, loc, order, /):
     if order == 0:
         idx = tuple(_nearest_cell(p, s) for (p, s) in zip(parts, shape))
         return (values[(Ellipsis,) + idx], [idx])
-    return _blend_cells(values, parts, shape)
+    return _blend_cells(values, parts, shape, border)
 
 
 def _nearest_cell(p, s, /):
@@ -1634,11 +1643,56 @@ def _nearest_cell(p, s, /):
     return asarray(floor(p + 0.5)).clip(0, s - 1).astype(int)
 
 
-def _blend_cells(values, parts, shape, /):
+def _fold(index, size, border, /):
+    '''The real cell an index outside the grid stands for, under an extension.
+
+    A kernel reaches past the grid's edge whenever a position is within half a
+    cell of one, and what it finds there is a choice. Each choice is a rule that
+    carries an index outside ``[0, size)`` back inside, and because the rule is
+    the same for every cell of the axis the extension is symmetric in the sense
+    that folding the *data* and folding the *kernel* come to the same thing.
+
+    Parameters
+    ----------
+    index : numpy.ndarray
+        Integer cell indices, possibly negative or past the end.
+    size : int
+        The number of cells along the axis.
+    border : str
+        One of ``euclib.abc.BORDER_EXTENSIONS``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The indices within ``[0, size)`` whose values stand in for those.
+    '''
+    index = asarray(index)
+    if border == 'constant':
+        # The edge value repeats: . . . a a b c d e e . . .
+        return clip(index, 0, size - 1)
+    if border == 'half-symmetric':
+        # The edge value repeats once and then the data reflects about it:
+        # . . . b a a b c d e e . . .
+        period = 2 * size
+        return minimum(index % period, (period - 1 - index) % period)
+    # Whole-sample symmetric: the reflection is about the edge value itself, so
+    # that value appears once per period rather than twice: . . . b a b c d e d .
+    period = 2 * size - 2
+    if period == 0:
+        # A single-cell axis has nowhere to reflect to.
+        return zeros(index.shape, dtype=int)
+    return minimum(index % period, (period - index) % period)
+
+
+def _blend_cells(values, parts, shape, border, /):
     '''Blends a grid property linearly across the cells around each position.
 
     Each axis contributes the two cells that straddle the position, weighted by
     how near each is; the result is the sum over the 2**D combinations of cells.
+    A position near an edge straddles a cell that does not exist, and what
+    stands in for it is the ``border`` extension's business --- the two stencil
+    cells may even be the same real one, which is why the weights are added
+    rather than assigned.
     '''
     d = len(shape)
     q = parts[0].shape[0]
@@ -1650,9 +1704,12 @@ def _blend_cells(values, parts, shape, /):
             low.append(zeros(q, dtype=int))
             frac.append(zeros(q))
         else:
-            i0 = floor(p).astype(int).clip(0, s - 2)
-            low.append(i0)
-            frac.append(p - i0)
+            # The cell *below* the position, unclipped: a position in the last
+            # half-step has its upper cell past the end, and the extension is
+            # what decides which real cell that is.
+            base = floor(p).astype(int)
+            low.append(base)
+            frac.append(p - base)
     res = zeros(values.shape[:values.ndim - d] + (q,))
     drawn = []
     for bits in range(2 ** d):
@@ -1660,7 +1717,7 @@ def _blend_cells(values, parts, shape, /):
         idx = []
         for ax in range(d):
             upper = (bits >> ax) & 1
-            idx.append(low[ax] + upper)
+            idx.append(_fold(low[ax] + upper, shape[ax], border))
             weight = weight * (frac[ax] if upper else (1.0 - frac[ax]))
         # A cell whose weight is zero must not contribute, or a missing value
         # there would poison the result through 0 * nan.
