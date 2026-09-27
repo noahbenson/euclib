@@ -976,6 +976,28 @@ class TestASimplexTensorProperty(TestCase):
                 got.sum().backward()
                 self.assertIsNotNone(values.grad)
 
+    def test_the_bezier_orders_carry_it_too(self):
+        # The Bezier fits go through `segment_fit`, and the gradient they need
+        # comes from `estimate_gradient`, which applies a sparse operator to the
+        # values. That operator was the one piece of this pass needing a new
+        # backend rather than a translation: a SciPy matrix times a tensor
+        # converts the tensor, so the operator is now carried into the values'
+        # backend and applied there.
+        torch = self._torch()
+        count = 6
+        at = self._path(count).topo.Loc(index=array([1, 3]),
+                                        weight=array([[0.4, 0.7]]))
+        for method in (('bezier', 2), ('bezier', 3)):
+            with self.subTest(method=method):
+                values = torch.tensor(sin(arange(count, dtype=float)),
+                                      requires_grad=True)
+                got = self._path(count).withprop('v', values).prop(
+                    'v', at=at, interp=method)
+                got = got.m if hasattr(got, 'm') else got
+                self.assertTrue(got.requires_grad)
+                got.sum().backward()
+                self.assertIsNotNone(values.grad)
+
     def test_the_answer_matches_the_numpy_path(self):
         torch = self._torch()
         count = 5

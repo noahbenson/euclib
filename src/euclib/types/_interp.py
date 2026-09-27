@@ -512,9 +512,14 @@ def segment_fit(geom, loc, values, corners, gradient, order, /, *,
         The fitted values, with the property's channel dimensions and one value
         per position.
     '''
-    coords = asarray(geom.coords)
+    # The geometry's coordinates and the gradient are handed back as they are:
+    # either may be a tensor, and the whole point of the pass is that they reach
+    # the arithmetic rather than being converted at the entrance. The arithmetic
+    # below is immlib's, because a tensor of values mixed with a numpy coordinate
+    # --- or the reverse --- would otherwise reach numpy's reflected operator,
+    # which converts the tensor and raises.
+    coords = geom.coords
     d = coords.shape[0]
-    gradient = asarray(gradient)
     if gradient.shape[-2] != d:
         raise ValueError(
             f"the gradient has {gradient.shape[-2]} dimensions, but this"
@@ -523,20 +528,29 @@ def segment_fit(geom, loc, values, corners, gradient, order, /, *,
     # segment, scaled by the segment's length, because the fit's parameter runs
     # from 0 to 1 along the segment rather than over its length.
     ends = coords[:, corners]                          # (D, 2, Q)
-    step = ends[:, 1, :] - ends[:, 0, :]               # (D, Q)
-    length = sqrt((step * step).sum(axis=0))           # (Q,)
-    unit = step / where(length > 0, length, 1.0)
+    step = im.subtract(ends[:, 1, :], ends[:, 0, :])   # (D, Q)
+    length = im.sqrt(im.sum(im.multiply(step, step), axis=0))     # (Q,)
+    unit = im.divide(step, im.where(im.greater(length, 0), length, 1.0))
     # The gradient at each corner, projected onto the segment's direction.
-    slopes = (gradient[(Ellipsis, corners)]            # (C..., D, 2, Q)
-              * unit[:, None, :]).sum(axis=-3) * length[None, :]
-    s = 1.0 - asarray(loc.weight)[0]                   # (Q,) from corner 0 to 1
+    slopes = im.multiply(
+        im.sum(im.multiply(gradient[(Ellipsis, corners)],   # (C..., D, 2, Q)
+                           unit[:, None, :]), axis=-3), length[None, :])
+    s = im.subtract(1.0, loc.weight[0])                # (Q,) from corner 0 to 1
     (v0, v1) = (values[..., 0, :], values[..., 1, :])
     (a, b) = (slopes[..., 0, :], slopes[..., 1, :])
     if order == 2:
-        return v0 + (v1 - v0) * s + ((a - b) / 2.0) * (s * (1.0 - s))
-    (s2, s3) = (s * s, s * s * s)
-    return ((2 * s3 - 3 * s2 + 1) * v0 + (s3 - 2 * s2 + s) * a
-            + (-2 * s3 + 3 * s2) * v1 + (s3 - s2) * b)
+        return im.mag(im.add(im.add(v0, im.multiply(
+            im.subtract(v1, v0), s)), im.multiply(
+                im.divide(im.subtract(a, b), 2.0),
+                im.multiply(s, im.subtract(1.0, s)))))
+    (s2, s3) = (im.multiply(s, s), im.multiply(im.multiply(s, s), s))
+    return im.mag(im.add(im.add(
+        im.multiply(im.add(im.subtract(im.multiply(2.0, s3),
+                                       im.multiply(3.0, s2)), 1.0), v0),
+        im.multiply(im.add(im.subtract(s3, im.multiply(2.0, s2)), s), a)),
+        im.add(im.multiply(im.add(im.multiply(-2.0, s3),
+                                  im.multiply(3.0, s2)), v1),
+                im.multiply(im.subtract(s3, s2), b))))
 
 
 def monomial_exponents(dim, order, /):
@@ -1444,8 +1458,10 @@ def estimate_gradient(geom, prop, order, /):
     # `_estimate_gradient` below computes the same thing from the mesh directly
     # and is what the operator is held to.
     count = geom.coords.shape[1]
+    # The values are handed back rather than converted: the operator is applied
+    # in their backend now, so a tensor reaches that product and keeps its graph.
     return _gradient_from_operator(
-        geom.interp_data[f'gradient_{order}'], asarray(prop.value),
+        geom.interp_data[f'gradient_{order}'], prop.value,
         geom.coords.shape[0], count)
 
 
@@ -1460,7 +1476,26 @@ def _gradient_from_operator(operator, values, dim, count, /):
     width = 1
     for entry in channels:
         width *= entry
-    applied = values.reshape((width, count)) @ operator.T        # (C, D*N)
+    # A SciPy matrix times a torch tensor converts the tensor --- and fails
+    # outright for one that requires a gradient --- so when the values are a
+    # tensor the operator is carried into their backend and applied there. The
+    # estimate is a fixed linear operator, so this is a matrix product in both
+    # cases, and the tensor's derivative with respect to the values follows from
+    # it.
+    if hasattr(values, 'requires_grad'):
+        import torch
+        # The product is taken the other way round, because a sparse product
+        # puts its sparse operand on the left: ``operator`` is (D*N, N), so it
+        # multiplies the values' transpose and the answer is transposed back.
+        application = torch.sparse_csr_tensor(
+            torch.as_tensor(operator.indptr),
+            torch.as_tensor(operator.indices),
+            torch.as_tensor(operator.data),
+            size=tuple(operator.shape))
+        applied = torch.sparse.mm(
+            application, values.reshape((width, count)).T).T       # (C, D*N)
+    else:
+        applied = values.reshape((width, count)) @ operator.T      # (C, D*N)
     return applied.reshape((width, dim, count)).reshape(
         channels + (dim, count))
 
