@@ -47,7 +47,7 @@ classifiers = [
 # so nothing could install euclib from a source tree that has the candidates and
 # not the releases. They are raised to 1.0 before euclib 1.0 is released.
 dependencies = [
-    'immlib >= 1.0.0rc1',
+    'immlib >= 1.0.0rc2',
     'pcollections >= 1.0.0rc1',
     'docshare >= 0.3.0',
     'numpy',
