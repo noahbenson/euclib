@@ -1252,7 +1252,10 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
                 continue
             got = im.mag(_ct.evaluate(controls[:, k * 10:(k + 1) * 10],
                                       inside[at].T))
-            res[(Ellipsis, rows[at])] = im.reshape(got, channels + (at.size,))
+            # The magnitude, because immlib's ``reshape`` hands back a quantity
+            # and a tensor will not hold one.
+            res[(Ellipsis, rows[at])] = im.mag(
+                im.reshape(got, channels + (at.size,)))
     return res
 
 
@@ -1307,14 +1310,19 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
         # incenter --- and the incenter is the side lengths. Everything else is
         # barycentric arithmetic on the corners, which is to say it is the same
         # for every triangle.
-        sides = asarray([sqrt(((coords[:, here[two]] - coords[:, here[one]]) ** 2)
-                              .sum())
-                         for (one, two) in ((1, 2), (2, 0), (0, 1))])
+        # Through immlib, since the coordinates may be a tensor: the element's
+        # sides are what the incenter is computed from, and they must follow the
+        # geometry's own arithmetic rather than converting it.
+        sides = im.mag(im.stack([
+            im.sqrt(im.sum(im.multiply(
+                im.subtract(coords[:, here[two]], coords[:, here[one]]),
+                im.subtract(coords[:, here[two]], coords[:, here[one]]))))
+            for (one, two) in ((1, 2), (2, 0), (0, 1))]))
         centre = _ps.centre_weights(sides)
         # The nine numbers, in the order the element reads them: for each corner,
         # its value and the derivative along each of the triangle's two edges
         # from it.
-        numbers = zeros((width, 9))
+        numbers = _grid._zeros_for(like, (width, 9))
         for vertex in range(3):
             numbers[:, 3 * vertex] = im.mag(im.reshape(
                 values[(Ellipsis, vertex, first[slot])], width))
@@ -1325,15 +1333,20 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
                     im.einsum('...d,d->...',
                               slopes[(Ellipsis, slice(None), here[vertex])],
                               along), width))
-        ordinates = numbers @ _ps.basis(centre).T
+        # The controls through immlib, since a tensor of numbers multiplied by
+        # the element's own numpy basis would reach numpy's reflected operator;
+        # and the piece's value and its assignment through the magnitude, since
+        # immlib hands back a quantity and a tensor will not hold one.
+        ordinates = im.mag(im.matmul(numbers, _ps.basis(centre).T))
         rows = flatnonzero(back == slot)
         (pieces, inside) = _ps.sub_weights(weight[:, rows], centre)
         for k in range(len(_ps.PIECES)):
             at = flatnonzero(pieces == k)
             if at.size == 0:
                 continue
-            got = _ps.evaluate(ordinates[:, _ps.SLOTS[k]], inside[at].T)
-            res[(Ellipsis, rows[at])] = got.reshape(channels + (at.size,))
+            got = im.mag(_ps.evaluate(ordinates[:, _ps.SLOTS[k]], inside[at].T))
+            res[(Ellipsis, rows[at])] = im.mag(
+                im.reshape(got, channels + (at.size,)))
     return res
 
 
@@ -1532,6 +1545,10 @@ def _operator_product(operator, values, width, /):
     array-like
         The ``(width, R)`` result, in the values' backend.
     """
+    # The magnitude, because a caller may hand over what immlib returned rather
+    # than an array: a quantity reaches torch's sparse dispatch, which has no
+    # handler for it, rather than the product.
+    values = im.mag(values)
     if hasattr(values, 'requires_grad'):
         import torch
         # The operator is a constant and the values are the caller's, so it is

@@ -999,33 +999,43 @@ class TestASimplexTensorProperty(TestCase):
                 got.sum().backward()
                 self.assertIsNotNone(values.grad)
 
-    def test_a_triangle_and_a_tetrahedron_carry_it_through_the_bezier_fits(self):
-        # The two elementary simplexes above a segment. Their fits assign the
-        # values into a control array, so that array has to be built in the
-        # values' backend --- and the assignment itself is a boundary, where a
-        # quantity coming back from immlib has to be reduced to its magnitude
-        # before a tensor will hold it.
+    def test_every_simplex_method_carries_it(self):
+        # Every method of every element above a segment. The fits assign the
+        # values into a control array, so that array is built in the backend of
+        # the values and the weights promoted together; the operator a
+        # Clough-Tocher edge datum comes from is applied in that backend too; and
+        # each assignment of a computed value takes the magnitude first, since
+        # immlib hands back a quantity and a tensor will not hold one.
+        #
+        # Clough-Tocher and Powell-Sabin have no tetrahedral form --- the first
+        # splits a triangle into three and the second into six --- so a
+        # tetrahedron reports them as unimplemented, which is the contract rather
+        # than a gap here.
         torch = self._torch()
-        for (label, geom) in (
-                ('triangle', TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
-                                     TriTopology(array([[0], [1], [2]]),
-                                                 coord_count=3))),
-                ('tetrahedron', TetMesh(
-                    array([[0., 1., 0., 0.], [0., 0., 1., 0.],
-                           [0., 0., 0., 1.]]),
-                    TetTopology(array([[0], [1], [2], [3]]), coord_count=4)))):
-            with self.subTest(element=label):
-                count = geom.topo.coord_count
-                for order in (2, 3):
+        elements = (
+            ('triangle', TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
+                                 TriTopology(array([[0], [1], [2]]),
+                                             coord_count=3)),
+             (('nearest', 0), ('polynomial', 1), ('polynomial', 2),
+              ('polynomial', 3), ('bezier', 2), ('bezier', 3),
+              ('clough-tocher', 3), ('powell-sabin', 2)),
+             zeros((2, 1))),
+            ('tetrahedron', TetMesh(
+                array([[0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]]),
+                TetTopology(array([[0], [1], [2], [3]]), coord_count=4)),
+             (('nearest', 0), ('polynomial', 2), ('polynomial', 3),
+              ('bezier', 2), ('bezier', 3)),
+             zeros((3, 1))))
+        for (label, geom, methods, weights) in elements:
+            count = geom.topo.coord_count
+            for method in methods:
+                with self.subTest(element=label, method=method):
                     values = torch.arange(1.0, count + 1.0,
                                           requires_grad=True)
-                    loc = geom.topo.Loc(
-                        index=array([0]),
-                        weight=zeros((geom.topo.local_dim, 1)))
+                    loc = geom.topo.Loc(index=array([0]), weight=weights)
                     got = geom.withprop('v', values).prop(
-                        'v', at=loc, interp=('bezier', order))
+                        'v', at=loc, interp=method)
                     got = got.m if hasattr(got, 'm') else got
-                    self.assertTrue(got.requires_grad)
                     got.sum().backward()
                     self.assertIsNotNone(values.grad)
 
