@@ -1988,12 +1988,20 @@ def _fit_cells(values, parts, shape, degree, border, /):
     # The value at the position is the polynomial's constant coefficient.
     constant = powers.index((0,) * d)
     channels = values.shape[:values.ndim - d]
-    res = zeros(channels + (q,))
+    # The answers are collected and stacked at the end rather than assigned into
+    # an array allocated beforehand: the backend follows the arguments, and with a
+    # tensor position and numpy values the answer is a tensor, so a result
+    # allocated from the values alone could not hold it. Stacking has no opinion
+    # about the backend and needs nothing allocated.
+    got_all = []
     offsets = asarray(list(product(range(-width, width + 1), repeat=d)))
     scale = width + 0.5
     drawn = []
     for at in range(q):
-        base = [int(floor(parts[axis][at])) for axis in range(d)]
+        # The block a position fits over is chosen, like a kernel's stencil, so
+        # the position is detached to read it: nothing downstream of the choice
+        # depends on the position, while the design built below does.
+        base = [int(floor(im.to_array(parts[axis][at]))) for axis in range(d)]
         # Each cell of the block, folded into the grid by the extension, and its
         # offset from the position scaled to the block's own half-width.
         (cells, local) = ([], [])
@@ -2001,20 +2009,27 @@ def _fit_cells(values, parts, shape, degree, border, /):
             here = [_fold(int(base[axis] + offsets[k, axis]), shape[axis],
                           border) for axis in range(d)]
             cells.append(here)
-            local.append([(base[axis] + offsets[k, axis] - parts[axis][at])
-                          / scale for axis in range(d)])
-        design = asarray([[prod([local[k][axis] ** power[axis]
-                                 for axis in range(d)]) for power in powers]
-                          for k in range(len(cells))])
+            local.append([im.divide(
+                im.subtract(base[axis] + offsets[k, axis], parts[axis][at]),
+                scale) for axis in range(d)])
+        # The design is built with immlib's arithmetic, not numpy's: it is a
+        # function of the *position*, so a position given as a tensor has to give
+        # a tensor design, and the linear solve below is then differentiable with
+        # respect to both the design and the values.
+        design = im.stack([im.stack(
+            [im.prod(im.stack([im.pow(local[k][axis], power[axis])
+                               for axis in range(d)]), axis=0)
+             for power in powers]) for k in range(len(cells))])
         index = asarray(cells).T
         # The block's values, with the cell axis leading so that the solve sees
         # one right-hand side per channel.
-        block = moveaxis(values[(Ellipsis,) + tuple(index)], -1, 0)
-        got = linalg.lstsq(design, block.reshape((len(cells), -1)),
-                           rcond=None)[0][constant]
-        res[(Ellipsis, at)] = got.reshape(channels)
+        block = im.movedim(values[(Ellipsis,) + tuple(index)], -1, 0)
+        # One right-hand side per channel, which is what the two-dimensional
+        # right-hand side immlib's ``lstsq`` asks for amounts to.
+        got = im.lstsq(design, im.reshape(block, (len(cells), -1)))[0][constant]
+        got_all.append(im.reshape(got, channels))
         drawn.append(tuple(index))
-    return (res, drawn)
+    return (im.mag(im.stack(got_all, axis=-1)), drawn)
 
 
 def _convolve_cells(values, parts, shape, kernel, start, count, border,

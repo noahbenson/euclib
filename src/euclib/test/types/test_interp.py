@@ -795,9 +795,13 @@ class TestATensorValuedProperty(TestCase):
         values = torch.linspace(0.0, 3.0, count).requires_grad_(True)
         grid = Grid(eye(2), GridTopology((count,))).withprop('v', values)
         at = grid.topo.Loc(sx=array([2.5]))
+        # Every grid method, the two fits included: they take a different path
+        # from the kernels, through a least-squares solve rather than a
+        # convolution, and the first version of this test listed only the
+        # kernels and so missed them.
         for method in (('nearest', 0), ('polynomial', 1), ('catmull-rom', 3),
                        ('spline', 2), ('spline', 3), ('lanczos', 2),
-                       ('lanczos', 3)):
+                       ('lanczos', 3), ('polynomial', 2), ('polynomial', 3)):
             with self.subTest(method=method):
                 got = grid.prop('v', at=at, interp=method)
                 got = got.m if hasattr(got, 'm') else got
@@ -861,8 +865,12 @@ class TestATensorPosition(TestCase):
         # difference straddling a kink is the derivative on neither side.
         torch = self._torch()
         values = sin(arange(self.COUNT, dtype=float) / 3.0)
+        # The fits included: their weights come from a design matrix that is a
+        # function of the position, so the gradient reaches the position through
+        # the solve rather than through a kernel's distance.
         for method in (('polynomial', 1), ('catmull-rom', 3), ('spline', 2),
-                       ('spline', 3), ('lanczos', 2), ('lanczos', 3)):
+                       ('spline', 3), ('lanczos', 2), ('lanczos', 3),
+                       ('polynomial', 2), ('polynomial', 3)):
             with self.subTest(method=method):
                 at = torch.tensor([5.3], requires_grad=True)
                 got = self._grid(values).prop(
