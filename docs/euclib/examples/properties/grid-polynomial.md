@@ -191,10 +191,15 @@ continuity — hold.
 
 ```{code-cell}
 carried = el.grid((count, count)).withprop('v', grid)
-print("the library's fit against this page's, over a grid of positions:")
+# The comparison stays a block's width inside the grid, because the two differ
+# there by design: this page's fit drops the cells its block would take from
+# outside the data, and the library extends the data instead, as the boundary
+# page describes.
+print("the library's fit against this page's, over positions their blocks fit:")
 for degree in (2, 3):
-    xs = np.linspace(19.0, 39.0, 60)
-    ys = np.linspace(19.0, 39.0, 60)
+    deep = 18 + half_width(degree, 2)
+    xs = np.linspace(deep, count - 1 - deep, 40)
+    ys = np.linspace(deep, count - 1 - deep, 40)
     got = np.ravel(np.asarray(carried.prop(
         'v', at=carried.topo.Loc(sx=xs, sy=ys), interp=('polynomial', degree))))
     want = np.array([fit(grid, (x, y), degree) for (x, y) in zip(xs, ys)])
