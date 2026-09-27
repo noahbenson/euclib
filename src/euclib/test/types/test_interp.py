@@ -999,6 +999,36 @@ class TestASimplexTensorProperty(TestCase):
                 got.sum().backward()
                 self.assertIsNotNone(values.grad)
 
+    def test_a_triangle_and_a_tetrahedron_carry_it_through_the_bezier_fits(self):
+        # The two elementary simplexes above a segment. Their fits assign the
+        # values into a control array, so that array has to be built in the
+        # values' backend --- and the assignment itself is a boundary, where a
+        # quantity coming back from immlib has to be reduced to its magnitude
+        # before a tensor will hold it.
+        torch = self._torch()
+        for (label, geom) in (
+                ('triangle', TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
+                                     TriTopology(array([[0], [1], [2]]),
+                                                 coord_count=3))),
+                ('tetrahedron', TetMesh(
+                    array([[0., 1., 0., 0.], [0., 0., 1., 0.],
+                           [0., 0., 0., 1.]]),
+                    TetTopology(array([[0, 1, 2, 3]]), coord_count=4)))):
+            with self.subTest(element=label):
+                count = geom.topo.coord_count
+                for order in (2, 3):
+                    values = torch.arange(1.0, count + 1.0,
+                                          requires_grad=True)
+                    loc = geom.topo.Loc(
+                        index=array([0]),
+                        weight=zeros((geom.topo.local_dim - 1, 1)))
+                    got = geom.withprop('v', values).prop(
+                        'v', at=loc, interp=('bezier', order))
+                    got = got.m if hasattr(got, 'm') else got
+                    self.assertTrue(got.requires_grad)
+                    got.sum().backward()
+                    self.assertIsNotNone(values.grad)
+
     def test_the_answer_matches_the_numpy_path(self):
         torch = self._torch()
         count = 5

@@ -745,21 +745,21 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
         near_i = tuple(order - 1 if c == i else (1 if c == j else 0)
                        for c in range(3))
         if order == 3:
-            control[powers.index(near_i)] = im.add(
-                values[..., i, :], im.divide(at_i, 3.0))
+            control[powers.index(near_i)] = im.mag(im.add(
+                values[..., i, :], im.divide(at_i, 3.0)))
             near_j = tuple(1 if c == i else (order - 1 if c == j else 0)
                            for c in range(3))
-            control[powers.index(near_j)] = im.subtract(
-                values[..., j, :], im.divide(at_j, 3.0))
+            control[powers.index(near_j)] = im.mag(im.subtract(
+                values[..., j, :], im.divide(at_j, 3.0)))
         else:
             # The edge's middle control value: the *reflection* of the midpoint's
             # value about the endpoints' average. A quadratic's Bezier middle
             # control is not the value at the midpoint --- that value is the
             # average of the three controls (b0 + 2 b1 + b2) / 4 --- so the
             # correction term enters at twice its size, not once.
-            control[powers.index(near_i)] = im.add(
+            control[powers.index(near_i)] = im.mag(im.add(
                 im.divide(im.add(values[..., i, :], values[..., j, :]), 2.0),
-                im.divide(im.subtract(at_i, at_j), 4.0))
+                im.divide(im.subtract(at_i, at_j), 4.0)))
     if order == 3:
         # The one interior control value: the average of the three edges'
         # *degree-2* control values, which is what degree elevation asks for.
@@ -782,7 +782,8 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
             # ... reflected, as a control value of degree 2 must be.
             middle.append(2.0 * halfway
                           - (values[..., i, :] + values[..., j, :]) / 2.0)
-        control[powers.index((1, 1, 1))] = sum(middle) / 3.0
+        control[powers.index((1, 1, 1))] = im.mag(
+            im.divide(sum(middle), 3.0))
     # Evaluate the Bernstein basis at the barycentric weights. The last weight
     # is what the first two leave of the unit sum.
     weight = loc.weight
@@ -886,16 +887,16 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
         near_i = tuple(order - 1 if c == i else (1 if c == j else 0)
                        for c in range(4))
         if order == 3:
-            control[powers.index(near_i)] = im.add(
-                values[..., i, :], im.divide(at_i, 3.0))
+            control[powers.index(near_i)] = im.mag(im.add(
+                values[..., i, :], im.divide(at_i, 3.0)))
             near_j = tuple(1 if c == i else (order - 1 if c == j else 0)
                            for c in range(4))
-            control[powers.index(near_j)] = im.subtract(
-                values[..., j, :], im.divide(at_j, 3.0))
+            control[powers.index(near_j)] = im.mag(im.subtract(
+                values[..., j, :], im.divide(at_j, 3.0)))
         else:
-            control[powers.index(near_i)] = im.add(
+            control[powers.index(near_i)] = im.mag(im.add(
                 im.divide(im.add(values[..., i, :], values[..., j, :]), 2.0),
-                im.divide(im.subtract(at_i, at_j), 4.0))
+                im.divide(im.subtract(at_i, at_j), 4.0)))
     if order == 3:
         # One control value per face, each the average of that face's own three
         # edges' *degree-2* control values, which is what degree elevation asks
@@ -921,7 +922,8 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
                     2.0 * halfway
                     - (values[..., i, :] + values[..., j, :]) / 2.0)
             inside = tuple(1 if c in face else 0 for c in range(4))
-            control[powers.index(inside)] = sum(middle) / 3.0
+            control[powers.index(inside)] = im.mag(
+                im.divide(sum(middle), 3.0))
     # Evaluate the Bernstein basis at the barycentric weights. The last weight
     # is what the first three leave of the unit sum.
     weight = loc.weight
