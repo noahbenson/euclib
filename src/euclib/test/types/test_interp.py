@@ -1021,7 +1021,7 @@ class TestASimplexTensorProperty(TestCase):
                                           requires_grad=True)
                     loc = geom.topo.Loc(
                         index=array([0]),
-                        weight=zeros((geom.topo.local_dim - 1, 1)))
+                        weight=zeros((geom.topo.local_dim, 1)))
                     got = geom.withprop('v', values).prop(
                         'v', at=loc, interp=('bezier', order))
                     got = got.m if hasattr(got, 'm') else got
