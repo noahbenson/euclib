@@ -1061,16 +1061,18 @@ def polynomial_fit(geom, loc, values, corners, gradient, order, /, *,
         The fitted values, with the property's channel dimensions and one value
         per position.
     '''
-    coords = asarray(geom.coords)
+    # The geometry's coordinates and the gradient are handed back as they are,
+    # as everywhere else: either may be a tensor, and the arithmetic below is the
+    # backend's own.
+    coords = geom.coords
     (dim, count) = (coords.shape[0], corners.shape[0])
     k = count - 1
-    gradient = asarray(gradient)
     if gradient.shape[-2] != dim:
         raise ValueError(
             f"the gradient has {gradient.shape[-2]} dimensions, but this"
             f" geometry occupies {dim} of them")
     index = asarray(loc.index)
-    weight = asarray(loc.weight)
+    weight = loc.weight
     channels = tuple(values.shape[:-2])
     width = 1
     for c in channels:
@@ -1084,7 +1086,8 @@ def polynomial_fit(geom, loc, values, corners, gradient, order, /, *,
     # element is enough to read them all.
     (elements, back) = unique(index, return_inverse=True)
     if elements.size == 0:
-        return zeros(channels + (0,))
+        return _grid._zeros_for(im.promote(values, weight)[0],
+                                channels + (0,))
     (_, first) = unique(back, return_index=True)
     here = geom.topo.indices[:, elements]                  # (K+1, E)
     ends = coords[:, here]                                 # (D, K+1, E)
@@ -1100,26 +1103,29 @@ def polynomial_fit(geom, loc, values, corners, gradient, order, /, *,
     # the multiply, which is the only part of it the field could have meant.
     origin = ends[:, k, :]                                 # (D, E)
     jacobian = ends[:, :k, :] - origin[:, None, :]         # (D, K, E)
-    local = einsum('dke,...dce->...kce', jacobian, data_gradient)
+    local = im.einsum('dke,...dce->...kce', jacobian, data_gradient)
     # One row of the right-hand side per condition: the corner's value, or its
-    # gradient along one of the element's own axes.
-    target = zeros((len(conditions),) + (width,) + (elements.size,))
-    for (row, condition) in enumerate(conditions):
+    # gradient along one of the element's own axes. The rows are stacked rather
+    # than assigned into an array made beforehand, because the values may be a
+    # tensor and an array allocated as numpy could not hold them.
+    rows = []
+    for condition in conditions:
         if condition[0] == 'value':
-            target[row] = data_values[..., condition[1], :].reshape(
-                (width, elements.size))
+            rows.append(im.reshape(data_values[..., condition[1], :],
+                                   (width, elements.size)))
         else:
-            target[row] = local[..., condition[2], condition[1], :].reshape(
-                (width, elements.size))
-    coefficients = einsum('wr,rce->wce', inverse, target)  # (W, C, E)
+            rows.append(im.reshape(local[..., condition[2], condition[1], :],
+                                   (width, elements.size)))
+    target = im.stack(rows)
+    coefficients = im.einsum('wr,rce->wce', inverse, target)  # (W, C, E)
     # Evaluate at the positions, each one with its own element's polynomial.
     chosen = coefficients[(Ellipsis, back)]                # (W, C, Q)
     basis = ones((len(powers), weight.shape[1]))
     for axis in range(k):
-        basis = basis * (weight[axis][None, :]
-                         ** exponents[:, axis][:, None])
-    res = einsum('wq,wcq->cq', basis, chosen)
-    return res.reshape(channels + (weight.shape[1],))
+        basis = im.multiply(basis, im.pow(
+            weight[axis][None, :], exponents[:, axis][:, None]))
+    res = im.einsum('wq,wcq->cq', basis, chosen)
+    return im.mag(im.reshape(res, channels + (weight.shape[1],)))
 
 
 def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
@@ -1366,10 +1372,15 @@ def catmull_rom_fit(geom, loc, values, corners, slopes, order, /, *, whole=None)
         return (whole[..., forward] - whole[..., behind[0]]) / 2.0
 
     index = asarray(loc.index)
-    weight = asarray(loc.weight)
+    # The weights are handed back as they are: they are built from the
+    # positions, so a tensor position makes them tensors.
+    weight = loc.weight
     (elements, back) = unique(index, return_inverse=True)
     (_, first) = unique(back, return_index=True)
-    res = zeros(whole.shape[:-1] + (index.shape[0],))
+    # Allocated in the backend of the values and the weights promoted together,
+    # because the answer is a tensor when either is.
+    res = _grid._zeros_for(im.promote(whole, weight)[0],
+                           whole.shape[:-1] + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         (u, v) = (int(indices[0, element]), int(indices[1, element]))
         # Both slopes are derivatives with respect to the *same* parameter, the
@@ -1386,11 +1397,14 @@ def catmull_rom_fit(geom, loc, values, corners, slopes, order, /, *, whole=None)
         h10 = s ** 3 - 2.0 * s ** 2 + s
         h01 = -2.0 * s ** 3 + 3.0 * s ** 2
         h11 = s ** 3 - s ** 2
-        res[(Ellipsis, rows)] = (
-            h00 * whole[..., u][(Ellipsis, None)]
-            + h10 * m_u[(Ellipsis, None)]
-            + h01 * whole[..., v][(Ellipsis, None)]
-            + h11 * m_v[(Ellipsis, None)])
+        # The Hermite basis against the values, through immlib: a quantity times
+        # a tensor reaches pint's operator, which does not promote the other
+        # way.
+        res[(Ellipsis, rows)] = im.mag(im.add(im.add(
+            im.multiply(h00, whole[..., u][(Ellipsis, None)]),
+            im.multiply(h10, m_u[(Ellipsis, None)])),
+            im.add(im.multiply(h01, whole[..., v][(Ellipsis, None)]),
+                   im.multiply(h11, m_v[(Ellipsis, None)]))))
     return res
 
 

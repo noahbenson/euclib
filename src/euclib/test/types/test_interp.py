@@ -987,7 +987,8 @@ class TestASimplexTensorProperty(TestCase):
         count = 6
         at = self._path(count).topo.Loc(index=array([1, 3]),
                                         weight=array([[0.4, 0.7]]))
-        for method in (('bezier', 2), ('bezier', 3)):
+        for method in (('bezier', 2), ('bezier', 3), ('catmull-rom', 3),
+                       ('polynomial', 2), ('polynomial', 3)):
             with self.subTest(method=method):
                 values = torch.tensor(sin(arange(count, dtype=float)),
                                       requires_grad=True)
