@@ -683,6 +683,88 @@ class TestGridPolynomial(TestCase):
         self.assertGreater(np.abs(got - want).max(), 1e-3)
 
 
+class TestSegmentCatmullRom(TestCase):
+    '''The cardinal cubic along a path, whose slopes come from the neighbours.'''
+
+    COUNT = 12
+
+    def _path(self, field, /, **kw):
+        count = self.COUNT
+        path = SegPath(stack([arange(count, dtype=float), zeros(count)]),
+                       SegTopology([list(range(count - 1)),
+                                    list(range(1, count))]))
+        return path.withprop('f', array([[field(t) for t in range(count)]]), **kw)
+
+    def _read(self, field, positions, /, **kw):
+        carried = self._path(field)
+        out = []
+        for t in positions:
+            i = int(floor(t))
+            at = carried.topo.Loc(index=array([i]),
+                                  weight=array([[1.0 - (t - i)]]))
+            out.append(float(ravel(asarray(carried.prop('f', at=at, **kw)))[0]))
+        return array(out)
+
+    def _probe(self):
+        return linspace(2.0, self.COUNT - 3.0, 40)
+
+    def test_it_reproduces_the_affine_and_the_quadratic(self):
+        # The central difference is exact for a quadratic and for everything
+        # below it, which is what the rule is for.
+        probe = self._probe()
+        for (name, field) in (('affine', lambda t: 0.4 * t + 1.1),
+                              ('quadratic', lambda t: -0.7 * t ** 2 + 0.4 * t + 1.1)):
+            with self.subTest(field=name):
+                got = self._read(field, probe, interp=('catmull-rom', 3))
+                self.assertLess(np.abs(got - field(probe)).max(), 1e-12)
+
+    def test_it_does_not_reproduce_a_cubic(self):
+        # Where the estimated slopes do, which is the trade between the local
+        # rule and the global fit.
+        cubic = lambda t: 0.3 * t ** 3 - 0.7 * t ** 2 + 0.4 * t + 1.1
+        probe = self._probe()
+        got = self._read(cubic, probe, interp=('catmull-rom', 3))
+        self.assertGreater(np.abs(got - cubic(probe)).max(), 1e-3)
+        fitted = self._read(cubic, probe, interp=('bezier', 3))
+        self.assertLess(np.abs(fitted - cubic(probe)).max(), 1e-10)
+
+    def test_it_ignores_a_supplied_gradient(self):
+        # The rule is a function of the values, as the grid method is; giving
+        # the curve a gradient as well would make it neither rule nor fit.
+        cubic = lambda t: 0.3 * t ** 3 - 0.7 * t ** 2 + 0.4 * t + 1.1
+        probe = self._probe()
+        supplied = stack([array([3.0, 0.0]) for _ in range(self.COUNT)],
+                         axis=-1)[None]
+        without = self._read(cubic, probe, interp=('catmull-rom', 3))
+        with_gradient = self._read(cubic, probe, interp=('catmull-rom', 3),
+                                   gradient=supplied)
+        self.assertTrue(allclose(without, with_gradient))
+
+    def test_it_is_the_grid_kernel_on_an_evenly_spaced_path(self):
+        # The claim the method's documentation page makes: the cardinal cubic
+        # and the grid's cubic convolution are one method in two settings.
+        rng = default_rng(2)
+        values = rng.normal(size=self.COUNT)
+        probe = self._probe()
+        by_path = self._read(lambda t: values[int(t)], probe,
+                             interp=('catmull-rom', 3))
+        grid = Grid(eye(2), GridTopology((self.COUNT,))).withprop(
+            'f', values)
+        at = grid.topo.Loc(sx=probe)
+        by_grid = ravel(asarray(grid.prop('f', at=at,
+                                          interp=('catmull-rom', 3))))
+        self.assertLess(np.abs(by_path - by_grid).max(), 1e-12)
+
+    def test_a_segment_offers_it_at_order_three_and_no_other(self):
+        from euclib.abc import supported_interp
+        path = self._path(lambda t: t)
+        support = supported_interp(path.topo)
+        self.assertIn(('catmull-rom', 3), support)
+        for order in (0, 1, 2):
+            with self.subTest(order=order):
+                self.assertNotIn(('catmull-rom', order), support)
+
+
 class TestUnimplementedOrders(TestCase):
     '''Orders 2 and 3 are refused rather than approximated.'''
 

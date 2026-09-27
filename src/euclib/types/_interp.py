@@ -364,6 +364,10 @@ def _element_fit(geom, method, /):
             return triangle_fit
         if isinstance(geom, TetMesh):
             return tetrahedron_fit
+    if method == 'catmull-rom' and isinstance(geom, SegPath):
+        # A path is the element this rule is stated on; a grid has its own
+        # cardinal kernel, which agrees with this one sample for sample.
+        return catmull_rom_fit
     if method == 'clough-tocher' and isinstance(geom, TriMesh):
         # A triangle is the element this scheme splits; there is no segmented
         # or tetrahedral form of it.
@@ -1258,6 +1262,98 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
                 continue
             got = _ps.evaluate(ordinates[:, _ps.SLOTS[k]], inside[at].T)
             res[(Ellipsis, rows[at])] = got.reshape(channels + (at.size,))
+    return res
+
+
+def catmull_rom_fit(geom, loc, values, corners, slopes, order, /, *, whole=None):
+    '''Fits the cardinal cubic through a segment's values.
+
+    The other cubic fits here build a Hermite curve from the property's slopes,
+    supplied or estimated from the mesh; this is the third way to get them, and
+    the classical one. Catmull and Rom's rule takes a vertex's slope from its
+    *neighbours*: the difference of the two, halved, with a one-sided difference
+    at an end. It needs no solve and no gradient, and the curve it gives is the
+    one the grid's ``catmull-rom`` method builds, sample for sample --- the
+    method's documentation page shows the weights agree.
+
+    The rule is read per *end of a segment*, which is what makes the sign
+    unambiguous: a slope is a derivative along a direction, so for the segment
+    from ``u`` to ``v`` the slope at ``u`` is the central difference *travelling
+    towards* ``v``, and the slope at ``v`` is the one travelling towards ``u``,
+    negated. A vertex between two segments gets the same number from either,
+    which is what makes the curve C1.
+
+    A supplied gradient is ignored: the rule is a function of the values, as it
+    is on a grid, and mixing the two would give a curve that is neither.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry, whose elements are the segments.
+    loc : object
+        The local coordinates of the positions being asked about.
+    values, corners, slopes, order
+        As for every fit; ``slopes`` is not read.
+    whole : array-like or None
+        The property's values at *every* coordinate, which is where the slopes
+        come from: a vertex's neighbours are other coordinates, and they need
+        not be among the ones the positions happen to name.
+
+    Raises
+    ------
+    ValueError
+        If ``whole`` is not given.
+    '''
+    if whole is None:
+        raise ValueError(
+            "the Catmull-Rom fit reads each vertex's neighbours, which a"
+            " segment's own corners do not determine; it needs the property's"
+            " values at every coordinate, as `whole`")
+    indices = asarray(geom.topo.indices)
+    count = whole.shape[-1]
+    # Each coordinate's neighbours, from the connectivity.
+    neighbours = [set() for _ in range(count)]
+    for (u, v) in zip(indices[0], indices[1]):
+        neighbours[int(u)].add(int(v))
+        neighbours[int(v)].add(int(u))
+
+    def slope_towards(here, forward, /):
+        '''The slope at a vertex, travelling towards one of its neighbours.
+
+        The central difference with the vertex's *other* neighbour, halved --- or
+        the one-sided difference when there is no other, which is a path's end.
+        '''
+        behind = sorted(w for w in neighbours[here] if w != forward)
+        if not behind:
+            return whole[..., forward] - whole[..., here]
+        return (whole[..., forward] - whole[..., behind[0]]) / 2.0
+
+    index = asarray(loc.index)
+    weight = asarray(loc.weight)
+    (elements, back) = unique(index, return_inverse=True)
+    (_, first) = unique(back, return_index=True)
+    res = zeros(whole.shape[:-1] + (index.shape[0],))
+    for (slot, element) in enumerate(elements):
+        (u, v) = (int(indices[0, element]), int(indices[1, element]))
+        # Both slopes are derivatives with respect to the *same* parameter, the
+        # fraction from u to v -- so the slope at v is the one travelling the
+        # other way, negated.
+        m_u = slope_towards(u, v)
+        m_v = -slope_towards(v, u)
+        rows = flatnonzero(back == slot)
+        # The local weight is the first vertex's, so the fraction from u to v is
+        # what it leaves of the unit sum.
+        s = 1.0 - weight[0, rows]
+        # The cubic Hermite basis at the fraction along the segment.
+        h00 = 2.0 * s ** 3 - 3.0 * s ** 2 + 1.0
+        h10 = s ** 3 - 2.0 * s ** 2 + s
+        h01 = -2.0 * s ** 3 + 3.0 * s ** 2
+        h11 = s ** 3 - s ** 2
+        res[(Ellipsis, rows)] = (
+            h00 * whole[..., u][(Ellipsis, None)]
+            + h10 * m_u[(Ellipsis, None)]
+            + h01 * whole[..., v][(Ellipsis, None)]
+            + h11 * m_v[(Ellipsis, None)])
     return res
 
 

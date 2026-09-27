@@ -135,7 +135,8 @@ INTERP_SUPPORTED_GRID = (('nearest', 0), ('polynomial', 1), ('bezier', 1),
 #: fit is the control-value construction.
 INTERP_SUPPORTED_SEGMENT = (('nearest', 0), ('polynomial', 1),
                             ('polynomial', 2), ('polynomial', 3),
-                            ('bezier', 1), ('bezier', 2), ('bezier', 3))
+                            ('bezier', 1), ('bezier', 2), ('bezier', 3),
+                            ('catmull-rom', 3))
 
 #: The interpolations a *triangle* supports. A cubic's ten control values come
 #: from the nine conditions a triangle's three values and three gradients
