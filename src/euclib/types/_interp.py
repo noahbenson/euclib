@@ -710,9 +710,9 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
         The fitted values, with the property's channel dimensions and one value
         per position.
     '''
-    coords = asarray(geom.coords)
+    coords = geom.coords
     dim = coords.shape[0]
-    gradient = asarray(gradient)
+    gradient = gradient
     if gradient.shape[-2] != dim:
         raise ValueError(
             f"the gradient has {gradient.shape[-2]} dimensions, but this"
@@ -725,7 +725,11 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
     # carried: a scalar property's gradient is (D, N) and a channelled one's is
     # (C..., D, N), and the corner axis is the last either way.
     at = gradient[..., :, corners]                             # (C..., D, 3, Q)
-    control = zeros((len(powers),) + tuple(values.shape[:-2]) + (q,))
+    # The control values are held in the backend of the values and the gradient
+    # promoted together: the values are assigned into this array, and a tensor
+    # cannot be assigned into one made as numpy.
+    control = _grid._zeros_for(im.promote(values, gradient)[0],
+                               (len(powers),) + tuple(values.shape[:-2]) + (q,))
     # The corners hold their own values.
     for c in range(3):
         corner = tuple(order if i == c else 0 for i in range(3))
@@ -736,24 +740,26 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
         # The slope each end asks for along the edge is the gradient's component
         # in the edge's direction: the parameter runs from 0 at one corner to 1
         # at the other, so the edge's length is already accounted for.
-        at_i = (at[..., :, i, :] * step).sum(axis=-2)          # (C..., Q)
-        at_j = (at[..., :, j, :] * step).sum(axis=-2)
+        at_i = im.sum(im.multiply(at[..., :, i, :], step), axis=-2)
+        at_j = im.sum(im.multiply(at[..., :, j, :], step), axis=-2)
         near_i = tuple(order - 1 if c == i else (1 if c == j else 0)
                        for c in range(3))
         if order == 3:
-            control[powers.index(near_i)] = values[..., i, :] + at_i / 3.0
+            control[powers.index(near_i)] = im.add(
+                values[..., i, :], im.divide(at_i, 3.0))
             near_j = tuple(1 if c == i else (order - 1 if c == j else 0)
                            for c in range(3))
-            control[powers.index(near_j)] = values[..., j, :] - at_j / 3.0
+            control[powers.index(near_j)] = im.subtract(
+                values[..., j, :], im.divide(at_j, 3.0))
         else:
             # The edge's middle control value: the *reflection* of the midpoint's
             # value about the endpoints' average. A quadratic's Bezier middle
             # control is not the value at the midpoint --- that value is the
             # average of the three controls (b0 + 2 b1 + b2) / 4 --- so the
             # correction term enters at twice its size, not once.
-            control[powers.index(near_i)] = (
-                (values[..., i, :] + values[..., j, :]) / 2.0
-                + (at_i - at_j) / 4.0)
+            control[powers.index(near_i)] = im.add(
+                im.divide(im.add(values[..., i, :], values[..., j, :]), 2.0),
+                im.divide(im.subtract(at_i, at_j), 4.0))
     if order == 3:
         # The one interior control value: the average of the three edges'
         # *degree-2* control values, which is what degree elevation asks for.
@@ -779,8 +785,9 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
         control[powers.index((1, 1, 1))] = sum(middle) / 3.0
     # Evaluate the Bernstein basis at the barycentric weights. The last weight
     # is what the first two leave of the unit sum.
-    weight = asarray(loc.weight)
-    full = concatenate([weight, (1.0 - weight.sum(axis=0))[None, :]], axis=0)
+    weight = loc.weight
+    full = im.concatenate([weight, im.reshape(
+        im.subtract(1.0, im.sum(weight, axis=0)), (1, -1))], axis=0)
     # The Bernstein basis, one value per control point: the product of the
     # barycentric weights taken to the control point's exponents, over the three
     # corners, scaled by the multinomial coefficient. The weights are (Q, 3), so
@@ -790,7 +797,7 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
     counts = asarray([factorial(p) for p in exponents.ravel()]
                      ).reshape(exponents.shape).prod(axis=1)
     basis = basis * (factorial(order) / counts)[:, None]
-    return einsum('wq,w...q->...q', basis, control)
+    return im.mag(im.einsum('wq,w...q->...q', basis, control))
 
 
 def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
@@ -844,9 +851,9 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
         The fitted values, with the property's channel dimensions and one value
         per position.
     '''
-    coords = asarray(geom.coords)
+    coords = geom.coords
     dim = coords.shape[0]
-    gradient = asarray(gradient)
+    gradient = gradient
     if gradient.shape[-2] != dim:
         raise ValueError(
             f"the gradient has {gradient.shape[-2]} dimensions, but this"
@@ -859,7 +866,11 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
     # carried: a scalar property's gradient is (D, N) and a channelled one's is
     # (C..., D, N), and the corner axis is the last either way.
     at = gradient[..., :, corners]                             # (C..., D, 4, Q)
-    control = zeros((len(powers),) + tuple(values.shape[:-2]) + (q,))
+    # The control values are held in the backend of the values and the gradient
+    # promoted together: the values are assigned into this array, and a tensor
+    # cannot be assigned into one made as numpy.
+    control = _grid._zeros_for(im.promote(values, gradient)[0],
+                               (len(powers),) + tuple(values.shape[:-2]) + (q,))
     # The corners hold their own values.
     for c in range(4):
         corner = tuple(order if i == c else 0 for i in range(4))
@@ -870,19 +881,21 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
         # The slope each end asks for along the edge is the gradient's component
         # in the edge's direction: the parameter runs from 0 at one corner to 1
         # at the other, so the edge's length is already accounted for.
-        at_i = (at[..., :, i, :] * step).sum(axis=-2)          # (C..., Q)
-        at_j = (at[..., :, j, :] * step).sum(axis=-2)
+        at_i = im.sum(im.multiply(at[..., :, i, :], step), axis=-2)
+        at_j = im.sum(im.multiply(at[..., :, j, :], step), axis=-2)
         near_i = tuple(order - 1 if c == i else (1 if c == j else 0)
                        for c in range(4))
         if order == 3:
-            control[powers.index(near_i)] = values[..., i, :] + at_i / 3.0
+            control[powers.index(near_i)] = im.add(
+                values[..., i, :], im.divide(at_i, 3.0))
             near_j = tuple(1 if c == i else (order - 1 if c == j else 0)
                            for c in range(4))
-            control[powers.index(near_j)] = values[..., j, :] - at_j / 3.0
+            control[powers.index(near_j)] = im.subtract(
+                values[..., j, :], im.divide(at_j, 3.0))
         else:
-            control[powers.index(near_i)] = (
-                (values[..., i, :] + values[..., j, :]) / 2.0
-                + (at_i - at_j) / 4.0)
+            control[powers.index(near_i)] = im.add(
+                im.divide(im.add(values[..., i, :], values[..., j, :]), 2.0),
+                im.divide(im.subtract(at_i, at_j), 4.0))
     if order == 3:
         # One control value per face, each the average of that face's own three
         # edges' *degree-2* control values, which is what degree elevation asks
@@ -911,8 +924,9 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
             control[powers.index(inside)] = sum(middle) / 3.0
     # Evaluate the Bernstein basis at the barycentric weights. The last weight
     # is what the first three leave of the unit sum.
-    weight = asarray(loc.weight)
-    full = concatenate([weight, (1.0 - weight.sum(axis=0))[None, :]], axis=0)
+    weight = loc.weight
+    full = im.concatenate([weight, im.reshape(
+        im.subtract(1.0, im.sum(weight, axis=0)), (1, -1))], axis=0)
     # The Bernstein basis, one value per control point: the product of the
     # barycentric weights taken to the control point's exponents, over the four
     # corners, scaled by the multinomial coefficient. The weights are (Q, 4), so
@@ -922,7 +936,7 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
     counts = asarray([factorial(p) for p in exponents.ravel()]
                      ).reshape(exponents.shape).prod(axis=1)
     basis = basis * (factorial(order) / counts)[:, None]
-    return einsum('wq,w...q->...q', basis, control)
+    return im.mag(im.einsum('wq,w...q->...q', basis, control))
 
 
 def _monomials(powers, u, /):
@@ -1151,7 +1165,7 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
     method, which is a different construction.
 
     '''
-    coords = asarray(geom.coords)
+    coords = geom.coords
     dim = coords.shape[0]
     # A triangle in space is no different to construct on than one in a plane:
     # its three pieces are coplanar however it sits, its control net is the
@@ -1190,7 +1204,7 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
     across = stacked @ operator.T                          # (C, E)
     indices = asarray(geom.topo.indices)
     index = asarray(loc.index)
-    weight = asarray(loc.weight)
+    weight = loc.weight
     (elements, back) = unique(index, return_inverse=True)
     (_, first) = unique(back, return_index=True)
     res = zeros(channels + (index.shape[0],))
@@ -1261,7 +1275,7 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
     This is the *quadratic* scheme, so it answers at order 2 and no other. The
     cubic scheme that is C1 across a split of the same kind is Clough-Tocher's.
     '''
-    coords = asarray(geom.coords)
+    coords = geom.coords
     dim = coords.shape[0]
     channels = tuple(values.shape[:-2])
     width = 1
@@ -1269,7 +1283,7 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
         width *= entry
     indices = asarray(geom.topo.indices)
     index = asarray(loc.index)
-    weight = asarray(loc.weight)
+    weight = loc.weight
     (elements, back) = unique(index, return_inverse=True)
     (_, first) = unique(back, return_index=True)
     res = zeros(channels + (index.shape[0],))
@@ -1501,10 +1515,14 @@ def _gradient_from_operator(operator, values, dim, count, /):
         # The product is taken the other way round, because a sparse product
         # puts its sparse operand on the left: ``operator`` is (D*N, N), so it
         # multiplies the values' transpose and the answer is transposed back.
+        # The operator is a constant and the values are the caller's, so it is
+        # the operator that takes the values' dtype rather than the reverse: the
+        # rule is that a tensor's dtype is the caller's choice, and one SciPy
+        # builds in float64 would otherwise refuse to meet a float32 tensor.
         application = torch.sparse_csr_tensor(
             torch.as_tensor(operator.indptr),
             torch.as_tensor(operator.indices),
-            torch.as_tensor(operator.data),
+            torch.as_tensor(operator.data, dtype=values.dtype),
             size=tuple(operator.shape))
         applied = torch.sparse.mm(
             application, values.reshape((width, count)).T).T       # (C, D*N)
