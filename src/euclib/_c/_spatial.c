@@ -768,8 +768,14 @@ core_candidates(PyObject *self, PyObject *args)
             }
         }
         *count = total - start;
-        qsort(collected + start, (size_t)(total - start), sizeof(npy_intp),
-              by_item);
+        /* Sorted only when there is something to sort: `collected` is NULL
+         * when nothing was ever collected, and passing a null pointer to
+         * `qsort` is undefined even with a count of zero. `memcpy` below
+         * guards itself the same way. */
+        if (total > start) {
+            qsort(collected + start, (size_t)(total - start), sizeof(npy_intp),
+                  by_item);
+        }
     }
     {
         npy_intp dims[1];

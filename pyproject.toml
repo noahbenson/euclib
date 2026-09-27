@@ -57,7 +57,13 @@ dependencies = [
 [project.optional-dependencies]
 torch = ["torch >= 2.2"]
 quant = ["pint >= 0.24,<0.27"]
-test = ["torch >= 2.2", "pint >= 0.24,<0.27"]
+# torch is deliberately *not* here. It has no wheel for every platform euclib
+# supports --- macOS on Intel dropped away after Python 3.12, so the test extra
+# could not be installed at all on those runners --- and the test suite skips
+# whatever needs it when it is absent, which is what keeps the matrix honest
+# rather than excluding platforms from it. A workflow installs it best-effort,
+# and a developer who wants it asks for `.[test,torch]`.
+test = ["pint >= 0.24,<0.27"]
 dev = ["euclib[test]", "ruff", "build"]
 # The docs build on Jupyter Book 2 (mystmd) and execute the example pages, so
 # the plotting dependencies are needed to render the figures. The API
