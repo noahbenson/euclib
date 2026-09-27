@@ -13,8 +13,8 @@ import numpy as np
 from numpy import linalg
 from numpy.random import default_rng
 from numpy import (add, allclose, arange, array, asarray, concatenate, cos, eye,
-                   full, isfinite, isnan, linspace, nan, ones, pi, ravel,
-                   repeat, sin, sqrt, stack, tile, zeros)
+                   floor, full, isfinite, isnan, linspace, nan, ones, pi,
+                   ravel, repeat, sin, sqrt, stack, tile, zeros)
 
 from euclib.types import (
     Grid, GridTopology, SegPath, SegTopology, TetMesh, TetTopology, TriMesh,
@@ -532,6 +532,77 @@ class TestThePrefilter(TestCase):
         want = linalg.solve(matrix, wide)[margin:margin + count]
         got = ravel(asarray(coefficients))[_grid.MARGIN:_grid.MARGIN + count]
         self.assertLess(np.abs(got - want).max(), 1e-9)
+
+
+class TestGridLanczos(TestCase):
+    '''Lanczos, whose weights must be normalized and whose polynomials do not
+    come back.'''
+
+    COUNT = 90
+
+    def _read(self, field, positions, /, **kw):
+        carried = Grid(eye(2), GridTopology((self.COUNT,))).withprop(
+            'v', field(arange(self.COUNT, dtype=float)))
+        at = carried.topo.Loc(sx=positions)
+        return ravel(asarray(carried.prop('v', at=at, **kw)))
+
+    def test_a_constant_field_comes_back_constant(self):
+        # The whole reason the method normalizes: its weights do not sum to one
+        # on their own, so without the division a constant does not come back.
+        flat = lambda t: 0.0 * t + 3.0
+        probe = linspace(20.0, 40.0, 200)
+        for order in (2, 3):
+            with self.subTest(order=order):
+                got = self._read(flat, probe, interp=('lanczos', order))
+                self.assertLess(np.abs(got - 3.0).max(), 1e-12)
+
+    def test_it_interpolates_the_samples(self):
+        rng = default_rng(7)
+        data = rng.normal(size=self.COUNT)
+        carried = Grid(eye(2), GridTopology((self.COUNT,))).withprop('v', data)
+        at = carried.topo.Loc(sx=arange(self.COUNT, dtype=float))
+        for order in (2, 3):
+            with self.subTest(order=order):
+                got = ravel(asarray(carried.prop(
+                    'v', at=at, interp=('lanczos', order))))
+                self.assertLess(np.abs(got - data).max(), 1e-12)
+
+    def test_it_does_not_reproduce_polynomials(self):
+        # What tells it apart from every method built before it. A polynomial
+        # kernel satisfies the moment conditions identically and reproduces its
+        # polynomials *exactly*; an approximation to the sinc satisfies them
+        # only in the limit, so at a fixed sampling there is an error -- and
+        # that is true even though it agrees on the constant above.
+        affine = lambda t: 0.4 * t + 1.1
+        probe = linspace(30.0, 60.0, 300)
+        for order in (2, 3):
+            with self.subTest(order=order):
+                got = self._read(affine, probe, interp=('lanczos', order))
+                self.assertGreater(np.abs(got - affine(probe)).max(), 1e-3)
+        # ...where the polynomial kernel of the same support is exact.
+        exact = self._read(affine, probe, interp=('catmull-rom', 3))
+        self.assertLess(np.abs(exact - affine(probe)).max(), 1e-12)
+
+    def test_a_constant_field_is_what_the_normalization_is_for(self):
+        # Stated as the contrast it is: the same data, the same kernel, with the
+        # weights summed as they come out.
+        from euclib.types import _grid
+        count = 60
+        worst = 0.0
+        for t in linspace(20.0, 40.0, 200):
+            base = int(floor(t))
+            ks = arange(base - 1, base + 3)
+            w = array([float(_grid.lanczos2(t - k)) for k in ks])
+            worst = max(worst, abs(float(w.sum()) * 3.0 - 3.0))
+        self.assertGreater(worst, 1e-3)
+
+    def test_a_triangle_reports_it_is_not_implemented(self):
+        from euclib.abc import supported_interp
+        mesh = TriMesh(array([[0., 1., 0.], [0., 0., 1.]]), TriTopology(
+            array([[0], [1], [2]])))
+        for order in (2, 3):
+            with self.subTest(order=order):
+                self.assertNotIn(('lanczos', order), supported_interp(mesh.topo))
 
 
 class TestUnimplementedOrders(TestCase):

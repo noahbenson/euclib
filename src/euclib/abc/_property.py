@@ -94,7 +94,7 @@ VARTYPES = (QUANTITATIVE, QUALITATIVE)
 #: at no other order do they agree.
 INTERP_METHODS = (
     'nearest', 'polynomial', 'clough-tocher', 'powell-sabin', 'catmull-rom',
-    'bezier', 'spline')
+    'bezier', 'spline', 'lanczos')
 
 #: The interpolation orders that ``euclib`` defines, from 0 (nearest) to 3
 #: (cubic).
@@ -123,7 +123,8 @@ INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1), ('polynomial', 2),
 #: ``examples/properties/grid-linear.md`` for the index space they work in and
 #: the two that are built so far.
 INTERP_SUPPORTED_GRID = (('nearest', 0), ('polynomial', 1), ('bezier', 1),
-                         ('catmull-rom', 3), ('spline', 2), ('spline', 3))
+                         ('catmull-rom', 3), ('spline', 2), ('spline', 3),
+                         ('lanczos', 2), ('lanczos', 3))
 
 #: The interpolations a *segment* supports. The element-wise schemes are built
 #: one element at a time, and a segment is the first: a cubic is exactly

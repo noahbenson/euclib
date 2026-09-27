@@ -36,7 +36,7 @@ for every extension and the answer is exact to the rate raised to the margin.
 from __future__ import annotations
 
 from numpy import (
-    abs, argsort, asarray, empty, sqrt, where, zeros)
+    abs, argsort, asarray, empty, ones_like, pi, sin, sqrt, where, zeros)
 
 # The bases ##################################################################
 
@@ -63,6 +63,37 @@ def bspline3(t, /):
     t = abs(asarray(t, dtype='float64'))
     return (where(t <= 1.0, 2.0 / 3.0 - t ** 2 + t ** 3 / 2.0, 0.0)
             + where((t > 1.0) & (t < 2.0), (2.0 - t) ** 3 / 6.0, 0.0))
+
+
+def _sinc(t, /):
+    '''The sinc function, defined to be one at the origin.'''
+    t = asarray(t, dtype='float64')
+    out = ones_like(t)
+    nonzero = t != 0
+    out[nonzero] = sin(pi * t[nonzero]) / (pi * t[nonzero])
+    return out
+
+
+def lanczos(t, n, /):
+    '''The sinc windowed by a narrowed sinc, supported on ``(-n, n)``.
+
+    The window is what makes this usable: it vanishes wherever ``t`` is a
+    non-zero multiple of ``n``, so the kernel goes to zero at the edge of its
+    support rather than being cut off there, and it leaves the kernel's zeros at
+    the other integers alone --- which is what keeps the method interpolating.
+    '''
+    t = abs(asarray(t, dtype='float64'))
+    return where(t < n, _sinc(t) * _sinc(t / n), 0.0)
+
+
+def lanczos2(t, /):
+    '''Lanczos-2: the sinc windowed by ``sinc(t/2)``, on four samples.'''
+    return lanczos(t, 2)
+
+
+def lanczos3(t, /):
+    '''Lanczos-3: the sinc windowed by ``sinc(t/3)``, on six samples.'''
+    return lanczos(t, 3)
 
 
 #: The basis of each degree, and how many samples of the *coefficients* a
@@ -265,4 +296,5 @@ def _move_back(values, axis, ndim, /):
 
 # Exports ####################################################################
 
-__all__ = ('bspline2', 'bspline3', 'BASES', 'MARGIN', 'prefilter')
+__all__ = ('bspline2', 'bspline3', 'BASES', 'MARGIN', 'prefilter',
+           'lanczos', 'lanczos2', 'lanczos3')

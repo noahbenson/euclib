@@ -1639,6 +1639,7 @@ def _interp_grid(geom, prop, loc, method, order, border, /):
         raise NotImplementedError(
             f"no kernel is built for {method!r} on a grid at order {order}")
     (kernel, start, count) = GRID_KERNELS[(method, order)]
+    normalize = (method, order) in GRID_NORMALIZED
     if method == 'spline':
         # A spline convolves its *coefficients*, not its values, and those come
         # with a margin of the boundary extension at each end of every axis ---
@@ -1657,8 +1658,9 @@ def _interp_grid(geom, prop, loc, method, order, border, /):
         padded = tuple(coefficients.shape[-len(shape):])
         shifted = [(p - first[axis]) for (axis, p) in enumerate(parts)]
         return _convolve_cells(coefficients, shifted, padded, kernel,
-                               start, count, border)
-    return _convolve_cells(values, parts, shape, kernel, start, count, border)
+                               start, count, border, normalize)
+    return _convolve_cells(values, parts, shape, kernel, start, count, border,
+                           normalize)
 
 
 def _nearest_cell(p, s, /):
@@ -1766,10 +1768,20 @@ GRID_KERNELS = {
     # alone would suggest.
     ('spline', 2): (_grid.bspline2, -1, 4),
     ('spline', 3): (_grid.bspline3, -1, 4),
+    # Lanczos reaches n samples either way, so its stencil is 2n wide.
+    ('lanczos', 2): (_grid.lanczos2, -1, 4),
+    ('lanczos', 3): (_grid.lanczos3, -2, 6),
 }
 
+#: The methods whose weights do not sum to one, and so must be divided by their
+#: sum at each position. The Lanczos kernels are approximations to the sinc and
+#: miss the partition of unity the polynomial kernels get from their moments; the
+#: B-splines would too, which is what their prefilter is for.
+GRID_NORMALIZED = (('lanczos', 2), ('lanczos', 3))
 
-def _convolve_cells(values, parts, shape, kernel, start, count, border, /):
+
+def _convolve_cells(values, parts, shape, kernel, start, count, border,
+                   normalize=False, /):
     '''Blends a grid property with a separable kernel across the cells around
     each position.
 
@@ -1797,6 +1809,11 @@ def _convolve_cells(values, parts, shape, kernel, start, count, border, /):
         How many cells the stencil has.
     border : str
         One of ``euclib.abc.BORDER_EXTENSIONS``.
+    normalize : bool, optional
+        Whether to divide each position's result by the sum of its weights. A
+        kernel whose weights sum to one --- which is every polynomial kernel and
+        every B-spline, the latter by its prefilter --- needs this no more than
+        the weights do; an approximation to the sinc does.
 
     Returns
     -------
@@ -1823,6 +1840,7 @@ def _convolve_cells(values, parts, shape, kernel, start, count, border, /):
             offsets = arange(count)
             weights.append(kernel(p[:, None] - (low[:, None] + offsets[None, :])))
     res = zeros(values.shape[:values.ndim - d] + (q,))
+    total = zeros(q)
     drawn = []
     for combo in product(range(count), repeat=d):
         weight = ones(q)
@@ -1838,7 +1856,15 @@ def _convolve_cells(values, parts, shape, kernel, start, count, border, /):
         # one.
         term = values[(Ellipsis,) + tuple(idx)] * weight
         res = res + where(weight != 0, term, zeros(term.shape))
+        total = total + weight
         drawn.append(tuple(idx))
+    if normalize:
+        # The weights of a normalized kernel sum to one at every position, so
+        # dividing by their sum is what makes a constant field come back
+        # constant. A position whose weights all vanish is left alone rather
+        # than divided by zero.
+        safe = where(total != 0, total, ones(q))
+        res = where(total != 0, res / safe, res)
     return (res, drawn)
 
 

@@ -259,6 +259,32 @@ is better in general: on smooth data the higher orders win, and across an edge
 the polynomial of small support either blurs it or rings, which is what the
 reference's own comparison of a step edge shows.
 
+**And the library agrees with this page.** Each row of the table above is the
+library's own method, and the two figures that matter — the constant coming back
+after normalization, and the polynomials *not* coming back — are what it does.
+
+```{code-cell}
+count = 90
+probe = np.linspace(30.0, 60.0, 300)
+print("the same table through euclib:")
+print(f"  {'method':22s} " + " ".join(f"{name:>11}" for (name, _) in fields))
+for method in (('polynomial', 1), ('catmull-rom', 3), ('spline', 2),
+               ('spline', 3), ('lanczos', 2), ('lanczos', 3)):
+    carried = el.grid((count,)).withprop('v', np.zeros(count))
+    row = []
+    for (_, field) in fields:
+        carried = el.grid((count,)).withprop(
+            'v', field(np.arange(count, dtype=float)))
+        got = np.ravel(np.asarray(carried.prop(
+            'v', at=carried.topo.Loc(sx=probe), interp=method)))
+        row.append(np.abs(got - field(probe)).max())
+    print(f"  {str(method):22s} " + " ".join(f"{v:11.2e}" for v in row))
+```
+
+Two things to read out of it. The cubic B-spline is the only method exact on a
+cubic — the one beyond it in the table — and Lanczos is exact on the constant and
+on nothing else, which is what its normalization was for and all it can do.
+
 :::{admonition} Where this comes from
 :class: note
 The kernel, the window and the normalization are from C. E. Shannon's sampling
