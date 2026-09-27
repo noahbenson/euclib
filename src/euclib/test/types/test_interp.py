@@ -13,7 +13,8 @@ import numpy as np
 from numpy import linalg
 from numpy.random import default_rng
 from numpy import (add, allclose, arange, array, asarray, concatenate, cos, eye,
-                   floor, full, isfinite, isnan, linspace, nan, ones, pi,
+                   floor, full, isfinite, isnan, linspace, meshgrid, nan, ones,
+                   pi,
                    ravel, repeat, sin, sqrt, stack, tile, zeros)
 
 from euclib.types import (
@@ -603,6 +604,83 @@ class TestGridLanczos(TestCase):
         for order in (2, 3):
             with self.subTest(order=order):
                 self.assertNotIn(('lanczos', order), supported_interp(mesh.topo))
+
+
+class TestGridPolynomial(TestCase):
+    '''The monomial least-squares fit, which is a fit and not an interpolation.'''
+
+    COUNT = 40
+
+    def _carried(self, field, /):
+        (ix, iy) = meshgrid(arange(self.COUNT, dtype=float),
+                            arange(self.COUNT, dtype=float), indexing='ij')
+        return Grid(eye(3), GridTopology((self.COUNT, self.COUNT))).withprop(
+            'v', field(ix, iy))
+
+    def _read(self, field, points, /, **kw):
+        carried = self._carried(field)
+        (xs, ys) = (array([p[0] for p in points]), array([p[1] for p in points]))
+        at = carried.topo.Loc(sx=xs, sy=ys)
+        return ravel(asarray(carried.prop('v', at=at, **kw)))
+
+    def test_it_reproduces_its_own_degree(self):
+        # A polynomial of degree k through a degree-k fit is in the span, so the
+        # fit is exact -- away from the edges, where the block is folded.
+        quadratic = lambda x, y: 0.4 * x ** 2 - 0.3 * x * y + 0.25 * y ** 2
+        cubic = lambda x, y: 0.3 * x ** 3 - 0.2 * x ** 2 * y + 0.1 * y ** 3
+        points = [(20.0, 20.0), (20.5, 20.3), (19.7, 21.2)]
+        for (degree, field) in ((2, quadratic), (3, cubic)):
+            with self.subTest(degree=degree):
+                got = self._read(field, points, interp=('polynomial', degree))
+                want = array([field(*p) for p in points])
+                self.assertLess(np.abs(got - want).max(), 1e-9)
+
+    def test_it_does_not_interpolate_a_field_it_cannot_hold(self):
+        # Where every other grid method returns the datum, a fit returns its
+        # polynomial's value there -- which is the point of a fit rather than a
+        # defect, and is what this checks so the difference is on the record.
+        smooth = lambda x, y: sin(x / 6.0) * cos(y / 7.0)
+        got = float(self._read(smooth, [(20.0, 20.0)],
+                               interp=('polynomial', 2))[0])
+        datum = float(smooth(20.0, 20.0))
+        self.assertGreater(abs(got - datum), 1e-6)
+
+    def test_it_is_not_continuous_across_a_cell_boundary(self):
+        # The block of cells is a different block either side of the boundary,
+        # so the field jumps. No other grid method does.
+        smooth = lambda x, y: sin(x / 6.0) * cos(y / 7.0)
+        # A step small enough that a continuous field's two values differ only
+        # by the slope across it -- so what the first pair shows is a jump and
+        # not a steep slope.
+        step = 1e-6
+        (left, right) = (
+            float(self._read(smooth, [(20.0 - step, 20.0)],
+                             interp=('polynomial', 2))[0]),
+            float(self._read(smooth, [(20.0 + step, 20.0)],
+                             interp=('polynomial', 2))[0]))
+        self.assertGreater(abs(left - right), 1e-5)
+        # ...where the linear blend, asked at the same two positions, does not.
+        (blend, other) = (
+            float(self._read(smooth, [(20.0 - step, 20.0)],
+                             interp=('polynomial', 1))[0]),
+            float(self._read(smooth, [(20.0 + step, 20.0)],
+                             interp=('polynomial', 1))[0]))
+        self.assertLess(abs(blend - other), 1e-5)
+
+    def test_the_block_width_comes_from_the_degree(self):
+        from euclib.types._interp import _fit_powers, _half_width
+        for (degree, d, width) in ((2, 2, 1), (3, 2, 2), (2, 3, 1), (3, 3, 1)):
+            with self.subTest(degree=degree, dimensions=d):
+                self.assertEqual(_half_width(degree, d), width)
+                self.assertGreaterEqual((2 * width + 1) ** d,
+                                        len(_fit_powers(degree, d)))
+
+    def test_a_field_of_higher_degree_is_not_reproduced(self):
+        cubic = lambda x, y: 0.3 * x ** 3 - 0.2 * x ** 2 * y + 0.1 * y ** 3
+        points = [(20.0, 20.0), (20.5, 20.3)]
+        got = self._read(cubic, points, interp=('polynomial', 2))
+        want = array([cubic(*p) for p in points])
+        self.assertGreater(np.abs(got - want).max(), 1e-3)
 
 
 class TestUnimplementedOrders(TestCase):

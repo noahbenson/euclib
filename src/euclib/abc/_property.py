@@ -124,6 +124,7 @@ INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1), ('polynomial', 2),
 #: the two that are built so far.
 INTERP_SUPPORTED_GRID = (('nearest', 0), ('polynomial', 1), ('bezier', 1),
                          ('catmull-rom', 3), ('spline', 2), ('spline', 3),
+                         ('polynomial', 2), ('polynomial', 3),
                          ('lanczos', 2), ('lanczos', 3))
 
 #: The interpolations a *segment* supports. The element-wise schemes are built

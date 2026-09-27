@@ -45,7 +45,7 @@ from math import factorial
 
 from numpy import (
     arange, argsort, asarray, clip, concatenate, einsum, eye, finfo,
-    flatnonzero, floor, linalg, maximum, minimum, moveaxis, ones,
+    flatnonzero, floor, linalg, maximum, minimum, moveaxis, ones, prod,
     ravel_multi_index, sqrt, unique, where, zeros)
 
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
@@ -1635,6 +1635,9 @@ def _interp_grid(geom, prop, loc, method, order, border, /):
     if order == 0:
         idx = tuple(_nearest_cell(p, s) for (p, s) in zip(parts, shape))
         return (values[(Ellipsis,) + idx], [idx])
+    if method == 'polynomial' and order in _GRID_FIT_ORDERS:
+        # A fit of a block of cells, not a convolution of a kernel.
+        return _fit_cells(values, parts, shape, order, border)
     if (method, order) not in GRID_KERNELS:
         raise NotImplementedError(
             f"no kernel is built for {method!r} on a grid at order {order}")
@@ -1773,11 +1776,118 @@ GRID_KERNELS = {
     ('lanczos', 3): (_grid.lanczos3, -2, 6),
 }
 
+#: The degrees a grid will fit a monomial basis at. Above linear, because at
+#: degrees 0 and 1 the fit *is* the nearest cell and the linear blend, which have
+#: their own paths; a monomial fit of a degree-1 field through more than its own
+#: coefficients gives the same answer only when the data lies on one.
+_GRID_FIT_ORDERS = (2, 3)
+
 #: The methods whose weights do not sum to one, and so must be divided by their
 #: sum at each position. The Lanczos kernels are approximations to the sinc and
 #: miss the partition of unity the polynomial kernels get from their moments; the
 #: B-splines would too, which is what their prefilter is for.
 GRID_NORMALIZED = (('lanczos', 2), ('lanczos', 3))
+
+
+def _fit_powers(degree, d, /):
+    '''The multi-indices of total degree at most ``degree`` in ``d`` dimensions.
+
+    The grid fit's own, and named to keep it apart from ``_monomials`` above,
+    which is the simplex fit's: the two take different arguments and a name
+    shared between them would silently shadow one.
+    '''
+    if d == 1:
+        return [(i,) for i in range(degree + 1)]
+    return [(i,) + tail for i in range(degree + 1)
+            for tail in _fit_powers(degree - i, d - 1)]
+
+
+def _half_width(degree, d, /):
+    '''The smallest half-width whose cube of cells determines the degree.
+
+    A polynomial of total degree ``degree`` in ``d`` dimensions has
+    ``binom(d + degree, degree)`` coefficients, and a fit needs at least that
+    many cells; the block is a cube, so its width comes from the degree rather
+    than being free --- and it grows by a factor of ``2d + 1`` per degree.
+    '''
+    need = len(_fit_powers(degree, d))
+    width = 0
+    while (2 * width + 1) ** d < need:
+        width += 1
+    return width
+
+
+def _fit_cells(values, parts, shape, degree, border, /):
+    '''Fits the monomial basis of a degree to the cells around each position.
+
+    Unlike every other grid method, this one is not a convolution: the weights
+    depend on the position rather than on its offset alone, so each position
+    gets its own solve. That is what a *fit* costs, and it is also why the
+    method is discontinuous --- two positions either side of a cell boundary fit
+    different blocks of cells, and their polynomials need not agree.
+
+    The local coordinates are measured *from the position*, so the polynomial's
+    constant coefficient is its value there and nothing has to be evaluated; and
+    they are scaled to the block's half-width, so the monomials span a
+    comparable range whatever the degree --- a wide block in cell units would
+    otherwise make the solve ill-conditioned.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        The property's values, with its channel dimensions leading.
+    parts : sequence of numpy.ndarray
+        The index-space position along each axis, as a length-``Q`` vector.
+    shape : tuple of int
+        The grid's extent.
+    degree : int
+        The total degree of the monomial basis.
+    border : str
+        One of ``euclib.abc.BORDER_EXTENSIONS``: what stands in for the cells
+        outside the grid that a block near an edge reaches. Folding can name one
+        cell twice, which leaves the solve under-determined rather than wrong ---
+        ``lstsq`` answers with the least-norm fit.
+
+    Returns
+    -------
+    res : numpy.ndarray
+        The values, one per position, with the channel dimensions leading.
+    drawn : list of tuple of numpy.ndarray
+        The cells the result draws on, as one index array per axis.
+    '''
+    (d, q) = (len(shape), parts[0].shape[0])
+    width = _half_width(degree, d)
+    powers = _fit_powers(degree, d)
+    # The value at the position is the polynomial's constant coefficient.
+    constant = powers.index((0,) * d)
+    channels = values.shape[:values.ndim - d]
+    res = zeros(channels + (q,))
+    offsets = asarray(list(product(range(-width, width + 1), repeat=d)))
+    scale = width + 0.5
+    drawn = []
+    for at in range(q):
+        base = [int(floor(parts[axis][at])) for axis in range(d)]
+        # Each cell of the block, folded into the grid by the extension, and its
+        # offset from the position scaled to the block's own half-width.
+        (cells, local) = ([], [])
+        for k in range(offsets.shape[0]):
+            here = [_fold(int(base[axis] + offsets[k, axis]), shape[axis],
+                          border) for axis in range(d)]
+            cells.append(here)
+            local.append([(base[axis] + offsets[k, axis] - parts[axis][at])
+                          / scale for axis in range(d)])
+        design = asarray([[prod([local[k][axis] ** power[axis]
+                                 for axis in range(d)]) for power in powers]
+                          for k in range(len(cells))])
+        index = asarray(cells).T
+        # The block's values, with the cell axis leading so that the solve sees
+        # one right-hand side per channel.
+        block = moveaxis(values[(Ellipsis,) + tuple(index)], -1, 0)
+        got = linalg.lstsq(design, block.reshape((len(cells), -1)),
+                           rcond=None)[0][constant]
+        res[(Ellipsis, at)] = got.reshape(channels)
+        drawn.append(tuple(index))
+    return (res, drawn)
 
 
 def _convolve_cells(values, parts, shape, kernel, start, count, border,
