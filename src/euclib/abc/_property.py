@@ -94,7 +94,7 @@ VARTYPES = (QUANTITATIVE, QUALITATIVE)
 #: at no other order do they agree.
 INTERP_METHODS = (
     'nearest', 'polynomial', 'clough-tocher', 'powell-sabin', 'catmull-rom',
-    'bezier')
+    'bezier', 'spline')
 
 #: The interpolation orders that ``euclib`` defines, from 0 (nearest) to 3
 #: (cubic).
@@ -123,7 +123,7 @@ INTERP_SUPPORTED = (('nearest', 0), ('polynomial', 1), ('polynomial', 2),
 #: ``examples/properties/grid-linear.md`` for the index space they work in and
 #: the two that are built so far.
 INTERP_SUPPORTED_GRID = (('nearest', 0), ('polynomial', 1), ('bezier', 1),
-                         ('catmull-rom', 3))
+                         ('catmull-rom', 3), ('spline', 2), ('spline', 3))
 
 #: The interpolations a *segment* supports. The element-wise schemes are built
 #: one element at a time, and a segment is the first: a cubic is exactly
@@ -848,6 +848,34 @@ class Property(planobject):
             ``None`` or 0.
         '''
         return normalize_extrap(extrap)
+
+    @calc('prefiltered')
+    def proc_prefiltered(value, interp, border, spatial_shape):
+        '''The B-spline coefficients of the property's own values.
+
+        A B-spline basis is not interpolating, so a spline's coefficients are
+        not its values: they are the values filtered by the inverse of the
+        basis's samples, as the method's documentation page derives. That makes
+        this a function of the *values*, which is why it belongs on the property
+        rather than among a geometry's data --- and why it is lazy, so that only
+        a property actually being read with a spline ever pays for it.
+
+        Returns
+        -------
+        coefficients : array-like
+            The coefficients, one margin longer at each end of every grid axis.
+        first : tuple of int
+            The sample index the first entry along each grid axis belongs to.
+        '''
+        # Imported here because the types package depends on this one.
+        from ..types import _grid
+        (method, order) = interp
+        if method != 'spline' or order not in _grid.BASES:
+            raise ValueError(
+                f"a prefilter is built for the spline method at orders"
+                f" {sorted(_grid.BASES)}; this property asks for"
+                f" {(method, order)!r}")
+        return _grid.prefilter(value, spatial_shape, border, order)
 
     @calc('border', lazy=False)
     def proc_border(border):

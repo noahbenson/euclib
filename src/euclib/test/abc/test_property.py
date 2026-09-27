@@ -86,7 +86,7 @@ class TestNormalizers(TestCase):
     def test_normalize_interp_rejects_bad_values(self):
         # A method euclib does not define.
         with self.assertRaises(ValueError):
-            normalize_interp('spline', QUANTITATIVE)
+            normalize_interp('bicubic', QUANTITATIVE)
         # An order outside 0 through 3.
         with self.assertRaises(ValueError):
             normalize_interp(4, QUANTITATIVE)

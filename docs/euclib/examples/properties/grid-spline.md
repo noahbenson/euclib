@@ -274,6 +274,28 @@ print("means. That, and reproducing cubics rather than quadratics, is what the")
 print("same four-cell support buys when it is spent on a B-spline.")
 ```
 
+**And the library agrees with this page.** The construction above is written out
+here; the last check is that `euclib`'s own splines give the same field, and that
+each basis reproduces its own degree and no more.
+
+```{code-cell}
+count = 60
+probe = np.linspace(20.0, 40.0, 200)
+quadratic = lambda t: -0.7 * t ** 2 + 0.4 * t + 1.1
+for (label, field) in (('a quadratic', quadratic), ('a cubic', cubic)):
+    carried = el.grid((count,)).withprop('v', field(np.arange(count, dtype=float)))
+    print(f"  {label}:")
+    for order in (2, 3):
+        got = np.ravel(np.asarray(carried.prop(
+            'v', at=carried.topo.Loc(sx=probe), interp=('spline', order))))
+        print(f"    the {'quadratic' if order == 2 else 'cubic':9s} basis:"
+              f" worst {np.abs(got - field(probe)).max():.3e}")
+print()
+print("  So each basis is exact on its own degree: one more cell of support")
+print("  buys one more degree of reproduction, and the same four-cell support")
+print("  spent on cubic convolution buys only the quadratic.")
+```
+
 :::{admonition} Where this comes from
 :class: note
 The two-step construction, the B-splines, and the recursive prefilters are M.

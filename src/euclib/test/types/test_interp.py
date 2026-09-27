@@ -10,10 +10,11 @@ from __future__ import annotations
 from unittest import TestCase
 
 import numpy as np
+from numpy import linalg
 from numpy.random import default_rng
-from numpy import (allclose, arange, array, asarray, concatenate, cos, eye,
-                   isfinite, isnan, linspace, nan, ones, pi, ravel, sin,
-                   stack, zeros)
+from numpy import (add, allclose, arange, array, asarray, concatenate, cos, eye,
+                   full, isfinite, isnan, linspace, nan, ones, pi, ravel,
+                   repeat, sin, sqrt, stack, tile, zeros)
 
 from euclib.types import (
     Grid, GridTopology, SegPath, SegTopology, TetMesh, TetTopology, TriMesh,
@@ -396,6 +397,141 @@ class TestGridBoundary(TestCase):
         self.assertAlmostEqual(
             _scalar(g, 'v', array([[3.5], [3.5]]), border='whole-symmetric'),
             values[2:4, 2:4].mean())
+
+
+class TestGridSpline(TestCase):
+    '''B-splines, and the prefilter that makes them interpolate.'''
+
+    COUNT = 60
+
+    def _carried(self, field, /, **kw):
+        return Grid(eye(2), GridTopology((self.COUNT,))).withprop(
+            'v', field(arange(self.COUNT, dtype=float)), **kw)
+
+    def _read(self, field, positions, /, **kw):
+        carried = self._carried(field)
+        at = carried.topo.Loc(sx=positions)
+        return ravel(asarray(carried.prop('v', at=at, **kw)))
+
+    def test_each_basis_reproduces_its_own_degree(self):
+        # What the two orders are for. A quadratic basis reproduces quadratics
+        # and not cubics; a cubic basis reproduces cubics. Getting one degree
+        # more costs one more cell of support.
+        probe = linspace(20.0, 40.0, 200)
+        quadratic = lambda t: -0.7 * t ** 2 + 0.4 * t + 1.1
+        cubic = lambda t: 0.3 * t ** 3 - 0.7 * t ** 2 + 0.4 * t + 1.1
+        with self.subTest(degree=2, field='quadratic'):
+            self.assertLess(np.abs(self._read(
+                quadratic, probe, interp=('spline', 2))
+                - quadratic(probe)).max(), 1e-9)
+        with self.subTest(degree=3, field='cubic'):
+            self.assertLess(np.abs(self._read(
+                cubic, probe, interp=('spline', 3))
+                - cubic(probe)).max(), 1e-6)
+        with self.subTest(degree=2, field='cubic'):
+            self.assertGreater(np.abs(self._read(
+                cubic, probe, interp=('spline', 2))
+                - cubic(probe)).max(), 1e-4)
+
+    def test_the_cubic_basis_beats_cubic_convolution_on_a_cubic(self):
+        # The same four-cell support spent two ways: approximation order 4
+        # against 3.
+        cubic = lambda t: 0.3 * t ** 3 - 0.7 * t ** 2 + 0.4 * t + 1.1
+        probe = linspace(20.0, 40.0, 200)
+        spline = np.abs(self._read(cubic, probe, interp=('spline', 3))
+                        - cubic(probe)).max()
+        convolution = np.abs(self._read(cubic, probe,
+                                        interp=('catmull-rom', 3))
+                             - cubic(probe)).max()
+        self.assertLess(spline, 1e-6)
+        self.assertGreater(convolution, 1e4 * spline)
+
+    def test_the_interpolant_passes_through_the_samples(self):
+        rng = default_rng(5)
+        data = rng.normal(size=self.COUNT)
+        carried = Grid(eye(2), GridTopology((self.COUNT,))).withprop('v', data)
+        at = carried.topo.Loc(sx=arange(self.COUNT, dtype=float))
+        for order in (2, 3):
+            with self.subTest(order=order):
+                got = ravel(asarray(carried.prop(
+                    'v', at=at, interp=('spline', order))))
+                self.assertLess(np.abs(got - data).max(), 1e-9)
+
+    def test_a_two_dimensional_grid_is_filtered_along_each_axis(self):
+        values = add.outer(arange(12.), arange(9.))
+        grid = Grid(eye(3), GridTopology((12, 9))).withprop('v', values)
+        (xs, ys) = (repeat(arange(12.), 9), tile(arange(9.), 12))
+        at = grid.topo.Loc(sx=xs, sy=ys)
+        for order in (2, 3):
+            with self.subTest(order=order):
+                got = ravel(asarray(grid.prop('v', at=at,
+                                              interp=('spline', order))))
+                self.assertLess(np.abs(got - (xs + ys)).max(), 1e-10)
+
+    def test_the_boundary_rule_reaches_the_prefilter(self):
+        # The coefficients of a ramp depend on how the data was extended, so the
+        # three rules give three different answers near an edge -- and the same
+        # ones away from it.
+        ramp = lambda t: 1.0 + 3.0 * t
+        near = [float(self._read(ramp, array([0.1]), interp=('spline', 3),
+                                 border=one)[0])
+                for one in ('constant', 'half-symmetric', 'whole-symmetric')]
+        self.assertGreater(max(near) - min(near), 1e-6)
+        middle = [float(self._read(ramp, array([30.0]), interp=('spline', 3),
+                                  border=one)[0])
+                  for one in ('constant', 'half-symmetric', 'whole-symmetric')]
+        self.assertLess(max(middle) - min(middle), 1e-9)
+
+    def test_a_read_may_ask_for_a_spline_the_property_does_not_carry(self):
+        # The prefilter a property caches is the one for its *own* method, so a
+        # read that overrides the method cannot use it and must filter again.
+        cubic = lambda t: 0.3 * t ** 3 - 0.7 * t ** 2 + 0.4 * t + 1.1
+        carried = self._carried(cubic, interp=('polynomial', 1))
+        probe = linspace(20.0, 40.0, 50)
+        at = carried.topo.Loc(sx=probe)
+        got = ravel(asarray(carried.prop('v', at=at, interp=('spline', 3))))
+        self.assertLess(np.abs(got - cubic(probe)).max(), 1e-6)
+
+
+class TestThePrefilter(TestCase):
+    '''The prefilter's rate and scale, against a direct solve.'''
+
+    def test_the_rate_and_the_scale_are_the_ones_that_invert_p(self):
+        # The module derives both from the basis's values rather than quoting
+        # them, so this is the check that the derivation is right: the filter's
+        # result, summed against p, must be the data back.
+        from euclib.types import _grid
+        for (degree, expected_rate, expected_scale) in ((2, -3.0 + sqrt(8.0), 8.0),
+                                                        (3, sqrt(3.0) - 2.0, 6.0)):
+            with self.subTest(degree=degree):
+                (rate, scale) = _grid._rate(degree)
+                self.assertAlmostEqual(rate, expected_rate, places=12)
+                self.assertAlmostEqual(scale, expected_scale, places=12)
+
+    def test_the_filter_inverts_the_basis_against_a_direct_solve(self):
+        from euclib.types import _grid
+        count = 60
+        f = sin(arange(count, dtype=float) / 5.0)
+        (coefficients, first) = _grid.prefilter(f.reshape(1, -1), (count,),
+                                                'constant', 3)
+        basis = _grid.BASES[3][0]
+        # The same problem solved directly: solve p * c = f as a tridiagonal
+        # system, on the data extended far enough past both ends that the free
+        # ends there have no influence on the part being compared. That is the
+        # constant extension the prefilter used, so the two must agree.
+        margin = 60
+        wide = concatenate([full(margin, f[0]), f, full(margin, f[-1])])
+        rows = wide.shape[0]
+        matrix = zeros((rows, rows))
+        for k in range(rows):
+            matrix[k, k] = float(basis(0))
+            if k > 0:
+                matrix[k, k - 1] = float(basis(1))
+            if k < rows - 1:
+                matrix[k, k + 1] = float(basis(1))
+        want = linalg.solve(matrix, wide)[margin:margin + count]
+        got = ravel(asarray(coefficients))[_grid.MARGIN:_grid.MARGIN + count]
+        self.assertLess(np.abs(got - want).max(), 1e-9)
 
 
 class TestUnimplementedOrders(TestCase):

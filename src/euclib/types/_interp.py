@@ -52,7 +52,7 @@ from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
     normalize_border,
     INTERP_SUPPORTED, UNSET, normalize_interp)
-from . import _ct, _ps
+from . import _ct, _grid, _ps
 from ._geom import Grid, SegPath, TetMesh, TriMesh
 
 
@@ -1638,8 +1638,27 @@ def _interp_grid(geom, prop, loc, method, order, border, /):
     if (method, order) not in GRID_KERNELS:
         raise NotImplementedError(
             f"no kernel is built for {method!r} on a grid at order {order}")
-    (kernel, half) = GRID_KERNELS[(method, order)]
-    return _convolve_cells(values, parts, shape, kernel, half, border)
+    (kernel, start, count) = GRID_KERNELS[(method, order)]
+    if method == 'spline':
+        # A spline convolves its *coefficients*, not its values, and those come
+        # with a margin of the boundary extension at each end of every axis ---
+        # so the stencil is shifted into the padded array's indexing, and a
+        # position inside the grid never reaches its edge.
+        if prop.interp == (method, order):
+            # The property's own method, so the coefficients it caches are the
+            # ones wanted. A read that asks for a spline the property does not
+            # carry cannot use that cache -- it is a filter of the same values
+            # at a different degree -- and filters them here instead.
+            (coefficients, first) = prop.prefiltered
+        else:
+            (coefficients, first) = _grid.prefilter(values, shape, border,
+                                                    order)
+        coefficients = asarray(coefficients)
+        padded = tuple(coefficients.shape[-len(shape):])
+        shifted = [(p - first[axis]) for (axis, p) in enumerate(parts)]
+        return _convolve_cells(coefficients, shifted, padded, kernel,
+                               start, count, border)
+    return _convolve_cells(values, parts, shape, kernel, start, count, border)
 
 
 def _nearest_cell(p, s, /):
@@ -1731,14 +1750,26 @@ def cubic_kernel(t, alpha=-0.5, /):
 #: The one-dimensional kernel each grid method convolves with, its half-width in
 #: cells, and whether it reproduces the data at the samples. A method that is not
 #: here is either order 0, whose rule is not a convolution, or not built.
+#: The kernel each grid method convolves with, the lowest *cell offset* its
+#: stencil uses, and how many cells follow. The B-splines' stencils are of
+#: different widths --- three cells for the quadratic, four for the cubic --- so
+#: a symmetric "half-width either side" would not describe them.
 GRID_KERNELS = {
-    ('polynomial', 1): (linear_kernel, 1),
-    ('bezier', 1): (linear_kernel, 1),
-    ('catmull-rom', 3): (cubic_kernel, 2),
+    ('polynomial', 1): (linear_kernel, 0, 2),
+    ('bezier', 1): (linear_kernel, 0, 2),
+    ('catmull-rom', 3): (cubic_kernel, -1, 4),
+    # The quadratic basis reaches one and a half cells, so which three of the
+    # four candidates a position draws on depends on where in its cell it falls
+    # -- near the cell's centre it is the lower three, near an edge the upper
+    # three. Giving it four and letting the kernel zero the far one is what
+    # makes a single stencil work, and is why this one is wider than the basis
+    # alone would suggest.
+    ('spline', 2): (_grid.bspline2, -1, 4),
+    ('spline', 3): (_grid.bspline3, -1, 4),
 }
 
 
-def _convolve_cells(values, parts, shape, kernel, half, border, /):
+def _convolve_cells(values, parts, shape, kernel, start, count, border, /):
     '''Blends a grid property with a separable kernel across the cells around
     each position.
 
@@ -1760,8 +1791,10 @@ def _convolve_cells(values, parts, shape, kernel, half, border, /):
         The grid's extent.
     kernel : callable
         The one-dimensional kernel, taking distances.
-    half : int
-        Its half-width in cells: one for linear, two for cubic.
+    start : int
+        The offset of the stencil's lowest cell from the position's own.
+    count : int
+        How many cells the stencil has.
     border : str
         One of ``euclib.abc.BORDER_EXTENSIONS``.
 
@@ -1780,18 +1813,18 @@ def _convolve_cells(values, parts, shape, kernel, half, border, /):
         if s < 2:
             # A single-cell axis has nowhere to blend to.
             base.append(zeros(q, dtype=int))
-            weights.append(ones((q, 2 * half)))
+            weights.append(ones((q, count)))
         else:
             # The lowest cell of the stencil, unclipped: a position near an edge
             # has cells past the end, and the extension is what decides which
             # real cells those are.
-            low = floor(p).astype(int) - (half - 1)
+            low = floor(p).astype(int) + start
             base.append(low)
-            offsets = arange(2 * half)
+            offsets = arange(count)
             weights.append(kernel(p[:, None] - (low[:, None] + offsets[None, :])))
     res = zeros(values.shape[:values.ndim - d] + (q,))
     drawn = []
-    for combo in product(range(2 * half), repeat=d):
+    for combo in product(range(count), repeat=d):
         weight = ones(q)
         idx = []
         for (ax, offset) in enumerate(combo):
