@@ -1,0 +1,176 @@
+################################################################################
+# tests.yml
+#
+# GitHub Actions workflow that runs the euclib tests.
+#
+# euclib ships an optional C extension, so this follows pcollections' workflow
+# rather than immlib's: the extension is built on every supported platform and
+# version, the pure-Python fallback is tested on its own, and the extension is
+# also run under the sanitizers and against a debug build of CPython, where
+# reference-counting mistakes a release build tolerates are caught.
+
+name: CI
+
+on:
+  push:
+    branches: [ main, dev, 'dev/**' ]
+    paths-ignore:
+      - '**/README.md'
+      - '**/.gitignore'
+      - 'docs/**'
+      - '.github/workflows/deploy.yml'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [ main, dev, 'dev/**' ]
+    paths-ignore:
+      - '**/README.md'
+      - '**/.gitignore'
+      - 'docs/**'
+      - '.github/workflows/deploy.yml'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+  # deploy.yml runs this workflow before building a release.
+  workflow_call:
+
+jobs:
+  # The C extension on every supported OS, architecture, and Python version.
+  # The pure-Python backend is exercised in the same run, since the test suite
+  # checks the two against each other wherever both are available.
+  test:
+    name: ${{ matrix.version }}/${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
+        arch: ['x64']
+        include:
+          - {os: macos-latest, arch: arm64, version: '3.10'}
+          - {os: macos-latest, arch: arm64, version: '3.11'}
+          - {os: macos-latest, arch: arm64, version: '3.12'}
+          - {os: macos-latest, arch: arm64, version: '3.13'}
+          - {os: macos-latest, arch: arm64, version: '3.14'}
+          - {os: ubuntu-24.04-arm, arch: arm64, version: '3.10'}
+          - {os: ubuntu-24.04-arm, arch: arm64, version: '3.11'}
+          - {os: ubuntu-24.04-arm, arch: arm64, version: '3.12'}
+          - {os: ubuntu-24.04-arm, arch: arm64, version: '3.13'}
+          - {os: ubuntu-24.04-arm, arch: arm64, version: '3.14'}
+    env:
+      # Importing euclib fails if the C extension didn't build.
+      EUCLIB_REQUIRE_C: '1'
+      PYTHONFAULTHANDLER: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.version }}
+          architecture: ${{ matrix.arch }}
+      - name: Display Python version
+        run: python -VV
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # --prefer-binary: the newest test dependencies may have no wheel for
+          # some builds, and cannot be built from source.
+          pip install --prefer-binary -e ".[test]"
+      - name: Check the backend
+        shell: python
+        run: |
+          import euclib
+          print("C extension:", euclib.using_c_extension)
+          assert euclib.using_c_extension, euclib.backend_error
+      - name: Run tests
+        # From the home directory, so that the installed package is the one
+        # imported rather than the source tree.
+        run: |
+          cd ~
+          python -m euclib.test
+
+  # The pure-Python backend on its own, with the C extension not built.
+  test-python-only:
+    name: ${{ matrix.version }}/python-only
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+    env:
+      EUCLIB_NO_C_EXTENSIONS: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.version }}
+      - name: Install (without the C extension)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -e ".[test]"
+      - name: Check the backend
+        run: |
+          python -c "import euclib, sys; sys.exit(0 if not euclib.using_c_extension else 1)"
+      - name: Run tests
+        run: |
+          cd ~
+          python -m euclib.test
+
+  # The C extension built with AddressSanitizer and UndefinedBehaviorSanitizer.
+  # PYTHONMALLOC=malloc routes Python's allocations through malloc so that ASan
+  # sees them too.
+  test-sanitizers:
+    name: sanitizers (ASan+UBSan)
+    runs-on: ubuntu-latest
+    env:
+      CFLAGS: '-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined'
+      LDFLAGS: '-fsanitize=address,undefined'
+      EUCLIB_REQUIRE_C: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install with sanitizers
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Run tests
+        run: |
+          # An instrumented extension loads only if the ASan runtime is loaded
+          # first.
+          export LD_PRELOAD="$(gcc -print-file-name=libasan.so)"
+          export ASAN_OPTIONS=detect_leaks=0
+          export UBSAN_OPTIONS=print_stacktrace=1
+          export PYTHONMALLOC=malloc
+          cd ~
+          python -m euclib.test
+
+  # A debug build of CPython, whose consistency checks catch reference counting
+  # mistakes that a release build tolerates. uv provides current debug builds.
+  test-debug-python:
+    name: debug CPython
+    runs-on: ubuntu-latest
+    env:
+      EUCLIB_REQUIRE_C: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install debug CPython
+        run: uv python install 3.14+debug
+      - name: Install
+        run: |
+          uv venv --seed --python 3.14+debug ~/dbgenv
+          ~/dbgenv/bin/python -VV
+          ~/dbgenv/bin/python -c "import sys; assert hasattr(sys, 'gettotalrefcount')"
+          ~/dbgenv/bin/python -m pip install . pytest
+      - name: Run tests
+        run: |
+          cd ~
+          ~/dbgenv/bin/python -X dev -m euclib.test

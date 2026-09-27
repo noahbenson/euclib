@@ -51,6 +51,7 @@ dependencies = [
     'pcollections >= 1.0.0rc1',
     'docshare >= 0.3.0',
     'numpy',
+    'scipy',
     'joblib']
 
 [project.optional-dependencies]
