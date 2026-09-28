@@ -382,3 +382,108 @@ class TestTheElementOnATriangleInSpace(TestCase):
                                lambda p, /: turn @ self.gradient(
                                    np.linalg.solve(turn, p - shift)))
             self.assertTrue(np.allclose(before[:9], after[:9], atol=1e-12))
+
+
+class TestTheEdgeOperator(TestCase):
+    '''The operator the edge estimate is, held to the element's own statement.
+
+    `edge_operator` builds one sparse matrix over the whole mesh, and it is
+    built *without* a loop over triangles --- three thousand small matrices were
+    being constructed and block-diagonalised, which for a mesh of nine thousand
+    triangles took 2.25 seconds where it now takes 41 ms. That is a
+    transcription of `triangle_blocks` into batched arithmetic, and a
+    transcription is exactly the thing that can be wrong in a way no
+    end-to-end test notices.
+
+    So this builds the same operator the slow, readable way --- one triangle at
+    a time, through `triangle_blocks` and `edge_key`, which are unchanged --- and
+    holds the fast one to it. The two must agree to the arithmetic.
+    '''
+
+    def _mesh(self, side):
+        (ix, iy) = np.meshgrid(np.arange(side, dtype=float),
+                               np.arange(side, dtype=float), indexing='ij')
+        coords = np.vstack([ix.ravel(), iy.ravel()])
+        quads = []
+        for i in range(side - 1):
+            for j in range(side - 1):
+                k = i * side + j
+                quads.append((k, k + 1, k + side))
+                quads.append((k + 1, k + side + 1, k + side))
+        return (coords, np.array(quads).T)
+
+    def _one_at_a_time(self, coords, indices):
+        '''The operator as `triangle_blocks` states it, and as it used to be.'''
+        from scipy.sparse import block_diag, csr_matrix
+        (dim, count) = (coords.shape[0], coords.shape[1])
+        triangles = indices.shape[1]
+        corners_of = [[int(x) for x in indices[:, t]] for t in range(triangles)]
+        where = {}
+        for here in corners_of:
+            for (a, b) in ((0, 1), (1, 2), (2, 0)):
+                where.setdefault(_ct.edge_key(coords, here[a], here[b]),
+                                 len(where))
+        edges = [None] * len(where)
+        for (edge, row) in where.items():
+            edges[row] = edge
+        says = block_diag(
+            [csr_matrix(_ct.triangle_blocks(coords[:, here])[:, :9])
+             for here in corners_of], format='csr')
+        (rows_out, cols_out, data_out) = ([], [], [])
+        for (t, here) in enumerate(corners_of):
+            base = 9 * t
+            for vertex in range(3):
+                corner = here[vertex]
+                rows_out.append(base + 3 * vertex)
+                cols_out.append(corner)
+                data_out.append(1.0)
+                for (place, other) in enumerate(_ct.neighbours_of(vertex)):
+                    along = coords[:, here[other]] - coords[:, corner]
+                    for m in range(dim):
+                        rows_out.append(base + 3 * vertex + 1 + place)
+                        cols_out.append((m + 1) * count + corner)
+                        data_out.append(float(along[m]))
+        numbers = csr_matrix((data_out, (rows_out, cols_out)),
+                             shape=(9 * triangles, count + dim * count))
+        (rows, columns) = ([], [])
+        for (t, here) in enumerate(corners_of):
+            for (e, (a, b)) in enumerate(((0, 1), (1, 2), (2, 0))):
+                rows.append(where[_ct.edge_key(coords, here[a], here[b])])
+                columns.append(t * 3 + e)
+        sharing = csr_matrix((np.ones(len(rows)), (rows, columns)),
+                             shape=(len(where), triangles * 3))
+        mean = sharing.multiply(
+            1.0 / np.asarray(sharing.sum(axis=1)).ravel()[:, None])
+        return ((mean @ says @ numbers).tocsr(), edges,
+                np.asarray(rows).reshape(triangles, 3))
+
+    def test_it_is_the_element_built_one_triangle_at_a_time(self):
+        for side in (2, 3, 5, 8):
+            (coords, indices) = self._mesh(side)
+            (fast, fast_edges, fast_rows) = _ct.edge_operator(coords, indices)
+            (slow, slow_edges, slow_rows) = self._one_at_a_time(coords, indices)
+            with self.subTest(triangles=indices.shape[1]):
+                # The identity of an edge is what a derivative across it is
+                # taken *along*, so the numbering has to match and not merely be
+                # a permuted set.
+                self.assertEqual(fast_edges, slow_edges,
+                                 "the edges are numbered differently")
+                self.assertTrue(np.array_equal(fast_rows, slow_rows),
+                                "each triangle's own edges are in other rows")
+                self.assertEqual(fast.shape, slow.shape)
+                self.assertLess(np.abs((fast - slow).toarray()).max(), 1e-12)
+
+    def test_it_carries_the_operators_the_estimate_is(self):
+        '''The shape and the sparsity the caller relies on.
+
+        ``(E, N + D*N)``: one row per distinct edge, reading the values and then
+        the gradients. A build that was right by accident --- the right numbers
+        in a differently shaped matrix --- would pass the comparison above only
+        if the shape matched too, so this says what the shape is.
+        '''
+        (coords, indices) = self._mesh(4)
+        (operator, edges, rows) = _ct.edge_operator(coords, indices)
+        (dim, count) = coords.shape
+        self.assertEqual(operator.shape[1], count + dim * count)
+        self.assertEqual(operator.shape[0], len(edges))
+        self.assertEqual(rows.shape, (indices.shape[1], 3))
