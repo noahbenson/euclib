@@ -600,57 +600,55 @@ def closest_simplex(coords, indices, query, tree=None):
 
 
 def _face_projection(corners, query, /):
-    '''The projection of positions onto faces, in the arguments' arithmetic.
+    """The projection of positions onto their own simplices' sub-faces.
 
     The same projection `project_onto_face` makes --- the regression of each
     position onto a face's edges by pseudo-inverse, with the weights of the
     corners --- but written with immlib's operations rather than numpy's, so
-    that a position given as a tensor keeps its derivative. The two exist
-    separately because their callers want different things: the search wants a
-    number to compare and may detach, and this wants a value to differentiate.
-    '''
-    (d, s, m) = corners.shape
-    q = query.shape[1]
-    origin = corners[:, 0].T[:, :, None]                    # (M, D, 1)
+    that a position given as a tensor keeps its derivative.
+
+    **One simplex per position, and that is the shape.** The third axis is the
+    *position*, not a face: the search has already chosen which simplex each
+    position lies nearest, so there is no face axis for it to be compared
+    against, and every array here is ``(S, Q)``. Treating it as a face axis
+    beside the query axis made the answer ``(S, Q, Q)`` and quadratic in the
+    positions --- which for the example pages is 23.8 GiB and a `MemoryError`.
+    """
+    (d, s, q) = corners.shape
     if s == 1:
         # A single corner has the whole of the weight and no regression to make;
         # it still needs the distance computed below, since a corner is the
         # nearest point of its face for many positions and the sub-faces are
         # compared by that distance.
-        # Following the corners' backend, like the branch below it: this is the
-        # weights of a face with one corner, and a caller that asked about
-        # tensor coordinates should get the weights in that backend either way.
-        weight = quant(corners).new_ones((1, m, q))
+        weight = im.mag(quant(corners).new_ones((1, q)))
     else:
-        # Through immlib's subtraction, and not the operator: the operands may
-        # be a numpy array against a quantity, which reaches the *reflected*
-        # operator and raises `subtract() received an invalid combination`
-        # rather than computing. Every one of these four lines meets a tensor
-        # somewhere --- the corners, the query, or both.
-        edges = im.subtract(im.permute(corners[:, 1:], (2, 0, 1)), origin)
-        rel = im.subtract(im.permute(query.T[None, :, :], (0, 2, 1)), origin)
-        et = im.permute(edges, (0, 2, 1))                   # (M, S-1, D)
-        rest = im.matmul(im.pinv(im.matmul(et, edges)),
-                         im.matmul(et, rel))                # (M, S-1, Q)
-        last = im.subtract(1.0, im.sum(rest, axis=1))       # (M, Q)
-        weight = im.concatenate(
-            [last[None, :, :], im.permute(rest, (1, 0, 2))], axis=0)  # (S, M, Q)
-    near = im.sum(im.multiply(corners[:, :, :, None],
-                              weight[None, :, :, :]), axis=1)
-    diff = im.subtract(query[:, None, :], near)
+        edges = im.subtract(corners[:, 1:], corners[:, :1])        # (D, S-1, Q)
+        rel = im.subtract(query[:, None, :], corners[:, :1])       # (D, 1, Q)
+        # Per position, the regression of the position onto the sub-face's
+        # edges: the Gram matrix is `Q` of them, each (S-1)-square.
+        gram = im.pinv(im.einsum('dsq,dtq->qst', edges, edges))
+        rest = im.einsum('qst,dtq,dq->sq', gram, edges,
+                         im.mag(im.reshape(rel, (d, q))))
+        # Summed over the sub-face's own corner axis, which is now the first:
+        # there is no face axis for it to be the second.
+        last = im.subtract(1.0, im.sum(rest, axis=0))              # (Q,)
+        weight = im.mag(im.concatenate([last[None, :], rest], axis=0))
+    # The nearest point of the sub-face to the position, and its distance.
+    near = im.einsum('dsq,sq->dq', im.mag(corners), weight)
+    diff = im.subtract(im.mag(query), near)
     d2 = im.sum(im.multiply(diff, diff), axis=0)
     # A projection onto a face is only meaningful within it: outside, the
     # nearest point of the face is on one of its edges or corners, which the
-    # caller tests as a sub-face.
-    # With the same tolerance the numpy projection uses: a projection
-    # fractionally outside is the true nearest point to within rounding, and
-    # rejecting it would let the next sub-face win and answer differently.
+    # caller tests as a sub-face. With the same tolerance the numpy projection
+    # uses: a projection fractionally outside is the true nearest point to
+    # within rounding, and rejecting it would let the next sub-face win and
+    # answer differently.
     inside = im.mag(im.all(im.greater_equal(weight, -_TOLERANCE), axis=0))
     return (weight, inside, im.mag(d2))
 
 
 def face_weights(corners, query, /):
-    '''The weights of the nearest point *on* each simplex, to its position.
+    """The weights of the nearest point *on* each simplex, to its position.
 
     The nearest point of a triangle to a position outside it is on one of its
     edges or at one of its corners, so the weights are not the regression onto
@@ -678,15 +676,14 @@ def face_weights(corners, query, /):
     numpy.ndarray
         A ``(K, Q)`` matrix of the first ``K`` barycentric weights within the
         position's chosen simplex; the final weight is their complement.
-    '''
-    (d, k1, m) = corners.shape
-    q = query.shape[1]
+    """
+    (d, k1, q) = corners.shape
     if d != query.shape[0]:
         raise ValueError(
             f"the query positions have dimension {query.shape[0]}, but the"
             f" geometry's coordinates have dimension {d}")
-    best_d2 = full((m, q), inf)
-    best_w = zeros((k1 - 1, m, q))
+    best_d2 = full((q,), inf)
+    best_w = zeros((k1 - 1, q))
     for size in range(1, k1 + 1):
         for members in combinations(range(k1), size):
             (weight, inside, d2) = _face_projection(
@@ -702,7 +699,7 @@ def face_weights(corners, query, /):
             # weight may be a tensor, since these are the values that carry a
             # position's derivative, and a tensor cannot be assigned into a
             # numpy array.
-            pieces = [zeros((m, q)) for _ in range(k1 - 1)]
+            pieces = [zeros((q,)) for _ in range(k1 - 1)]
             for (j, corner) in enumerate(members):
                 # The last weight is what the others leave of the unit sum, so
                 # it is not among the ones returned.
@@ -710,9 +707,8 @@ def face_weights(corners, query, /):
                     pieces[corner] = weight[j]
             candidate = im.mag(im.stack(pieces))
             best_d2 = where(better, im.to_array(d2), best_d2)
-            best_w = im.where(better[None, :, :], candidate, best_w)
-    cols = arange(q)
-    return im.mag(best_w)[:, cols, cols]                    # (K, Q)
+            best_w = im.where(better[None, :], candidate, best_w)
+    return im.mag(best_w)                                   # (K, Q)
 
 
 def _closest_simplex_brute(coords, indices, query):

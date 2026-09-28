@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from unittest import TestCase, skipUnless
 
-from numpy import allclose, array, asarray, ones, zeros, float64, int64
+import numpy as np
+from numpy import allclose, array, arange, asarray, ones, zeros, float64, int64
 
-from euclib.utils import (is_pointdata, simplex_measures, unique_columns,
-                          unique_coords)
+import immlib.math as im
+
+from euclib.utils import (closest_simplex, face_weights, is_pointdata,
+                          simplex_measures, unique_columns, unique_coords)
 from euclib._init import checktorch
 
 
@@ -243,3 +246,107 @@ class TestSimplexMeasures(TestCase):
         coords = self.TRIANGLE * ureg.meter
         got = simplex_measures(coords, array([[0], [1], [2]]))
         self.assertEqual(str(got.units), 'meter ** 2')
+
+
+class TestFaceWeights(TestCase):
+    '''The weights of the nearest point on each simplex, to its position.
+
+    `face_weights` is handed its corners as ``(D, K+1, Q)`` --- one simplex per
+    position, the search having already chosen which --- and it used to treat
+    that third axis as a *face* axis beside the query axis, so the weights came
+    out ``(K-1, Q, Q)`` and the last line took that matrix's diagonal. For the
+    Clough-Tocher example page `Q` is 40000, which is 23.8 GiB and a
+    `MemoryError`; it is quadratic in the *positions*, so no mesh is small
+    enough to be safe.
+
+    Nothing needed the axis. These are the two things that say so: the shape of
+    what the projection returns, which is the cheap and direct check, and an
+    agreement with the old construction written out below, which is the check
+    that a different *answer* was not traded for the smaller one.
+    '''
+
+    def _corners_and_query(self, dim, k, count, /, rng):
+        coords = rng.normal(size=(dim, 40))
+        topo = array([rng.choice(40, size=k, replace=False)
+                      for _ in range(12)]).T
+        query = rng.normal(size=(dim, count))
+        (index, _) = closest_simplex(coords, topo, query, None)
+        return (coords[:, topo[:, index]], query)
+
+    def test_the_projection_is_one_simplex_per_position(self):
+        '''The intermediate is ``(S, Q)``, not ``(S, Q, Q)``.'''
+        from euclib.utils._pycore import _face_projection
+        rng = np.random.default_rng(51)
+        for (dim, k, count) in ((2, 3, 7), (3, 4, 5), (2, 2, 9), (3, 2, 6)):
+            (corners, query) = self._corners_and_query(dim, k, count, rng)
+            # Every sub-face, so the widest case: all of the corners at once.
+            # A k-row topology is a simplex with k corners.
+            for size in range(1, k + 1):
+                members = list(range(k))[:size]
+                (weight, inside, d2) = _face_projection(
+                    corners[:, members], query)
+                with self.subTest(dim=dim, corners=k, subface=size):
+                    self.assertEqual(tuple(np.asarray(weight).shape),
+                                     (len(members), count),
+                                     "the projection has an axis per position"
+                                     " *and* one per face")
+                    self.assertEqual(tuple(np.asarray(inside).shape), (count,))
+                    self.assertEqual(tuple(np.asarray(d2).shape), (count,))
+
+    def test_it_gives_the_weights_the_old_construction_gave(self):
+        rng = np.random.default_rng(52)
+        for (dim, k) in ((2, 3), (3, 4), (2, 2), (3, 3)):
+            (corners, query) = self._corners_and_query(dim, k, 20, rng)
+            want = self._one_face_at_a_time(corners, query)
+            got = np.asarray(face_weights(corners, query))
+            with self.subTest(dim=dim, corners=k):
+                self.assertEqual(got.shape, want.shape)
+                self.assertLess(np.abs(got - want).max(), 1e-12)
+
+    def _one_face_at_a_time(self, corners, query, /):
+        '''`face_weights` as it was, with the face axis and the diagonal.'''
+        from numpy import full, inf, where
+        from itertools import combinations
+        (d, k1, m) = corners.shape
+        q = query.shape[1]
+        best_d2 = full((m, q), inf)
+        best_w = zeros((k1 - 1, m, q))
+        for size in range(1, k1 + 1):
+            for members in combinations(range(k1), size):
+                (weight, inside, d2) = self._old_projection(
+                    corners[:, list(members)], query)
+                better = np.asarray(inside) & (np.asarray(d2) < best_d2)
+                if not better.any():
+                    continue
+                pieces = [zeros((m, q)) for _ in range(k1 - 1)]
+                for (j, corner) in enumerate(members):
+                    if corner < k1 - 1:
+                        pieces[corner] = weight[j]
+                candidate = np.asarray(im.mag(im.stack(pieces)))
+                best_d2 = where(better, np.asarray(d2), best_d2)
+                best_w = im.where(better[None, :, :], candidate, best_w)
+        cols = arange(q)
+        return np.asarray(im.mag(best_w))[:, cols, cols]
+
+    def _old_projection(self, corners, query, /):
+        from euclib.utils._pycore import _TOLERANCE
+        (d, s, m) = corners.shape
+        q = query.shape[1]
+        origin = corners[:, 0].T[:, :, None]
+        if s == 1:
+            weight = im.quant(corners).new_ones((1, m, q))
+        else:
+            edges = im.subtract(im.permute(corners[:, 1:], (2, 0, 1)), origin)
+            rel = im.subtract(im.permute(query.T[None, :, :], (0, 2, 1)), origin)
+            et = im.permute(edges, (0, 2, 1))
+            rest = im.matmul(im.pinv(im.matmul(et, edges)),
+                             im.matmul(et, rel))
+            last = im.subtract(1.0, im.sum(rest, axis=1))
+            weight = im.concatenate([last[None, :, :],
+                                     im.permute(rest, (1, 0, 2))], axis=0)
+        near = im.sum(im.multiply(corners[:, :, :, None],
+                                  weight[None, :, :, :]), axis=1)
+        diff = im.subtract(query[:, None, :], near)
+        d2 = im.sum(im.multiply(diff, diff), axis=0)
+        inside = im.mag(im.all(im.greater_equal(weight, -_TOLERANCE), axis=0))
+        return (weight, inside, d2)
