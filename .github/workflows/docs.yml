@@ -54,6 +54,16 @@ jobs:
       # example pages are executed, so their figures are generated during the
       # build.
       - name: Build Documentation
+        # GitHub Pages serves a *project* site at /<repository>, and MyST builds
+        # its links as if the site were at the root unless it is told otherwise.
+        # Without this every asset comes out as /build/... rather than
+        # /euclib/build/..., which is a 404 under the project path, and the page
+        # comes up with MyST's own notice about "an incorrect BASE_URL
+        # configuration". It is an environment variable rather than a myst.yml
+        # setting --- see https://mystmd.org/guide/deployment --- so it belongs
+        # here and not in the project's configuration.
+        env:
+          BASE_URL: /euclib
         run: |
           python docs/generate_api.py
           cd docs/euclib
