@@ -201,8 +201,12 @@ def _outside(geom, query, loc, /):
             bad |= (p < -0.5 - GRID_TOLERANCE) | (
                 p > (s - 0.5) + GRID_TOLERANCE)
         return bad
-    back = asarray(geom.to_global(loc))
-    diff = asarray(query) - back
+    # The test is a *mask*, not a quantity: nothing downstream is
+    # differentiable with respect to it, so the positions and the reconstruction
+    # are taken as plain arrays. `to_array` detaches, which is what a tensor
+    # needs here and a numpy array does not notice.
+    back = im.to_array(geom.to_global(loc))
+    diff = im.to_array(query) - back
     d2 = (diff * diff).sum(axis=0)
     scale = float(abs(back).max()) if back.size else 1.0
     tol = TOLERANCE * max(scale, 1.0)
