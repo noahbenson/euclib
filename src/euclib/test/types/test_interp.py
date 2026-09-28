@@ -2197,3 +2197,82 @@ class TestPowellSabinOnATriangleInSpace(TestCase):
                     'q', at=point.reshape(3, 1),
                     interp=('powell-sabin', 2))))[0])
                 self.assertAlmostEqual(got, self._field(point), places=12)
+
+
+class TestTheBlockDesign(TestCase):
+    '''The design matrix a block of stencils is fitted through, held to itself.
+
+    `_block_design` writes the polynomial in each stencil's own frame, and its
+    docstring gives the expression: the monomials are raised over the block at
+    once, with the block axis beside the corner axis rather than among the
+    powers. It says so because the shape is easy to get wrong --- an extra axis
+    in the wrong place gives a design of the wrong width, and the widths *are*
+    the monomials.
+
+    **This test exists because nothing caught it.** Translating the function
+    through immlib, I put two permutations in that the expression does not need,
+    which left the design `(B, M, room)` where it must be `(B, M, W)` --- and all
+    727 tests passed, the estimate's tests against an affine and a quadratic
+    field among them. Stating the fault is not the same as explaining it: I have
+    not worked out which route through `_gradient_blocks` left those meshes
+    answering correctly, and the honest report is that a wrong design survived a
+    full suite. What this holds is the expression the docstring gives, which is
+    the thing that was wrong.
+    '''
+
+    def test_it_is_the_expression_its_docstring_gives(self):
+        from euclib.types._interp import _block_design
+        rng = default_rng(41)
+        for (bounds, room, degree) in (((4, 5, 3), 2, 2), ((4, 5, 3), 3, 2),
+                                       ((3, 6, 3), 1, 3), ((4, 5, 3), 2, 1)):
+            (b, m, d) = bounds
+            steps = rng.normal(size=(b, m, d))
+            frames = np.stack([np.linalg.qr(rng.normal(size=(d, d)))[0]
+                               for _ in range(b)])
+            (basis, _, design) = _block_design(steps, frames, room, degree)
+            exponents = np.asarray(basis)
+            local = steps @ frames[:, :room, :].transpose(0, 2, 1)
+            want = (local[:, :, None, :]
+                    ** exponents[None, None, :, :]).prod(axis=-1)
+            with self.subTest(room=room, degree=degree):
+                self.assertEqual(np.asarray(design).shape, want.shape,
+                                 "the design is not one column per monomial")
+                self.assertLess(np.abs(np.asarray(design) - want).max(), 1e-12)
+
+
+class TestTheEstimateAgainstAField(TestCase):
+    '''The gradient estimate, against a field rather than against its operator.
+
+    `_gradient_operator` and `_estimate_gradient` are two consumers of one
+    description of the stencils --- the docstring for `_gradient_blocks` says so
+    --- which means they agree with each other whether or not either is right.
+    So this holds the estimate to something outside both: an affine field's
+    slope is its own gradient, exactly, wherever the stencil is wide enough to
+    see it.
+    '''
+
+    def _mesh(self, side, /):
+        (ix, iy) = np.meshgrid(np.arange(side, dtype=float),
+                               np.arange(side, dtype=float), indexing='ij')
+        coords = np.vstack([ix.ravel(), iy.ravel()])
+        quads = []
+        for i in range(side - 1):
+            for j in range(side - 1):
+                k = i * side + j
+                quads.append((k, k + 1, k + side))
+                quads.append((k + 1, k + side + 1, k + side))
+        return TriMesh(coords, TriTopology(np.array(quads).T))
+
+    def test_it_gives_an_affine_field_s_slope(self):
+        from euclib.types._interp import estimate_gradient
+        mesh = self._mesh(6)
+        coords = np.asarray(mesh.coords)
+        slope = np.array([2.0, -1.5])
+        field = (slope[0] * coords[0] + slope[1] * coords[1] + 3.0)[None]
+        geom = mesh.withprop('v', field)
+        prop = geom._prop_for('v', None)
+        for order in (2, 3):
+            got = np.asarray(estimate_gradient(geom, prop, order))
+            want = slope[:, None] * np.ones((1, coords.shape[1]))
+            with self.subTest(order=order):
+                self.assertLess(np.abs(got - want).max(), 1e-9)

@@ -1936,8 +1936,16 @@ def _block_design(steps, frames, room, degree, /):
     linear = [basis.index(tuple(1 if b == a else 0 for b in range(room)))
               for a in range(room)]
     exponents = asarray(basis)
-    local = steps @ frames[:, :room, :].transpose(0, 2, 1)        # (B, M, room)
-    design = (local[:, :, None, :] ** exponents[None, None, :, :]).prod(axis=-1)
+    # Through immlib, so that a tensor's *coordinates* reach here with their
+    # derivative: `steps` is a difference of them and `frames` a frame they
+    # span, and a numpy product of the two would drop whatever graph they had.
+    local = im.mag(im.matmul(steps,
+                             im.permute(frames[:, :room, :], (0, 2, 1))))
+    # No permutation: the new axis the monomials go on is the third of four,
+    # and `local[:, :, None, :]` against `exponents[None, None, :, :]`
+    # broadcasts it there unaided.
+    design = im.mag(im.prod(
+        im.pow(local[:, :, None, :], exponents[None, None, :, :]), axis=-1))
     return (basis, linear, design)
 
 
