@@ -18,6 +18,7 @@ in any environment.
 from __future__ import annotations
 
 import numpy as np
+import immlib.math as im
 from numpy import (
     arange, asarray, clip, concatenate, full, inf, isfinite, linalg, maximum,
     nan, ones, sort, sqrt, stack, unique, where, zeros)
@@ -576,6 +577,61 @@ def closest_simplex(coords, indices, query, tree=None):
     if tree is not None:
         return _closest_simplex_indexed(coords, indices, query, tree)
     return _closest_simplex_brute(coords, indices, query)
+
+
+def face_weights(corners, query, /):
+    '''The barycentric weights of positions projected onto faces.
+
+    The same projection `project_onto_face` makes, and the difference is why
+    there are two of them. That one is called by the *search*, which is a
+    selection --- which simplex is nearest is a comparison and an ``argmin``, and
+    a selection carries no gradient --- so it takes arrays and detaches. These
+    weights are the part of the search that *is* continuous: they are a function
+    of the position, and a position given as a tensor has a derivative through
+    them. So they are computed with whatever arithmetic the arguments use, and
+    they are computed on the *chosen* faces rather than on every face.
+
+    Parameters
+    ----------
+    corners : array-like
+        A ``(D, K+1, Q)`` array of the corners of the chosen simplexes.
+    query : array-like
+        A ``(D, Q)`` matrix of positions.
+
+    Returns
+    -------
+    numpy.ndarray
+        A ``(K, Q)`` matrix of the first ``K`` barycentric weights within each
+        position's chosen simplex; the final weight is their complement.
+    '''
+    (d, s, m) = corners.shape
+    q = query.shape[1]
+    if d != query.shape[0]:
+        raise ValueError(
+            f"the query positions have dimension {query.shape[0]}, but the"
+            f" geometry's coordinates have dimension {d}")
+    origin = corners[:, 0].T[:, :, None]                    # (M, D, 1)
+    if s == 1:
+        # A point has no interior, so the only weight is the whole of it.
+        weight = ones((1, m, q))
+    else:
+        edges = im.permute(corners[:, 1:], (2, 0, 1)) - origin  # (M, D, S-1)
+        rel = im.permute(query.T[None, :, :], (0, 2, 1)) - origin   # (M, D, Q)
+        et = im.permute(edges, (0, 2, 1))                       # (M, S-1, D)
+        # The normal equations of the regression of the position onto the
+        # face's edges, by pseudo-inverse so that a degenerate face yields a
+        # regression rather than an error --- and through immlib, because the
+        # position's derivative is the derivative of this.
+        rest = im.matmul(im.pinv(im.matmul(et, edges)),
+                         im.matmul(et, rel))                # (M, S-1, Q)
+        last = im.subtract(1.0, im.sum(rest, axis=1))       # (M, Q)
+        weight = im.concatenate(
+            [last[None, :, :], im.permute(rest, (1, 0, 2))], axis=0)  # (S, M, Q)
+    # One face per position, so the answer is the diagonal: the weights of the
+    # position's *own* chosen face rather than of every face against it.
+    weights = im.mag(weight)[:-1]                           # (K, M, Q)
+    cols = arange(q)
+    return weights[:, cols, cols]                           # (K, Q)
 
 
 def _closest_simplex_brute(coords, indices, query):

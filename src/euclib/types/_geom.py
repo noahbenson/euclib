@@ -37,6 +37,7 @@ from ..abc import (
     Geometry, Property, SimplexGeometry, UNSET, as_coords, as_query, calc,
     check_coordinfo, split_property_name)
 from ..utils import (
+    face_weights,
     closest_prism, closest_simplex, nearest_vertices, simplex_measures)
 from ._topo import (
     GridTopology, PrismTopology, SegTopology, TetTopology, TriTopology,
