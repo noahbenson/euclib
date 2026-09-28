@@ -137,11 +137,27 @@ def simplex_measures(coords, indices):
 
 
 def _clip_positive(x, like, /):
-    '''Clamps small negative values to zero, keeping the backend of ``like``.'''
-    if type(like).__module__.split('.')[0] == 'torch':
-        import torch
-        return torch.clamp(x, min=0.0)
-    return clip(x, 0.0, None)
+    '''Clamps small negative values to zero, keeping the backend of ``like``.
+
+    Through immlib's ``maximum`` rather than either backend's own clamp,
+    because what arrives here is a quantity: ``x`` is the gram determinant,
+    which ``simplex_measures`` computes with immlib's arithmetic like everything
+    else it does, and a quantity has no dispatch for ``torch.clamp``. That made
+    the function *refuse* a tensor rather than merely mishandle one --- it
+    raised ``Multiple dispatch failed`` --- so the measures promised the
+    coordinates' backend and did not deliver it.
+
+    The zero is written ``0.0 * x`` rather than ``0.0``. The coordinates may
+    carry units, so the determinant does too; a bare zero does not align with
+    one, and a geometry in meters would be refused where a bare array was
+    accepted --- which is how the first version of this fix broke the test that
+    the measures carry the coordinates' units. Zero times ``x`` is zero in
+    ``x``'s own units, so the alignment is satisfied and the units survive.
+
+    ``like`` is no longer read, and is kept in the signature: it names the array
+    whose backend the answer is in, which is what says this is backend-neutral.
+    '''
+    return imath.maximum(x, imath.multiply(0.0, x))
 
 
 def _abs(x, /):

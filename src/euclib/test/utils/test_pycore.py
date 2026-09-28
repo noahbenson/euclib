@@ -9,10 +9,16 @@ from __future__ import annotations
 
 from unittest import TestCase, skipUnless
 
-from numpy import array, ones, zeros, float64, int64
+from numpy import allclose, array, asarray, ones, zeros, float64, int64
 
-from euclib.utils import is_pointdata, unique_columns, unique_coords
+from euclib.utils import (is_pointdata, simplex_measures, unique_columns,
+                          unique_coords)
 from euclib._init import checktorch
+
+
+def mag(one, /):
+    '''The magnitude, whether the argument is a quantity or an array.'''
+    return asarray(one.m) if hasattr(one, 'm') else asarray(one)
 
 
 # Tests ######################################################################
@@ -142,3 +148,98 @@ class TestUniqueCoords(TestCase):
         res = unique_coords(coords)
         self.assertIsInstance(res, torch.Tensor)
         self.assertEqual(res.tolist(), [[0., 1.], [0., 0.]])
+
+
+class TestSimplexMeasures(TestCase):
+    '''Tests for the ``simplex_measures`` kernel.
+
+    A simplex's measure is its extent: a length, an area, or a volume. Unlike
+    the searches that share this module --- ``nearest_vertices`` and
+    ``closest_simplex``, which choose and therefore have nothing to
+    differentiate --- a measure *is* a continuous function of the coordinates,
+    and its docstring promises the coordinates' backend. So a tensor's gradient
+    has to reach the coordinates through it, which is what these check.
+
+    Nothing did, and the function could not: it clamped a small negative gram
+    determinant with ``torch.clamp``, which has no dispatch for the quantity
+    that immlib's arithmetic had produced, so a tensor *raised* rather than
+    being mishandled. The array tests passed throughout, which is why only a
+    test that hands it a tensor finds this.
+    '''
+
+    def _torch(self):
+        if checktorch() is None:                             # pragma: no cover
+            self.skipTest("torch is not installed")
+        return checktorch()
+
+    #: A unit segment, a unit right triangle, and the standard tetrahedron.
+    SEGMENT = array([[0., 3.], [0., 0.]])
+    TRIANGLE = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+    TETRAHEDRON = array([[0., 1., 0., 0.], [0., 0., 1., 0.],
+                         [0., 0., 0., 1.]])
+
+    def test_it_measures_each_order(self):
+        self.assertTrue(allclose(
+            simplex_measures(self.SEGMENT, array([[0], [1]])), [3.0]))
+        self.assertTrue(allclose(
+            simplex_measures(self.TRIANGLE, array([[0], [1], [2]])), [0.5]))
+        self.assertTrue(allclose(
+            simplex_measures(self.TETRAHEDRON, array([[0], [1], [2], [3]])),
+            [1.0 / 6.0]))
+
+    def test_a_tensor_geometry_carries_its_gradient(self):
+        '''Against a central difference of the array path, entry by entry.
+
+        Checking that a gradient merely *exists* would pass for one that was
+        wrong; the difference is what says it is the right one.
+        '''
+        torch = self._torch()
+        coords = torch.tensor(self.TRIANGLE, dtype=torch.float64,
+                              requires_grad=True)
+        indices = array([[0], [1], [2]])
+        got = simplex_measures(coords, indices)
+        self.assertTrue(getattr(got, 'requires_grad', False),
+                        "the measures of a tensor must carry a gradient")
+        got.sum().backward()
+
+        want = zeros(self.TRIANGLE.shape)
+        step = 1e-6
+        for i in range(self.TRIANGLE.shape[0]):
+            for j in range(self.TRIANGLE.shape[1]):
+                up = zeros(self.TRIANGLE.shape)
+                down = zeros(self.TRIANGLE.shape)
+                up[i, j], down[i, j] = step, -step
+                want[i, j] = (
+                    sum(simplex_measures(self.TRIANGLE + up, indices))
+                    - sum(simplex_measures(self.TRIANGLE + down, indices))
+                ) / (2 * step)
+        self.assertLess(abs(coords.grad.numpy() - want).max(), 1e-6)
+
+    def test_the_two_backends_agree(self):
+        torch = self._torch()
+        for (label, coords, indices) in (
+                ('a segment', self.SEGMENT, array([[0], [1]])),
+                ('a triangle', self.TRIANGLE, array([[0], [1], [2]])),
+                ('a tetrahedron', self.TETRAHEDRON,
+                 array([[0], [1], [2], [3]]))):
+            with self.subTest(shape=label):
+                want = simplex_measures(coords, indices)
+                got = simplex_measures(
+                    torch.tensor(coords, dtype=torch.float64), indices)
+                # Asserted as *equal*, not as less than a tolerance: two
+                # implementations doing the same arithmetic should agree to the
+                # last bit, and `assertLess(x, 0.0)` cannot say so.
+                self.assertEqual(
+                    float(abs(asarray(mag(got)) - asarray(mag(want))).max()), 0.0)
+
+    def test_the_units_of_the_coordinates_survive(self):
+        '''A bare zero does not align with a determinant's units.
+
+        The clamp writes its zero as ``0.0 * x`` for this reason, and a first
+        version that wrote ``0.0`` broke exactly this.
+        '''
+        import pint
+        ureg = pint.UnitRegistry()
+        coords = self.TRIANGLE * ureg.meter
+        got = simplex_measures(coords, array([[0], [1], [2]]))
+        self.assertEqual(str(got.units), 'meter ** 2')
