@@ -1228,7 +1228,14 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
     # The values and the slopes promoted together decide the backend of both
     # arrays built below, since the values are assigned into them.
     like = im.promote(whole, slopes)[0]
-    res = _grid._zeros_for(like, channels + (index.shape[0],))
+    # The result may be a tensor even when the data are arrays, because the
+    # *position* may be one: what is assigned into it is built from the
+    # weights, and a numpy result could not hold a tensor. It is promoted
+    # apart from ``like`` for that reason --- the numbers the element reads
+    # hold the data, which are arrays in this case, and promoting those too
+    # would refuse them.
+    res = _grid._zeros_for(im.promote(whole, slopes, weight)[0],
+                           channels + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
         triangle = coords[:, here]
@@ -1315,7 +1322,14 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
     # The values and the slopes promoted together decide the backend of both
     # arrays built below, since the values are assigned into them.
     like = im.promote(whole, slopes)[0]
-    res = _grid._zeros_for(like, channels + (index.shape[0],))
+    # The result may be a tensor even when the data are arrays, because the
+    # *position* may be one: what is assigned into it is built from the
+    # weights, and a numpy result could not hold a tensor. It is promoted
+    # apart from ``like`` for that reason --- the numbers the element reads
+    # hold the data, which are arrays in this case, and promoting those too
+    # would refuse them.
+    res = _grid._zeros_for(im.promote(whole, slopes, weight)[0],
+                           channels + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
         # The triangle's shape enters the element in exactly one place --- the

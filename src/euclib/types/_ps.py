@@ -102,14 +102,19 @@ def bernstein(w, /):
     One set of weights gives a vector of six; a ``(3, Q)`` matrix of them gives a
     ``(6, Q)`` matrix, one column per position.
     '''
-    w = asarray(w)
-    if w.ndim == 1:
-        (one, two, three) = w
-        return array([one * one, two * two, three * three,
-                      2.0 * one * two, 2.0 * one * three, 2.0 * two * three])
+    # The weights are handed back rather than converted, and the arithmetic is
+    # immlib's: a weight is a *position's* coordinate within a piece, so a tensor
+    # position has a derivative through the basis. It is the basis' magnitude
+    # that comes back, so that a caller reading this as an array still can. One
+    # body serves both shapes: a vector of weights unpacks to three numbers and
+    # a ``(3, Q)`` matrix to three vectors, and the stack is the same either way.
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
     (one, two, three) = w
-    return array([one * one, two * two, three * three,
-                  2.0 * one * two, 2.0 * one * three, 2.0 * two * three])
+    return im.mag(im.stack([
+        im.multiply(one, one), im.multiply(two, two), im.multiply(three, three),
+        im.multiply(2.0, im.multiply(one, two)),
+        im.multiply(2.0, im.multiply(one, three)),
+        im.multiply(2.0, im.multiply(two, three))]))
 
 
 def evaluate(ordinates, w, /):
@@ -122,7 +127,10 @@ def evaluate(ordinates, w, /):
     # Through immlib, because the control values may be a tensor: the
     # interpolation's data reaches this contraction, and a numpy ``einsum`` on a
     # tensor reaches its dispatch instead of computing.
-    w = im.mag(im.to_array(w)) if hasattr(w, 'requires_grad') else asarray(w)
+    # The magnitude and not a conversion to an array: since
+    # ``bernstein`` works in immlib's arithmetic now, a tensor weight
+    # keeps its derivative through the contraction.
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
     if w.ndim == 1:
         return im.einsum('w,...w->...', bernstein(w), ordinates)
     return im.einsum('wq,...w->...q', bernstein(w), ordinates)
@@ -335,18 +343,32 @@ def sub_weights(weights, centre, /):
     Returns
     -------
     pieces : numpy.ndarray
-        A length-``Q`` vector naming the mini-triangle each position falls in.
-    inside : numpy.ndarray
-        A ``(Q, 3)`` matrix of the weights within that mini-triangle.
+        A length-``Q`` vector naming the mini-triangle each position falls in. It
+        is always an array: which piece holds a position is a comparison, and the
+        callers read it as an index.
+    inside : numpy.ndarray or torch.Tensor
+        A ``(Q, 3)`` matrix of the weights within that mini-triangle, in the
+        backend of ``weights`` so that a tensor's derivative survives the
+        reading-off.
     '''
     places = _places(centre)
-    whole = stack([weights[0], weights[1],
-                   1.0 - weights[0] - weights[1]], axis=-1)      # (Q, 3)
-    inside = zeros((whole.shape[0], len(PIECES), 3))
-    for (k, piece) in enumerate(PIECES):
-        inside[:, k, :] = whole @ _within(places, piece).T
-    pieces = argmin(-inside.min(axis=-1), axis=-1)
-    return (pieces, inside[arange(whole.shape[0]), pieces])
+    whole = im.mag(im.stack([im.mag(weights[0]), im.mag(weights[1]),
+                             im.mag(im.subtract(
+                                 im.subtract(1.0, weights[0]), weights[1]))],
+                            axis=-1))                            # (Q, 3)
+    inside = im.mag(im.stack([im.matmul(whole, _within(places, piece).T)
+                              for piece in PIECES], axis=1))     # (Q, 6, 3)
+    pieces = asarray(im.mag(im.argmin(
+        im.negative(im.amin(inside, axis=-1)), axis=-1)))        # (Q,)
+    # The weights within the piece that holds a position are its row of
+    # ``inside``, read by masking the six rows and summing them rather than by
+    # indexing with the piece --- indexing would break a tensor's derivative.
+    picked = None
+    for k in range(len(PIECES)):
+        row = inside[:, k, :]
+        masked = im.where((pieces == k)[:, None], row, im.multiply(row, 0.0))
+        picked = masked if picked is None else im.add(picked, masked)
+    return (pieces, im.mag(picked))
 
 
 # Exports ####################################################################

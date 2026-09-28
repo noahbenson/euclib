@@ -77,12 +77,18 @@ def bernstein(w, /):
     a ``(10, Q)`` matrix, one column per position, which is what evaluating at
     many positions at once wants.
     """
-    w = asarray(w)
+    # The weights are handed back rather than converted, and the arithmetic is
+    # immlib's: a weight is a *position's* coordinate within a piece, so a tensor
+    # position has a derivative through the basis. It is the basis' magnitude
+    # that comes back, so that a caller reading this as an array still can.
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
     powers = asarray(POWERS)
     coef = asarray([COEF[p] for p in POWERS])
     if w.ndim == 1:
-        return coef * (w[None, :] ** powers).prod(axis=-1)
-    return coef[:, None] * (w[None, :, :] ** powers[:, :, None]).prod(axis=1)
+        return im.mag(im.multiply(
+            coef, im.prod(im.pow(w[None, :], powers), axis=-1)))
+    return im.mag(im.multiply(coef[:, None], im.prod(
+        im.pow(w[None, :, :], powers[:, :, None]), axis=1)))
 
 
 def evaluate(controls, w, /):
@@ -95,7 +101,10 @@ def evaluate(controls, w, /):
     # Through immlib, because the control values may be a tensor: the
     # interpolation's data reaches this contraction, and a numpy ``einsum`` on a
     # tensor reaches its dispatch instead of computing.
-    w = im.mag(im.to_array(w)) if hasattr(w, 'requires_grad') else asarray(w)
+    # The magnitude and not a conversion to an array: since
+    # ``bernstein`` works in immlib's arithmetic now, a tensor weight
+    # keeps its derivative through the contraction.
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
     if w.ndim == 1:
         return im.einsum('w,...w->...', bernstein(w), controls)
     return im.einsum('wq,...w->...q', bernstein(w), controls)
@@ -527,24 +536,38 @@ def sub_weights(weights, /):
     Returns
     -------
     pieces : numpy.ndarray
-        A length-``Q`` vector naming the piece each position falls in.
-    inside : numpy.ndarray
-        A ``(Q, 3)`` matrix of the weights within that piece.
+        A length-``Q`` vector naming the piece each position falls in. It is
+        always an array: which piece holds a position is a comparison, and the
+        callers read it as an index.
+    inside : numpy.ndarray or torch.Tensor
+        A ``(Q, 3)`` matrix of the weights within that piece, in the backend of
+        ``weights`` so that a tensor's derivative survives the reading-off.
     """
-    whole = stack([weights[0], weights[1],
-                   1.0 - weights[0] - weights[1]], axis=-1)     # (Q, 3)
-    pieces = (argmin(whole, axis=-1) + 1) % 3                    # (Q,)
-    out = zeros((whole.shape[0], 3))
-    for k in range(3):
-        here = pieces == k
-        if not here.any():
-            continue
-        (a, b) = EDGES[k]
-        left_out = [x for x in range(3) if x not in (a, b)][0]
-        out[here, 0] = whole[here, a] - whole[here, left_out]
-        out[here, 1] = whole[here, b] - whole[here, left_out]
-        out[here, 2] = 3.0 * whole[here, left_out]
-    return (pieces, out)
+    whole = im.mag(im.stack([im.mag(weights[0]), im.mag(weights[1]),
+                             im.mag(im.subtract(
+                                 im.subtract(1.0, weights[0]), weights[1]))],
+                            axis=-1))                            # (Q, 3)
+    pieces = asarray((im.mag(im.argmin(whole, axis=-1)) + 1) % 3)  # (Q,)
+    # A position lies in exactly one piece, so each of the three weights is the
+    # sum of its three candidates masked to the piece that holds the position.
+    # Masked and summed rather than assigned, because a tensor's weights carry a
+    # derivative and will not be assigned into an array.
+    columns = []
+    for j in range(3):
+        picked = None
+        for k in range(3):
+            (a, b) = EDGES[k]
+            left_out = [x for x in range(3) if x not in (a, b)][0]
+            if j == 0:
+                value = im.subtract(whole[:, a], whole[:, left_out])
+            elif j == 1:
+                value = im.subtract(whole[:, b], whole[:, left_out])
+            else:
+                value = im.multiply(3.0, whole[:, left_out])
+            masked = im.where(pieces == k, value, im.multiply(value, 0.0))
+            picked = masked if picked is None else im.add(picked, masked)
+        columns.append(picked)
+    return (pieces, im.mag(im.stack(columns, axis=-1)))
 
 
 # The operator the element's edge numbers come from ##########################
