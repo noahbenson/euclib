@@ -41,7 +41,7 @@ from __future__ import annotations
 from math import factorial
 
 import immlib.math as im
-from immlib import to_array
+from immlib import quant, to_array
 from numpy import (
     argmin, array, asarray, einsum, eye, linalg, ones, stack,
     zeros)
@@ -142,15 +142,42 @@ def gradient(controls, corners, w, /):
     can.
     '''
     # The two directions from the first corner, as the columns of a matrix.
-    along = array([corners[:, 1] - corners[:, 0],
-                   corners[:, 2] - corners[:, 0]]).T
-    wanted = stack([directional(controls, w, 1),
-                    directional(controls, w, 2)], axis=-1)
+    along = im.mag(im.stack([im.subtract(corners[:, 1], corners[:, 0]),
+                             im.subtract(corners[:, 2], corners[:, 0])],
+                            axis=-1))
+    wanted = im.mag(im.stack([directional(controls, w, 1),
+                              directional(controls, w, 2)], axis=-1))
     # The pseudo-inverse and not the inverse: a triangle is usually a surface in
     # three dimensions, where the two edge directions do not span the space and
     # no inverse exists. What it gives is the gradient's part *in* the
     # triangle's plane, which is the only part a field on the triangle can mean.
-    return einsum('jk,...k->...j', linalg.pinv(along.T), wanted)
+    return im.mag(im.einsum('jk,...k->...j', im.pinv(along.T), wanted))
+
+
+
+def _zeros_of(like, count, /):
+    """``count`` zeros in the backend of ``like``."""
+    return im.mag(quant(like).new_zeros((count,)))
+
+
+def _unit_controls(piece, n, /):
+    """Three pieces' controls, with one of ``piece``'s set to one."""
+    controls = [zeros(10) for _ in range(3)]
+    controls[piece][n] = 1.0
+    return controls
+
+
+def _placed(values, piece, /):
+    """A length-30 row, with a piece's ten values at their own offset.
+
+    Stacked rather than assigned into a row made beforehand: the values are a
+    function of the triangle --- through the element's own gradient, evaluated
+    there --- and a tensor among them will not be assigned into an array made as
+    numpy.
+    """
+    return im.mag(im.concatenate(
+        [_zeros_of(values, piece * 10), im.mag(values),
+         _zeros_of(values, 30 - (piece + 1) * 10)]))
 
 
 # The pieces #################################################################
@@ -162,8 +189,10 @@ def _corners(triangle, k, /):
     dimensions leading and the corners following.
     """
     (a, b) = EDGES[k]
-    centre = triangle.mean(axis=1)
-    return array([triangle[:, a], triangle[:, b], centre]).T
+    # Through immlib: `array` of a list reaches numpy, and a list holding a
+    # tensor that requires a gradient has no numpy array to reach.
+    return im.mag(im.stack([triangle[:, a], triangle[:, b],
+                            im.mean(triangle, axis=1)], axis=-1))
 
 
 def _holders(vertex, /):
@@ -198,12 +227,8 @@ def _row_from(functional, k, /):
     the condition evaluated on unit controls: nothing is written down by hand,
     and nothing can be misremembered.
     """
-    row = zeros(30)
-    for n in range(10):
-        controls = [zeros(10) for _ in range(3)]
-        controls[k][n] = 1.0
-        row[k * 10 + n] = functional(controls)
-    return row
+    return _placed(im.stack([functional(_unit_controls(k, n))
+                             for n in range(10)]), k)
 
 
 def _sharing(triangle, /):
@@ -255,16 +280,17 @@ def _c1(triangle, samples=5, /):
         (k, other) = _holders(vertex)
         for s in [i / (samples - 1) for i in range(samples)]:
             for component in (0, 1):
-                row = zeros(30)
+                # Two pieces reach this row, so it is their two placements
+                # added rather than written one after the other into one array.
+                parts = []
                 for (piece, sign) in ((k, 1.0), (other, -1.0)):
                     w = _weights_on_edge(piece, vertex, s)
                     corners = _corners(triangle, piece)
-                    for n in range(10):
-                        controls = [zeros(10) for _ in range(3)]
-                        controls[piece][n] = 1.0
-                        row[piece * 10 + n] += sign * gradient(
-                            controls[piece], corners, w)[component]
-                rows.append(row)
+                    parts.append(_placed(im.stack([
+                        im.mag(im.multiply(sign, im.mag(gradient(
+                            _unit_controls(piece, n)[piece], corners, w
+                        ))[component])) for n in range(10)]), piece))
+                rows.append(im.mag(im.add(parts[0], parts[1])))
     return rows
 
 
@@ -277,11 +303,17 @@ def plane_normal(corners, /):
     turns the edge round with it and the turn below settles its own sign.
     """
     if corners.shape[0] == 2:
+        # A constant, so numpy will do; the arithmetic below promotes it along
+        # with whatever it meets.
         return array([0.0, 0.0, 1.0])
-    (u, v) = (corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
-    return array([u[1] * v[2] - u[2] * v[1],
-                  u[2] * v[0] - u[0] * v[2],
-                  u[0] * v[1] - u[1] * v[0]])
+    (u, v) = (im.subtract(corners[:, 1], corners[:, 0]),
+              im.subtract(corners[:, 2], corners[:, 0]))
+    return im.stack([im.subtract(im.multiply(u[1], v[2]),
+                                 im.multiply(u[2], v[1])),
+                     im.subtract(im.multiply(u[2], v[0]),
+                                 im.multiply(u[0], v[2])),
+                     im.subtract(im.multiply(u[0], v[1]),
+                                 im.multiply(u[1], v[0]))])
 
 
 def turn(edge, normal, /):
@@ -302,16 +334,24 @@ def turn(edge, normal, /):
     creased there and the two derivatives mean different things.
     """
     if len(edge) == 2:
-        candidate = array([edge[1], -edge[0]])
+        candidate = im.stack([edge[1], im.negative(edge[0])])
     else:
         (a, b, c) = edge
         (u, v, w) = normal
-        candidate = array([b * w - c * v, c * u - a * w, a * v - b * u])
+        candidate = im.stack([im.subtract(im.multiply(b, w), im.multiply(c, v)),
+                              im.subtract(im.multiply(c, u), im.multiply(a, w)),
+                              im.subtract(im.multiply(a, v), im.multiply(b, u))])
+    # The sign is a *selection*, and stays one: which way the turn goes is
+    # decided by the first component that is not zero, a comparison with no
+    # derivative. What keeps its graph is the vector, which is a continuous
+    # function of the corners --- so the decision is taken on the magnitude and
+    # the magnitude is what is returned, negated or not.
+    candidate = im.mag(candidate)
     for entry in candidate:
         if entry > 0.0:
             return candidate
         if entry < 0.0:
-            return -candidate
+            return im.mag(im.negative(candidate))
     return candidate
 
 
@@ -326,8 +366,11 @@ def across_vector(triangle, k, /):
     within the triangle's plane.
     """
     (a, b) = EDGES[k]
-    (i, j) = sorted((a, b), key=lambda x: tuple(triangle[:, x]))
-    return turn(triangle[:, j] - triangle[:, i],
+    # The ordering is a selection too --- two corners put in order by where they
+    # are, not by their index, which the two elements sharing the edge number
+    # differently --- and is left as one.
+    (i, j) = sorted((a, b), key=lambda x: tuple(im.mag(triangle)[:, x]))
+    return turn(im.subtract(triangle[:, j], triangle[:, i]),
                 plane_normal(triangle))
 
 
@@ -366,17 +409,23 @@ def element_rows(triangle, /):
         rows.append((_row_from(lambda c, w=w, k=k: evaluate(c[k], w), k),
                      ('value', vertex)))
         for other in neighbours_of(vertex):
-            along = triangle[:, other] - triangle[:, vertex]
+            # Through immlib and not `float(...)`: a float takes the number and
+            # drops whatever graph was behind it, without failing --- so the row
+            # would come back looking right with the coordinates' derivative
+            # quietly gone.
+            along = im.subtract(triangle[:, other], triangle[:, vertex])
             rows.append((_row_from(
                 lambda c, w=w, k=k, d=along:
-                float(gradient(c[k], _corners(triangle, k), w) @ d), k),
+                im.mag(im.sum(im.multiply(
+                    gradient(c[k], _corners(triangle, k), w), d), axis=-1)), k),
                 ('slope', vertex, other)))
     for k in range(3):
         w = array([0.5, 0.5, 0.0])
         across = across_vector(triangle, k)
         rows.append((_row_from(
             lambda c, w=w, k=k, d=across:
-            float(gradient(c[k], _corners(triangle, k), w) @ d), k),
+            im.mag(im.sum(im.multiply(
+                gradient(c[k], _corners(triangle, k), w), d), axis=-1)), k),
             ('across', k)))
     return rows
 
@@ -393,10 +442,13 @@ def basis(triangle=None, /):
         triangle = REFERENCE
     held = _sharing(triangle) + _c1(triangle)
     data = [row for (row, _) in element_rows(triangle)]
-    rows = asarray(held + data)
-    targets = zeros((rows.shape[0], 12))
+    rows = im.mag(im.stack(held + data))
+    # The targets are constants --- a unit number at a time --- so they stay
+    # arrays; the solve promotes them along with the rows, and that is what
+    # carries the triangle's derivative through the basis.
+    targets = zeros((len(held) + len(data), 12))
     targets[len(held):, :] = eye(12)
-    return linalg.lstsq(rows, targets, rcond=None)[0]
+    return im.mag(im.lstsq(rows, targets)[0])
 
 
 # The number a Property cannot carry #########################################

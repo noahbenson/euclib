@@ -298,6 +298,25 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     # property's, and a property that carries none has one estimated from the
     # values around the geometry.
     fitted = None
+    if (getattr(geom.coords, 'requires_grad', False)
+            and method in ('clough-tocher', 'powell-sabin')):
+        # Refused, for the same reason the estimate is refused below: part of
+        # the answer is built from an operator that is a *constant*.
+        #
+        # Clough-Tocher's twelfth number is per *edge* and is estimated from the
+        # triangles sharing it, through one sparse operator over the whole mesh
+        # --- ``interp_data['edge_data']``, a scipy matrix built once per mesh
+        # and cast to floats, so it cannot carry a graph. That estimate is a
+        # function of where the corners are, so leaving it out drops a real
+        # term: measured against a central difference, Clough-Tocher over tensor
+        # coordinates is out by **0.19** where every method that has all its
+        # terms agrees to 1e-9. Powell-Sabin is refused for a different reason
+        # and the same shape --- its incenter and its basis are still numpy.
+        raise ValueError(
+            f"the interpolation {method!r} is not available over tensor"
+            " coordinates: part of this element's construction is a constant"
+            " operator over the mesh, which cannot carry the coordinates'"
+            " derivative, and answering anyway would lose that term silently")
     # A grid has no `order` and needs no gradient: every method it supports is
     # a generalised *value*, so the estimate is not merely unused but
     # meaningless there.
@@ -1255,17 +1274,28 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
     weight = loc.weight
     (elements, back) = unique(index, return_inverse=True)
     (_, first) = unique(back, return_index=True)
-    # The values and the slopes promoted together decide the backend of both
-    # arrays built below, since the values are assigned into them.
-    like = im.promote(whole, slopes)[0]
+    # The values, the slopes and the geometry's *coordinates* promoted together
+    # decide the backend of the arrays built below, since all three are assigned
+    # into them: the values directly, and the slope along each edge from a
+    # gradient and a direction that belongs to the geometry. Promoting them
+    # together rather than the array alone is what makes the assignment work in
+    # both directions --- a tensor will not go into an array made as numpy, and
+    # a numpy value will not go into a tensor.
+    # ``across`` too: it comes from the edge operator, which is a constant and
+    # so is numpy where the rest may be tensors, and it is assigned into the
+    # same array.
+    (values, whole, slopes, across, _) = im.promote(
+        values, whole, slopes, across, geom.coords)
+    like = whole
     # The result may be a tensor even when the data are arrays, because the
-    # *position* may be one: what is assigned into it is built from the
-    # weights, and a numpy result could not hold a tensor. It is promoted
-    # apart from ``like`` for that reason --- the numbers the element reads
-    # hold the data, which are arrays in this case, and promoting those too
-    # would refuse them.
-    res = _grid._zeros_for(im.promote(whole, slopes, weight)[0],
-                           channels + (index.shape[0],))
+    # *position* or the geometry's *coordinates* may be one: what is assigned
+    # into it is built from the weights and from the element's basis, and a
+    # numpy result could not hold a tensor. It is promoted apart from ``like``
+    # for that reason --- the numbers the element reads hold the data, which are
+    # arrays in this case, and promoting those too would refuse them.
+    res = _grid._zeros_for(
+        im.promote(whole, slopes, weight, geom.coords)[0],
+        channels + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
         triangle = coords[:, here]
@@ -1349,17 +1379,24 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
     weight = loc.weight
     (elements, back) = unique(index, return_inverse=True)
     (_, first) = unique(back, return_index=True)
-    # The values and the slopes promoted together decide the backend of both
-    # arrays built below, since the values are assigned into them.
-    like = im.promote(whole, slopes)[0]
+    # The values, the slopes and the geometry's *coordinates* promoted together
+    # decide the backend of the arrays built below, since all three are assigned
+    # into them: the values directly, and the slope along each edge from a
+    # gradient and a direction that belongs to the geometry. Promoting them
+    # together rather than the array alone is what makes the assignment work in
+    # both directions --- a tensor will not go into an array made as numpy, and
+    # a numpy value will not go into a tensor.
+    (values, whole, slopes, _) = im.promote(values, whole, slopes, geom.coords)
+    like = whole
     # The result may be a tensor even when the data are arrays, because the
-    # *position* may be one: what is assigned into it is built from the
-    # weights, and a numpy result could not hold a tensor. It is promoted
-    # apart from ``like`` for that reason --- the numbers the element reads
-    # hold the data, which are arrays in this case, and promoting those too
-    # would refuse them.
-    res = _grid._zeros_for(im.promote(whole, slopes, weight)[0],
-                           channels + (index.shape[0],))
+    # *position* or the geometry's *coordinates* may be one: what is assigned
+    # into it is built from the weights and from the element's basis, and a
+    # numpy result could not hold a tensor. It is promoted apart from ``like``
+    # for that reason --- the numbers the element reads hold the data, which are
+    # arrays in this case, and promoting those too would refuse them.
+    res = _grid._zeros_for(
+        im.promote(whole, slopes, weight, geom.coords)[0],
+        channels + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
         # The triangle's shape enters the element in exactly one place --- the
