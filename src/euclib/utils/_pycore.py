@@ -26,7 +26,7 @@ from numpy import (
 from itertools import combinations
 from math import atan2
 
-from immlib import is_numeric, math as imath
+from immlib import is_numeric, math as imath, quant
 
 from .._init import checktorch
 
@@ -617,10 +617,18 @@ def _face_projection(corners, query, /):
         # it still needs the distance computed below, since a corner is the
         # nearest point of its face for many positions and the sub-faces are
         # compared by that distance.
-        weight = ones((1, m, q))
+        # Following the corners' backend, like the branch below it: this is the
+        # weights of a face with one corner, and a caller that asked about
+        # tensor coordinates should get the weights in that backend either way.
+        weight = quant(corners).new_ones((1, m, q))
     else:
-        edges = im.permute(corners[:, 1:], (2, 0, 1)) - origin  # (M, D, S-1)
-        rel = im.permute(query.T[None, :, :], (0, 2, 1)) - origin   # (M, D, Q)
+        # Through immlib's subtraction, and not the operator: the operands may
+        # be a numpy array against a quantity, which reaches the *reflected*
+        # operator and raises `subtract() received an invalid combination`
+        # rather than computing. Every one of these four lines meets a tensor
+        # somewhere --- the corners, the query, or both.
+        edges = im.subtract(im.permute(corners[:, 1:], (2, 0, 1)), origin)
+        rel = im.subtract(im.permute(query.T[None, :, :], (0, 2, 1)), origin)
         et = im.permute(edges, (0, 2, 1))                   # (M, S-1, D)
         rest = im.matmul(im.pinv(im.matmul(et, edges)),
                          im.matmul(et, rel))                # (M, S-1, Q)
@@ -629,7 +637,7 @@ def _face_projection(corners, query, /):
             [last[None, :, :], im.permute(rest, (1, 0, 2))], axis=0)  # (S, M, Q)
     near = im.sum(im.multiply(corners[:, :, :, None],
                               weight[None, :, :, :]), axis=1)
-    diff = query[:, None, :] - near
+    diff = im.subtract(query[:, None, :], near)
     d2 = im.sum(im.multiply(diff, diff), axis=0)
     # A projection onto a face is only meaningful within it: outside, the
     # nearest point of the face is on one of its edges or corners, which the

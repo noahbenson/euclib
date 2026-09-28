@@ -41,6 +41,7 @@ from __future__ import annotations
 from math import factorial
 
 import immlib.math as im
+from immlib import to_array
 from numpy import (
     argmin, array, asarray, einsum, eye, linalg, ones, stack,
     zeros)
@@ -711,6 +712,16 @@ def edge_operator(coords, indices, /):
         looking the edges up again.
     """
     from scipy.sparse import block_diag, csr_matrix, vstack
+    # Detached, and it must be: this is a *constant*, the same for every
+    # property and every mesh of this shape, which is why it is built once into
+    # ``interp_data`` and applied as one sparse product. A SciPy matrix cannot
+    # hold a tensor's graph --- and the entries are cast to floats below, which
+    # a tensor requiring a gradient refuses --- so the coordinates arrive here
+    # as coordinates alone. What that costs is the *edge estimate's* own
+    # derivative with respect to where the mesh's corners are; the estimate's
+    # derivative with respect to the values is untouched, flowing through the
+    # values rather than through the operator.
+    coords = to_array(coords, detach=True)
     (dim, count) = (coords.shape[0], coords.shape[1])
     triangles = indices.shape[1]
     corners_of = [[int(x) for x in indices[:, t]] for t in range(triangles)]

@@ -1089,7 +1089,12 @@ def points(coords, vertices=None, properties=None, metadata=None):
     >>> cloud.coord_count
     2
     '''
-    coords = asarray(as_coords(coords))
+    # `as_coords` and not `asarray` around it: the former leaves an
+    # array-like alone and converts anything else, which is what is
+    # wanted --- the outer `asarray` converted a *tensor* too, and
+    # `numpy.asarray` on one that requires a gradient raises rather than
+    # sharing its memory, so a geometry could not be built on one.
+    coords = as_coords(coords)
     count = coords.shape[1]
     if vertices is None:
         vertices = arange(count)
@@ -1128,7 +1133,12 @@ def segpath(coords, vertices=None, properties=None, metadata=None):
     >>> path.topo.simplex_count[1]
     2
     '''
-    coords = asarray(as_coords(coords))
+    # `as_coords` and not `asarray` around it: the former leaves an
+    # array-like alone and converts anything else, which is what is
+    # wanted --- the outer `asarray` converted a *tensor* too, and
+    # `numpy.asarray` on one that requires a gradient raises rather than
+    # sharing its memory, so a geometry could not be built on one.
+    coords = as_coords(coords)
     count = coords.shape[1]
     if vertices is None:
         vertices = arange(count)
@@ -1159,7 +1169,12 @@ def trimesh(coords, corners, properties=None, metadata=None):
     TriMesh
         The mesh.
     '''
-    coords = asarray(as_coords(coords))
+    # `as_coords` and not `asarray` around it: the former leaves an
+    # array-like alone and converts anything else, which is what is
+    # wanted --- the outer `asarray` converted a *tensor* too, and
+    # `numpy.asarray` on one that requires a gradient raises rather than
+    # sharing its memory, so a geometry could not be built on one.
+    coords = as_coords(coords)
     return TriMesh(coords,
                    TriTopology(corners, coord_count=coords.shape[1]),
                    properties=properties, metadata=metadata)
@@ -1187,7 +1202,12 @@ def tetmesh(coords, corners, properties=None, metadata=None):
     TetMesh
         The mesh.
     '''
-    coords = asarray(as_coords(coords))
+    # `as_coords` and not `asarray` around it: the former leaves an
+    # array-like alone and converts anything else, which is what is
+    # wanted --- the outer `asarray` converted a *tensor* too, and
+    # `numpy.asarray` on one that requires a gradient raises rather than
+    # sharing its memory, so a geometry could not be built on one.
+    coords = as_coords(coords)
     return TetMesh(coords,
                    TetTopology(corners, coord_count=coords.shape[1]),
                    properties=properties, metadata=metadata)
@@ -1213,7 +1233,7 @@ def prismmesh(coords, corners, properties=None, metadata=None):
     PrismMesh
         The mesh.
     '''
-    coords = asarray(coords)
+    coords = as_coords(coords)
     return PrismMesh(coords,
                      PrismTopology(corners, coord_count=coords.shape[2]),
                      properties=properties, metadata=metadata)

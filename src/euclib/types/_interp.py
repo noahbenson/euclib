@@ -53,6 +53,7 @@ from numpy import (
 # (which is numpy's and stays numpy's) and immlib's for the interpolation's,
 # and the two must not be confused.
 import immlib.math as im
+from immlib import to_array
 
 from ..abc import SimplexGeometry, as_coords, is_loc, supported_interp
 from ..abc._property import (
@@ -308,6 +309,25 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
             fitted = gradient
         elif prop.gradient is not None:
             fitted = prop.gradient
+        elif getattr(geom.coords, 'requires_grad', False):
+            # Refused rather than answered, because the answer would be wrong
+            # in a way nothing would report. The estimate is one sparse matrix
+            # applied to the values, and that matrix is a *constant* --- a
+            # function of the mesh, cached per mesh, and cast to floats --- so
+            # it cannot carry a graph. An estimate therefore contributes no
+            # derivative with respect to where the mesh's corners are, and a
+            # fit built on one would come back with a gradient that is missing
+            # a term rather than absent: checked against a central difference,
+            # order 1 is right to 8e-10 and an estimate-fed order 3 is out by
+            # 0.32. A caller who wants the coordinates' derivative has to
+            # supply the gradient, which is the path that measures 1e-9.
+            raise ValueError(
+                "this geometry's coordinates are a tensor, so they carry a "
+                "derivative; but this fit needs a gradient the property does"
+                " not have, and an *estimated* one is built from an operator"
+                " that cannot carry one. Supply the gradient --- as the"
+                " property's, or as `gradient=` --- to interpolate at order"
+                f" {order} over tensor coordinates")
         else:
             fitted = estimate_gradient(geom, prop, order)
     (loc, outside) = to_loc(geom, at)
@@ -737,11 +757,16 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
     # carried: a scalar property's gradient is (D, N) and a channelled one's is
     # (C..., D, N), and the corner axis is the last either way.
     at = gradient[..., :, corners]                             # (C..., D, 3, Q)
-    # The control values are held in the backend of the values and the gradient
-    # promoted together: the values are assigned into this array, and a tensor
-    # cannot be assigned into one made as numpy.
-    control = _grid._zeros_for(im.promote(values, gradient)[0],
-                               (len(powers),) + tuple(values.shape[:-2]) + (q,))
+    # The control values are held in the backend of the values, the gradient and
+    # the coordinates promoted together. All three reach this array: the corners
+    # and the edge fits from the values and the gradient, and the step each edge
+    # fit is taken along from the corners. And the promotion has to happen to
+    # *all three* rather than to the array alone, because the assignment refuses
+    # in both directions --- a tensor will not go into an array made as numpy,
+    # and a numpy value will not go into a tensor.
+    (values, gradient, _) = im.promote(values, gradient, geom.coords)
+    control = _grid._zeros_for(
+        values, (len(powers),) + tuple(values.shape[:-2]) + (q,))
     # The corners hold their own values.
     for c in range(3):
         corner = tuple(order if i == c else 0 for i in range(3))
@@ -879,11 +904,16 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
     # carried: a scalar property's gradient is (D, N) and a channelled one's is
     # (C..., D, N), and the corner axis is the last either way.
     at = gradient[..., :, corners]                             # (C..., D, 4, Q)
-    # The control values are held in the backend of the values and the gradient
-    # promoted together: the values are assigned into this array, and a tensor
-    # cannot be assigned into one made as numpy.
-    control = _grid._zeros_for(im.promote(values, gradient)[0],
-                               (len(powers),) + tuple(values.shape[:-2]) + (q,))
+    # The control values are held in the backend of the values, the gradient and
+    # the coordinates promoted together. All three reach this array: the corners
+    # and the edge fits from the values and the gradient, and the step each edge
+    # fit is taken along from the corners. And the promotion has to happen to
+    # *all three* rather than to the array alone, because the assignment refuses
+    # in both directions --- a tensor will not go into an array made as numpy,
+    # and a numpy value will not go into a tensor.
+    (values, gradient, _) = im.promote(values, gradient, geom.coords)
+    control = _grid._zeros_for(
+        values, (len(powers),) + tuple(values.shape[:-2]) + (q,))
     # The corners hold their own values.
     for c in range(4):
         corner = tuple(order if i == c else 0 for i in range(4))
@@ -1809,6 +1839,16 @@ def _gradient_operator(coords, edges, order, /):
     decided; this only collects the blocks it yields.
     '''
     from scipy.sparse import coo_matrix
+    # Detached, and it must be: the operator is a *constant* --- it encodes
+    # which stencil each coordinate settles on and what the fit over it is, so
+    # it is the same for every property and every call, which is the whole
+    # reason it is cached per mesh. A SciPy matrix cannot hold a graph, and the
+    # entries are cast to floats below, which a tensor requiring a gradient
+    # refuses. What that costs is the *estimated* gradient's own derivative with
+    # respect to the coordinates; the estimate's derivative with respect to the
+    # values is untouched, since that flows through the values and not through
+    # the operator.
+    coords = to_array(coords, detach=True)
     (dim, count) = (coords.shape[0], coords.shape[1])
     rows = []
     columns = []
