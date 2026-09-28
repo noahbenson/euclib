@@ -38,7 +38,16 @@ jobs:
           python-version: '3.11'
           cache: pip # Implicitly uses requirements.txt for cache key
       - name: Install euclib and Dependencies
-        run: pip install -e .[docs]
+        run: |
+          pip install -e .[docs]
+          # The example pages name `euclib` as their kernel, which exists on a
+          # developer's machine because they registered it once and not because
+          # anything installs it. Without this the build stops at
+          # "The 'euclib' kernel is not available", the first page it tries to
+          # execute. Registering it against the interpreter euclib was just
+          # installed into is what makes the name mean the same thing here.
+          python -m ipykernel install --user --name euclib \
+            --display-name "Python (euclib)"
       # Build the book. The API-reference pages are generated from the
       # docstrings first, then the Jupyter Book 2 (mystmd) site is built from
       # within the project directory (which is where its myst.yml lives). The
