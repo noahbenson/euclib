@@ -298,23 +298,6 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     # property's, and a property that carries none has one estimated from the
     # values around the geometry.
     fitted = None
-    if getattr(geom.coords, 'requires_grad', False) and method == 'clough-tocher':
-        # Refused, for the same reason the estimate is refused below: part of
-        # the answer is built from an operator that is a *constant*.
-        #
-        # Clough-Tocher's twelfth number is per *edge* and is estimated from the
-        # triangles sharing it, through one sparse operator over the whole mesh
-        # --- ``interp_data['edge_data']``, a scipy matrix built once per mesh
-        # and cast to floats, so it cannot carry a graph. That estimate is a
-        # function of where the corners are, so leaving it out drops a real
-        # term: measured against a central difference, Clough-Tocher over tensor
-        # coordinates is out by **0.19** where every method that has all its
-        # terms agrees to 1e-9.
-        raise ValueError(
-            f"the interpolation {method!r} is not available over tensor"
-            " coordinates: part of this element's construction is a constant"
-            " operator over the mesh, which cannot carry the coordinates'"
-            " derivative, and answering anyway would lose that term silently")
     # A grid has no `order` and needs no gradient: every method it supports is
     # a generalised *value*, so the estimate is not merely unused but
     # meaningless there.
@@ -1258,7 +1241,15 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
             "the Clough-Tocher fit needs the property's values at every"
             " coordinate, as `whole`; it reads the mesh's edges, which a"
             " triangle's own corners do not determine")
-    (operator, edges, rows_of) = geom.interp_data['edge_data']
+    # Which of the two the datum comes from is a question about the
+    # *coordinates*: a scipy operator holds no graph, so a tensor's datum is
+    # built from them on the call instead. See `edge_mean` in `_geom.py` for why
+    # it cannot simply be cached with one.
+    tensor_coords = getattr(geom.coords, 'requires_grad', False)
+    if tensor_coords:
+        (mean, edges, rows_of) = geom.interp_data['edge_mean']
+    else:
+        (operator, edges, rows_of) = geom.interp_data['edge_data']
     # The values and the slopes are handed back and combined through immlib: the
     # edge derivative is a fixed operator over the whole mesh, and its product
     # with the values is the one place a tensor has to reach a sparse matrix.
@@ -1266,7 +1257,10 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
         [im.reshape(whole, (width, coords.shape[1])),
          im.reshape(slopes, (width, dim * coords.shape[1]))], axis=-1),
         (width, coords.shape[1] + dim * coords.shape[1]))
-    across = _operator_product(operator, stacked, width)   # (C, E)
+    across = (_ct.edge_data_many(coords, asarray(geom.topo.indices),
+                                 mean, stacked)                # (C, E)
+              if tensor_coords else
+              _operator_product(operator, stacked, width))
     indices = asarray(geom.topo.indices)
     index = asarray(loc.index)
     weight = loc.weight
@@ -1300,7 +1294,11 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
     # elements spent two and a half minutes in this. The batched build is the
     # same rows for the whole mesh at once --- see `_ct.basis_many`, which a test
     # holds to `_ct.basis` triangle by triangle.
-    bases = _ct.basis_many(coords[:, indices[:, elements]].transpose(2, 0, 1))
+    # Through immlib's permutation: `Tensor.transpose` takes two axes where
+    # numpy's takes a permutation, so the numpy spelling is a trap on a
+    # tensor's coordinates --- which is exactly the case this is for.
+    bases = _ct.basis_many(
+        im.mag(im.permute(coords[:, indices[:, elements]], (2, 0, 1))))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
         # The twelve numbers, in the order the element's rows are built: a

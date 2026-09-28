@@ -460,10 +460,11 @@ class TestInterpData(TestCase):
     '''
 
     #: What a triangle mesh's own interpolation data is: the adjacency every
-    #: estimate reads, one gradient operator per order, and the operator for the
-    #: Clough-Tocher element's per-edge number. None of it is named after a
-    #: property, because none of it depends on one.
-    KEYS = ['neighbours', 'gradient_2', 'gradient_3', 'edge_data']
+    #: estimate reads, one gradient operator per order, and the Clough-Tocher
+    #: element's per-edge number --- both the operator that gives it and, for a
+    #: tensor's coordinates, the averaging it is built from on each call. None
+    #: of it is named after a property, because none of it depends on one.
+    KEYS = ['neighbours', 'gradient_2', 'gradient_3', 'edge_data', 'edge_mean']
 
     def test_it_holds_the_geometrys_data_and_nothing_else(self):
         self.assertEqual(sorted(_mesh().interp_data.keys()), sorted(self.KEYS))

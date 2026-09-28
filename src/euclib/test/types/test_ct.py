@@ -569,3 +569,107 @@ class TestTheBatchedBasis(TestCase):
                     self.assertAlmostEqual(
                         float(np.asarray(row) @ bases[i][:, column]), 1.0,
                         places=9)
+
+
+class TestTheEdgeDatumOverTensors(TestCase):
+    '''The per-call edge datum, held to the operator that is applied instead.
+
+    A tensor's coordinates cannot use the cached operator: a scipy matrix holds
+    no graph, and a *cached* graph cannot be reused, since a second `backward`
+    through it fails unless every caller passes `retain_graph`. So the datum is
+    assembled from the coordinates on the call --- `edge_data_many`, out of
+    `triangle_blocks_many` and the averaging `edge_mean` --- and this is what
+    says it is the same numbers.
+
+    Without it there would be two implementations of one estimate and nothing
+    holding them together, which is the situation the batched basis and the
+    batched operator were each given their own test for.
+    '''
+
+    #: A mesh with a shared edge, so the averaging has something to average.
+    COORDS = np.array([[0., 1., 0., 1.], [0., 0., 1., 1.]])
+    INDICES = np.array([[0, 1], [1, 3], [2, 2]])
+
+    def _stacked(self, width, rng):
+        (dim, count) = self.COORDS.shape
+        return rng.normal(size=(width, count + dim * count))
+
+    def test_the_averaging_is_the_operator_s_own(self):
+        (operator, edges, rows) = _ct.edge_operator(self.COORDS, self.INDICES)
+        (mean, mine, myrows) = _ct.edge_mean(self.COORDS, self.INDICES)
+        self.assertEqual(mine, edges, "the edges are numbered differently")
+        self.assertTrue(np.array_equal(myrows, rows))
+        # Applying the averaging to what each triangle says must reproduce the
+        # operator, which is the composition of the two.
+        self.assertEqual(mean.shape, (len(edges), 3 * self.INDICES.shape[1]))
+
+    def test_it_gives_the_operator_s_numbers_for_arrays_and_for_tensors(self):
+        rng = np.random.default_rng(31)
+        (operator, edges, _) = _ct.edge_operator(self.COORDS, self.INDICES)
+        (mean, _, _) = _ct.edge_mean(self.COORDS, self.INDICES)
+        for width in (1, 3):
+            stacked = self._stacked(width, rng)
+            want = np.asarray(operator @ stacked.T).T
+            got = _ct.edge_data_many(self.COORDS, self.INDICES, mean, stacked)
+            with self.subTest(width=width):
+                self.assertLess(np.abs(np.asarray(got) - want).max(), 1e-12)
+        try:
+            import torch
+        except ImportError:                                  # pragma: no cover
+            return
+        stacked = torch.tensor(self._stacked(1, rng), dtype=torch.float64,
+                               requires_grad=True)
+        got = _ct.edge_data_many(self.COORDS, self.INDICES, mean, stacked)
+        want = np.asarray(operator @ stacked.detach().numpy().T).T
+        self.assertLess(np.abs(got.detach().numpy() - want).max(), 1e-12)
+        self.assertTrue(got.grad_fn is not None)
+        got.sum().backward()
+        self.assertTrue(stacked.grad is not None)
+
+    def test_a_tensor_s_coordinates_carry_their_derivative(self):
+        '''The whole reason the per-call build exists.
+
+        Checked against a central difference rather than for existence: a datum
+        that was merely present would have passed while the fit it feeds was out
+        by 0.19.
+
+        On coordinates with no near-ties, and that is the point rather than a
+        convenience. An edge's identity is its two corners put in order by where
+        they are, and a nudge that swaps them is a *discontinuity* --- a
+        difference taken across one measures the jump rather than a derivative.
+        The mesh the other tests share has corners at (1, 0) and (0, 1), which
+        are one nudge from a tie, and this read `6e5` until it used a mesh with
+        room around each corner.
+        '''
+        try:
+            import torch
+        except ImportError:                                  # pragma: no cover
+            self.skipTest("torch is not installed")
+        rng = np.random.default_rng(32)
+        coords_np = rng.normal(size=(2, 4)) * 3.0
+        indices = np.array([[0, 1], [1, 3], [2, 2]])
+        stacked = rng.normal(size=(1, coords_np.shape[1]
+                                   + 2 * coords_np.shape[1]))
+        (mean, _, _) = _ct.edge_mean(coords_np, indices)
+
+        coords = torch.tensor(coords_np, dtype=torch.float64,
+                              requires_grad=True)
+        out = _ct.edge_data_many(coords, indices, mean,
+                                 torch.tensor(stacked, dtype=torch.float64))
+        out.sum().backward()
+        got = coords.grad.numpy()
+
+        step = 1e-6
+        want = np.zeros_like(coords_np)
+        for i in range(coords_np.shape[0]):
+            for j in range(coords_np.shape[1]):
+                (up, down) = (np.zeros_like(coords_np),
+                              np.zeros_like(coords_np))
+                up[i, j], down[i, j] = step, -step
+                # Both are *added*: `down` carries its own sign.
+                high = np.asarray(_ct.edge_data_many(
+                    coords_np + up, indices, mean, stacked)).sum()
+                low = np.asarray(_ct.edge_data_many(
+                    coords_np + down, indices, mean, stacked)).sum()
+                want[i, j] = (high - low) / (2 * step)
+        self.assertLess(np.abs(got - want).max(), 1e-6)

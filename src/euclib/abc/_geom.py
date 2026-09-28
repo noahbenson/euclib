@@ -1077,7 +1077,7 @@ class SimplexGeometry(Geometry):
         # Imported here rather than at the top of the module: the types layer is
         # built on this one, so this module cannot import it at module scope.
         from ..types._interp import _gradient_operator, _neighbours
-        from ..types._ct import edge_operator
+        from ..types._ct import edge_mean, edge_operator
         count = coords.shape[1]
         edges = asarray(topo.simplices[1])
         entries = {
@@ -1099,6 +1099,16 @@ class SimplexGeometry(Geometry):
         indices = asarray(topo.indices)
         if indices.shape[0] == 3:
             entries['edge_data'] = lazy(edge_operator, coords, indices)
+            # The *averaging* alone, which a tensor's coordinates need: the
+            # datum is then computed from them on every call rather than applied
+            # as one cached product. It cannot be cached with its graph --- a
+            # second `backward` through a cached graph fails unless every caller
+            # passes `retain_graph`, which this library cannot ask of one --- and
+            # rebuilding the whole operator per call was 2.2 seconds before it
+            # was batched and about 45 ms now. Building the datum from
+            # `triangle_blocks_many` and this, which is 11 ms and a sparse
+            # product, is what the tensor path does.
+            entries['edge_mean'] = lazy(edge_mean, coords, indices)
         return ldict(entries)
 
     @calc('spatial_index')

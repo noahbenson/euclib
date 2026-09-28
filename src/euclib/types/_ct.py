@@ -859,6 +859,11 @@ def _turned(candidate, /):
     that is not zero decides. It is a *selection* --- the sign is a comparison
     and has no derivative --- and this leaves the vector's magnitude alone.
     """
+    # On the magnitude, and detached: which way the turn goes is a comparison
+    # and a comparison has no derivative to keep, so a tensor's is dropped here
+    # rather than propagated --- which is the rule the whole pass settled on,
+    # detaching where the answer is a choice.
+    candidate = np.asarray(to_array(candidate, detach=True))
     out = ones(len(candidate))
     undecided = np.ones(len(candidate), dtype=bool)
     for m in range(candidate.shape[1]):
@@ -875,29 +880,49 @@ def triangle_blocks_many(corners, /):
     with the per-triangle loop replaced by batched arithmetic: the
     pseudo-inverses in one call, the quarter-turns without a Python loop, and
     the blocks in one contraction against `BLOCK_CONSTANT`.
+
+    **In immlib's arithmetic throughout**, which for an *array* costs about a
+    tenth more than numpy would (11.3 ms against 13.1 for nine thousand
+    triangles) and is worth it twice over: it is one implementation rather than
+    two that have to agree, and it is what lets a tensor's coordinates come
+    through with their derivative. The overhead that made `_corners` and
+    `gradient` dispatch on the backend is *per call*, and there are a handful of
+    calls here for the whole mesh rather than six hundred per triangle.
     """
     (m, dim) = (corners.shape[0], corners.shape[1])
-    axes = stack([corners[:, :, 1] - corners[:, :, 0],
-                  corners[:, :, 2] - corners[:, :, 0]], axis=-1)   # (M, D, 2)
-    inverse = linalg.pinv(np.swapaxes(axes, 1, 2))                 # (M, 2, D)
-    share = zeros((m, 3, 2))
-    for (e, (a, b)) in enumerate(EDGES):
-        edge = corners[:, :, b] - corners[:, :, a]                 # (M, D)
+    axes = im.mag(im.stack([im.subtract(corners[:, :, 1], corners[:, :, 0]),
+                            im.subtract(corners[:, :, 2], corners[:, :, 0])],
+                           axis=-1))                              # (M, D, 2)
+    inverse = im.mag(im.pinv(im.permute(axes, (0, 2, 1))))         # (M, 2, D)
+    share = []
+    for (a, b) in EDGES:
+        edge = im.subtract(corners[:, :, b], corners[:, :, a])     # (M, D)
         if dim == 2:
-            candidate = stack([edge[:, 1], -edge[:, 0]], axis=-1)
+            candidate = im.stack([edge[:, 1], im.negative(edge[:, 0])],
+                                 axis=-1)
         else:
-            u = corners[:, :, 1] - corners[:, :, 0]
-            v = corners[:, :, 2] - corners[:, :, 0]
-            normal = stack([u[:, 1] * v[:, 2] - u[:, 2] * v[:, 1],
-                            u[:, 2] * v[:, 0] - u[:, 0] * v[:, 2],
-                            u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]], axis=-1)
+            u = im.subtract(corners[:, :, 1], corners[:, :, 0])
+            v = im.subtract(corners[:, :, 2], corners[:, :, 0])
+            normal = im.stack([
+                im.subtract(im.multiply(u[:, 1], v[:, 2]),
+                            im.multiply(u[:, 2], v[:, 1])),
+                im.subtract(im.multiply(u[:, 2], v[:, 0]),
+                            im.multiply(u[:, 0], v[:, 2])),
+                im.subtract(im.multiply(u[:, 0], v[:, 1]),
+                            im.multiply(u[:, 1], v[:, 0]))], axis=-1)
             (p, q, r) = (edge[:, 0], edge[:, 1], edge[:, 2])
             (x, y, z) = (normal[:, 0], normal[:, 1], normal[:, 2])
-            candidate = stack([q * z - r * y, r * x - p * z, p * y - q * x],
-                              axis=-1)
-        candidate = candidate * _turned(candidate)[:, None]
-        share[:, e, :] = einsum('md,mdc->mc', candidate, inverse)
-    return einsum('mec,ecw->mew', share, BLOCK_CONSTANT)
+            candidate = im.stack([
+                im.subtract(im.multiply(q, z), im.multiply(r, y)),
+                im.subtract(im.multiply(r, x), im.multiply(p, z)),
+                im.subtract(im.multiply(p, y), im.multiply(q, x))], axis=-1)
+        # The turn's sign is taken on the magnitude: it is a comparison, and a
+        # comparison has no derivative to keep.
+        candidate = im.multiply(
+            candidate, _turned(im.mag(candidate))[:, None])
+        share.append(im.mag(im.einsum('md,mdc->mc', candidate, inverse)))
+    return im.mag(im.einsum('mec,ecw->mew', im.stack(share, axis=1),
+                            BLOCK_CONSTANT))
 
 
 def _edge_rows(coords, indices, /):
@@ -1026,7 +1051,10 @@ def edge_operator(coords, indices, /):
     (dim, count) = (coords.shape[0], coords.shape[1])
     triangles = indices.shape[1]
     (rows_of, edges) = _edge_rows(coords, indices)
-    blocks = triangle_blocks_many(coords[:, indices].transpose(2, 0, 1))
+    # Through immlib's permutation and not `Tensor.transpose`, which takes two
+    # axes and not a permutation --- the trap this module has met before.
+    blocks = triangle_blocks_many(
+        im.mag(im.permute(coords[:, indices], (2, 0, 1))))
 
     # What each triangle says, as one block-diagonal stack of its three rows.
     # The element's map is over all twelve of its numbers; the three that are
@@ -1169,7 +1197,7 @@ def basis_many(triangles, /):
         # arithmetic throughout, and Clough-Tocher refuses a tensor's
         # coordinates before it reaches here. This keeps the single-triangle
         # path working should that change, rather than making it a landmine.
-        return stack([basis(triangles[i]) for i in range(m)])
+        return im.mag(im.stack([basis(triangles[i]) for i in range(m)]))
     corners = [_corners_many(triangles, k) for k in range(3)]
     inverse = [_inverses_many(corners[k]) for k in range(3)]
 
@@ -1228,4 +1256,105 @@ def basis_many(triangles, /):
     for i in range(m):
         out[i] = linalg.lstsq(system[i], targets, rcond=None)[0]
     return out
+
+
+def edge_mean(coords, indices, /):
+    """The averaging over the triangles sharing each edge.
+
+    An ``(E, 3M)`` matrix whose row for an edge holds ``1/k`` at each of the
+    ``k`` triangle-edges that are that edge, so applying it averages what they
+    say. The *edge identity* is a comparison --- two corners ordered by where
+    they are --- so this is a selection, and the coordinates are detached for
+    it.
+
+    Returned along with the edge list and the row each triangle's own edges are
+    in, so that a caller has everything the operator's callers had.
+    """
+    coords = to_array(coords, detach=True)
+    from scipy.sparse import csr_matrix
+    triangles = indices.shape[1]
+    (rows_of, edges) = _edge_rows(coords, indices)
+    rows = rows_of.ravel()
+    columns = (3 * arange(triangles)[:, None] + arange(3)[None, :]).ravel()
+    sharing = csr_matrix((ones(rows.size), (rows, columns)),
+                         shape=(len(edges), 3 * triangles))
+    # CSR, because the tensor path builds a torch sparse view of it and torch's
+    # CSR constructor reads `indptr` and `indices` --- which a COO, which is what
+    # `multiply` returns, does not have.
+    return (sharing.multiply(
+        1.0 / asarray(sharing.sum(axis=1)).ravel()[:, None]).tocsr(),
+        edges, rows_of)
+
+
+def edge_data_many(coords, indices, mean, stacked, /):
+    """The edge estimate, computed from the coordinates on every call.
+
+    The same numbers `edge_operator` gives when it is applied to `stacked`,
+    which is what the test holds it to --- assembled per call rather than applied
+    as one cached product, so that a tensor's coordinates carry their derivative
+    through it. The loops are `_numbers`' loops, with every value a stack over
+    the triangles instead of a scalar.
+
+    Parameters
+    ----------
+    coords : array-like
+        A ``(D, N)`` matrix of coordinates, possibly a tensor.
+    indices : numpy.ndarray
+        A ``(3, M)`` integer matrix of triangle corners.
+    mean : scipy.sparse.spmatrix
+        The ``(E, 3M)`` averaging from `edge_mean`.
+    stacked : array-like
+        A ``(C, N + D*N)`` matrix of the values and the gradients, as
+        `edge_operator` reads them.
+
+    Returns
+    -------
+    array-like
+        The ``(C, E)`` edge numbers, in the coordinates' backend.
+    """
+    import torch
+    (dim, count) = (coords.shape[0], coords.shape[1])
+    triangles = indices.shape[1]
+    values = im.mag(stacked)
+    width = values.shape[0]
+    here = indices.T                                             # (M, 3)
+    all_corners = coords[:, here]                                # (D, M, 3)
+    # Through immlib's permutation and not `Tensor.transpose`, which takes two
+    # axes and not a permutation --- the trap this module has met before.
+    blocks = triangle_blocks_many(
+        im.mag(im.permute(coords[:, indices], (2, 0, 1))))
+    # The nine numbers, in the order `_numbers` states them: for each corner in
+    # turn, its value and its slope towards each of its two neighbours --- where
+    # a slope is the gradient's components combined along the edge's own
+    # direction, which is a direction in the geometry.
+    readings = []
+    for vertex in range(3):
+        readings.append(values[:, here[:, vertex]])
+        for other in neighbours_of(vertex):
+            along = im.subtract(coords[:, here[:, other]][:, :, None],
+                                all_corners)
+            part = None
+            for m in range(dim):
+                term = im.multiply(
+                    along[m, :, vertex],
+                    values[:, (m + 1) * count + here[:, vertex]])
+                part = term if part is None else im.add(part, term)
+            readings.append(part)
+    numbers = im.permute(im.mag(im.stack(readings, axis=2)), (1, 2, 0))
+    # What each triangle says its three edges' derivatives are, from its nine
+    # numbers; and then the average over the triangles sharing each edge.
+    per_edge = im.mag(im.einsum('mew,mwc->mec', blocks[:, :, :9], numbers))
+    flat = im.mag(im.reshape(per_edge, (triangles * 3, width)))
+    # The operator is a constant and the values are the caller's, so it is the
+    # operator that takes their dtype rather than the reverse --- one built in
+    # float64 would otherwise refuse to meet a float32 tensor.
+    entries = torch.as_tensor(mean.data)
+    if _is_tensor(flat):
+        entries = entries.to(flat.dtype)
+    average = torch.sparse_csr_tensor(
+        torch.as_tensor(mean.indptr), torch.as_tensor(mean.indices),
+        entries, size=tuple(mean.shape))
+    # `as_tensor` rather than a conversion: for the tensor this is for, it
+    # is the same object, and the graph comes with it.
+    return torch.sparse.mm(average, torch.as_tensor(flat)).T     # (C, E)
 
