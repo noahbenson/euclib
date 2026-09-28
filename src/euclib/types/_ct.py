@@ -43,10 +43,14 @@ from math import factorial
 import immlib.math as im
 from immlib import quant, to_array
 from numpy import (
-    argmin, array, arange, asarray, concatenate, einsum, empty, eye,
-    linalg, ones, stack, where, zeros)
+    argmin, array, arange, asarray, broadcast_to, concatenate, einsum,
+    empty, eye, linalg, ones, pad, stack, where, zeros)
 
 import numpy as np
+
+#: How many points along an edge the C1 conditions are sampled at. Named so
+#: that the single-triangle construction and the batched one agree on it.
+_C1_SAMPLES = 5
 
 #: The reference triangle: the corners the element is derived on.
 REFERENCE = array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
@@ -327,7 +331,7 @@ def _weights_on_edge(k, vertex, s, /):
     return w
 
 
-def _c1(triangle, samples=5, /):
+def _c1(triangle, samples=_C1_SAMPLES, /):
     """The pieces' gradients agreeing along the edges they share.
 
     The gradient is a function along an edge, so sampling it at a few points
@@ -1050,3 +1054,178 @@ def edge_operator(coords, indices, /):
     mean = sharing.multiply(
         1.0 / asarray(sharing.sum(axis=1)).ravel()[:, None])
     return ((mean @ says @ numbers).tocsr(), edges, rows_of)
+
+
+def _wanted_coefficients(weight, /):
+    """`directional` for each of the ten unit controls, both axes: (10, 2).
+
+    Triangle-free --- it takes only the controls and the weights --- which is
+    what makes the whole of a gradient's triangle-dependence the pseudo-inverse
+    it is multiplied by.
+    """
+    out = zeros((10, 2))
+    for n in range(10):
+        controls = zeros(10)
+        controls[n] = 1.0
+        out[n, 0] = directional(controls, weight, 1)
+        out[n, 1] = directional(controls, weight, 2)
+    return out
+
+
+def _corners_many(triangles, k, /):
+    """`_corners` for a stack: the ``(M, D, 3)`` corners of sub-triangle ``k``."""
+    (a, b) = EDGES[k]
+    return stack([triangles[:, :, a], triangles[:, :, b],
+                  triangles.mean(axis=2)], axis=-1)
+
+
+def _inverses_many(corners, /):
+    """The pseudo-inverse of each piece's along-matrix: ``(M, D, 2)``."""
+    along = stack([corners[:, :, 1] - corners[:, :, 0],
+                   corners[:, :, 2] - corners[:, :, 0]], axis=-2)
+    return linalg.pinv(along)
+
+
+def _gradients_many(inverse, weight, /):
+    """Every unit control's gradient at one weight: ``(10, M, D)``.
+
+    One contraction against the coefficient matrix, where the per-triangle
+    version called `gradient` once per control --- ten pseudo-inverses where
+    there was one per control already done above.
+    """
+    return einsum('mdc,nc->nmd', inverse, _wanted_coefficients(weight))
+
+
+def _placed_many(values, piece, /):
+    """``(10, M)`` values for one piece -> ``(M, 30)``, at its own offset."""
+    out = zeros((values.shape[1], 30))
+    out[:, piece * 10:(piece + 1) * 10] = values.T
+    return out
+
+
+def _across_many(triangles, /):
+    """`across_vector` for every triangle and every piece: ``(M, D, 3)``.
+
+    The quarter-turn is a *selection* --- which way it goes is decided by the
+    first component that is not zero, a comparison with no derivative --- and
+    stays one; its magnitude is the cross product, which batches.
+    """
+    (m, dim) = (triangles.shape[0], triangles.shape[1])
+    out = zeros((m, dim, 3))
+    for (k, (a, b)) in enumerate(EDGES):
+        # Which of the two corners comes first, by where they are --- the same
+        # ordering `across_vector` makes for one triangle, over the mesh at once.
+        (left, right) = (triangles[:, :, a], triangles[:, :, b])
+        swap = zeros(m, dtype=bool)
+        undecided = ones(m, dtype=bool)
+        for d in range(dim):
+            swap |= undecided & (right[:, d] < left[:, d])
+            undecided &= left[:, d] == right[:, d]
+        (i, j) = (where(swap, b, a), where(swap, a, b))
+        edge = triangles[arange(m), :, j] - triangles[arange(m), :, i]
+        if dim == 2:
+            candidate = stack([edge[:, 1], -edge[:, 0]], axis=-1)
+        else:
+            u = triangles[:, :, 1] - triangles[:, :, 0]
+            v = triangles[:, :, 2] - triangles[:, :, 0]
+            normal = stack([u[:, 1] * v[:, 2] - u[:, 2] * v[:, 1],
+                            u[:, 2] * v[:, 0] - u[:, 0] * v[:, 2],
+                            u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]], axis=-1)
+            (p, q, r) = (edge[:, 0], edge[:, 1], edge[:, 2])
+            (x, y, z) = (normal[:, 0], normal[:, 1], normal[:, 2])
+            candidate = stack([q * z - r * y, r * x - p * z, p * y - q * x],
+                              axis=-1)
+        sign = ones(m)
+        undecided = ones(m, dtype=bool)
+        for d in range(dim):
+            here = undecided & (candidate[:, d] != 0.0)
+            sign[here] = np.sign(candidate[here, d])
+            undecided &= ~here
+        out[:, :, k] = candidate * sign[:, None]
+    return out
+
+
+def basis_many(triangles, /):
+    """`basis` for a stack of triangles: ``(M, D, 3)`` -> ``(M, 30, 12)``.
+
+    The same answer `basis` gives one triangle at a time, which is what the test
+    holds it to, with the rows built for the whole mesh at once. The loops over
+    rows and controls are the ones `basis` has --- what changes is that each
+    iteration works on every triangle instead of on one.
+
+    **Why it is worth it.** Building a basis costs six hundred pseudo-inverses,
+    and a Clough-Tocher fit builds one per distinct element *on every call*. A
+    query touching five thousand elements spends two and a half minutes in this
+    today; batched it is under a second, and the measured ratio grows with the
+    mesh rather than shrinking.
+
+    The solve is left one triangle at a time: numpy's `lstsq` takes no stack,
+    and the assembly is the cost rather than the solve --- six hundred
+    pseudo-inverses against one (53, 30) solve.
+    """
+    m = triangles.shape[0]
+    if _is_tensor(triangles):
+        # One triangle at a time for a tensor: the batched build is numpy's
+        # arithmetic throughout, and Clough-Tocher refuses a tensor's
+        # coordinates before it reaches here. This keeps the single-triangle
+        # path working should that change, rather than making it a landmine.
+        return stack([basis(triangles[i]) for i in range(m)])
+    corners = [_corners_many(triangles, k) for k in range(3)]
+    inverse = [_inverses_many(corners[k]) for k in range(3)]
+
+    # The conditions that are *held*: the pieces sharing their controls, and
+    # their gradients agreeing along the edges they share. `_sharing` never
+    # reads the triangle, so its eleven rows are the same row broadcast.
+    rows = [broadcast_to(asarray(row)[None, :], (m, 30))
+            for row in _sharing(None)]
+    for vertex in range(3):
+        (k, other) = _holders(vertex)
+        for s in [i / (_C1_SAMPLES - 1) for i in range(_C1_SAMPLES)]:
+            for component in (0, 1):
+                parts = []
+                for (piece, sign) in ((k, 1.0), (other, -1.0)):
+                    weight = _weights_on_edge(piece, vertex, s)
+                    values = _gradients_many(inverse[piece],
+                                             weight)[:, :, component]
+                    parts.append(_placed_many(sign * values, piece))
+                rows.append(parts[0] + parts[1])
+
+    # ...and then the twelve that read the element's numbers off the data, whose
+    # unit numbers are what the solve is for.
+    held = len(rows)
+    across = _across_many(triangles)
+    for vertex in range(3):
+        k = _holders(vertex)[0]
+        corner = _slot(k, vertex)
+        weight = zeros(3)
+        weight[corner] = 1.0
+        # A value row does not look at the triangle at all: it is `evaluate` of
+        # a unit control at a unit weight, so it is one row broadcast.
+        values = zeros(10)
+        for n in range(10):
+            unit = zeros(10)
+            unit[n] = 1.0
+            values[n] = evaluate(unit, weight)
+        rows.append(pad(broadcast_to(values[None, :], (m, 10)),
+                        ((0, 0), (k * 10, 30 - (k + 1) * 10))))
+        for other in neighbours_of(vertex):
+            # The slope at a corner along its edge: the gradient, which carries
+            # the piece's pseudo-inverse, dotted with the edge's own direction.
+            along = triangles[:, :, other] - triangles[:, :, vertex]
+            values = einsum('nmd,md->nm', _gradients_many(inverse[k], weight),
+                            along)
+            rows.append(_placed_many(values, k))
+    for k in range(3):
+        weight = array([0.5, 0.5, 0.0])
+        values = einsum('nmd,md->nm', _gradients_many(inverse[k], weight),
+                        across[:, :, k])
+        rows.append(_placed_many(values, k))
+
+    system = stack(rows, axis=1)                        # (M, R, 30)
+    targets = zeros((len(rows), 12))
+    targets[held:, :] = eye(12)
+    out = zeros((m, 30, 12))
+    for i in range(m):
+        out[i] = linalg.lstsq(system[i], targets, rcond=None)[0]
+    return out
+

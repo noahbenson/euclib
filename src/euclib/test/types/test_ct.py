@@ -487,3 +487,85 @@ class TestTheEdgeOperator(TestCase):
         self.assertEqual(operator.shape[1], count + dim * count)
         self.assertEqual(operator.shape[0], len(edges))
         self.assertEqual(rows.shape, (indices.shape[1], 3))
+
+
+class TestTheBatchedBasis(TestCase):
+    '''`basis_many`, held to `basis` triangle by triangle.
+
+    The basis is a (53, 30) least-squares system solved for the triangle it is
+    given, and the batched build assembles those systems for a whole mesh at
+    once --- the rows are built from the pieces' `along` matrices and the edge
+    and across vectors, with `_sharing`'s eleven rows and the three value rows
+    constant. It is the same transcription-of-a-derivation situation the edge
+    operator was in, and the same thing can go wrong: a sign, an ordering, a
+    coefficient.
+
+    So this builds the bases the readable way --- one triangle at a time, through
+    `basis`, which is unchanged --- and holds the batched one to it. It matters
+    more here than there: a Clough-Tocher fit builds a basis per distinct element
+    *on every call*, so this is the whole of what such a fit spends on a mesh.
+    '''
+
+    def _triangles(self, count, dim, rng, /, degenerate=False):
+        if not degenerate:
+            return rng.normal(size=(count, dim, 3))
+        out = np.zeros((count, dim, 3))
+        for i in range(count):
+            # Almost collinear: the along-matrix is nearly rank-deficient, which
+            # is where a pseudo-inverse is least well behaved.
+            out[i] = (rng.normal(size=(dim, 1))
+                      + np.array([[0.0, 1.0, 2.0]]) * 1e-8
+                      + rng.normal(size=(dim, 3)) * 1e-12)
+        return out
+
+    def test_it_is_the_basis_solved_one_triangle_at_a_time(self):
+        rng = np.random.default_rng(11)
+        for (count, dim) in ((1, 2), (7, 2), (7, 3), (40, 2), (30, 3)):
+            triangles = self._triangles(count, dim, rng)
+            want = np.stack([_ct.basis(triangles[i]) for i in range(count)])
+            got = _ct.basis_many(triangles)
+            with self.subTest(count=count, dim=dim):
+                self.assertEqual(got.shape, want.shape)
+                self.assertLess(np.abs(got - want).max(), 1e-12)
+
+    def test_the_two_agree_on_a_nearly_flat_triangle_too(self):
+        '''Where they agree only to the conditioning, which is worth knowing.
+
+        A nearly collinear triangle has a nearly rank-deficient `along`-matrix,
+        and the two builds reach the pseudo-inverse by different LAPACK paths ---
+        one matrix at a time against a stack of them. Those differ in the last
+        bit, and a condition number of about `1e8` turns that into `1e-8` in the
+        answer, so the agreement here is loose where it is tight above.
+
+        A transcription error would be `O(1)`, not `1e-8`, so this still catches
+        one --- and the element is ill-defined on such a triangle anyway, which
+        is the reason the tolerance is stated rather than hidden.
+        '''
+        rng = np.random.default_rng(13)
+        triangles = self._triangles(16, 2, rng, degenerate=True)
+        want = np.stack([_ct.basis(triangles[i]) for i in range(16)])
+        got = _ct.basis_many(triangles)
+        self.assertLess(np.abs(got - want).max(), 1e-5)
+
+    def test_the_basis_reproduces_the_numbers_it_reads(self):
+        '''The property that makes it *the* basis, checked on the batched one.
+
+        Solving the conditions is what the equivalence above checks; this checks
+        that the conditions are the right ones. Each datum asks for a unit
+        number and each condition asks for zero, so reading a basis column back
+        with the row that produced it must give one --- and with any other row,
+        zero. A batched build that returned the same wrong answer as `basis`
+        would pass the first test and fail this.
+        '''
+        rng = np.random.default_rng(12)
+        triangles = self._triangles(12, 2, rng)
+        bases = _ct.basis_many(triangles)
+        for i in range(12):
+            read = _ct.element_rows(triangles[i])
+            for (column, (row, what)) in enumerate(read):
+                with self.subTest(triangle=i, what=what):
+                    # The twelve `element_rows` rows are the twelve numbers, in
+                    # the order the basis solves for them.
+                    self.assertAlmostEqual(
+                        float(np.asarray(row) @ bases[i][:, column]), 1.0,
+                        places=9)

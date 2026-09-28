@@ -1294,9 +1294,15 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
     res = _grid._zeros_for(
         im.promote(whole, slopes, weight, geom.coords)[0],
         channels + (index.shape[0],))
+    # One solve for every element these positions touch, rather than one per
+    # element: the basis is a (53, 30) least-squares system whose *assembly*
+    # costs six hundred pseudo-inverses, and a fit that touched five thousand
+    # elements spent two and a half minutes in this. The batched build is the
+    # same rows for the whole mesh at once --- see `_ct.basis_many`, which a test
+    # holds to `_ct.basis` triangle by triangle.
+    bases = _ct.basis_many(coords[:, indices[:, elements]].transpose(2, 0, 1))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
-        triangle = coords[:, here]
         # The twelve numbers, in the order the element's rows are built: a
         # value and two gradient components for each corner in turn, and then
         # the derivative across each of its three edges.
@@ -1320,7 +1326,7 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
             numbers[:, 9 + k] = across[:, rows_of[element, k]]
         # The twelve control vectors for this triangle's shape, and the
         # controls they give these numbers.
-        controls = im.mag(im.matmul(numbers, _ct.basis(triangle).T))
+        controls = im.mag(im.matmul(numbers, bases[slot].T))
         rows = flatnonzero(back == slot)
         (pieces, inside) = _ct.sub_weights(weight[:, rows])
         for k in range(3):
