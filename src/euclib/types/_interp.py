@@ -309,25 +309,6 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
             fitted = gradient
         elif prop.gradient is not None:
             fitted = prop.gradient
-        elif getattr(geom.coords, 'requires_grad', False):
-            # Refused rather than answered, because the answer would be wrong
-            # in a way nothing would report. The estimate is one sparse matrix
-            # applied to the values, and that matrix is a *constant* --- a
-            # function of the mesh, cached per mesh, and cast to floats --- so
-            # it cannot carry a graph. An estimate therefore contributes no
-            # derivative with respect to where the mesh's corners are, and a
-            # fit built on one would come back with a gradient that is missing
-            # a term rather than absent: checked against a central difference,
-            # order 1 is right to 8e-10 and an estimate-fed order 3 is out by
-            # 0.32. A caller who wants the coordinates' derivative has to
-            # supply the gradient, which is the path that measures 1e-9.
-            raise ValueError(
-                "this geometry's coordinates are a tensor, so they carry a "
-                "derivative; but this fit needs a gradient the property does"
-                " not have, and an *estimated* one is built from an operator"
-                " that cannot carry one. Supply the gradient --- as the"
-                " property's, or as `gradient=` --- to interpolate at order"
-                f" {order} over tensor coordinates")
         else:
             fitted = estimate_gradient(geom, prop, order)
     (loc, outside) = to_loc(geom, at)
@@ -1609,6 +1590,15 @@ def estimate_gradient(geom, prop, order, /):
     # `_estimate_gradient` below computes the same thing from the mesh directly
     # and is what the operator is held to.
     count = geom.coords.shape[1]
+    # Which of the two paths is a question about the *coordinates*. The sparse
+    # operator is a constant --- built once per mesh and cast to floats --- so
+    # it cannot carry a graph, and a tensor's coordinates need the estimate
+    # built from them on the call instead. `_estimate_gradient` is that
+    # construction, and it is the same one the operator is held to, so the two
+    # cannot drift apart.
+    if getattr(geom.coords, 'requires_grad', False):
+        return _estimate_gradient(geom.coords, asarray(geom.topo.simplices[1]),
+                                  prop.value, order)
     # The values are handed back rather than converted: the operator is applied
     # in their backend now, so a tensor reaches that product and keeps its graph.
     return _gradient_from_operator(
@@ -1736,15 +1726,30 @@ def _gradient_blocks(coords, edges, order, /):
             for here in range(start, stop, _ESTIMATE_BLOCK):
                 block = pending[here:min(here + _ESTIMATE_BLOCK, stop)]
                 points = asarray([stencils[i] for i in block])    # (B, M)
-                steps = (coords[:, points].transpose(1, 2, 0)
-                         - coords[:, block].T[:, None, :])        # (B, M, D)
-                (_, lengths, frames) = linalg.svd(steps, full_matrices=False)
+                # Through immlib, and it is the whole point of this function
+                # carrying a graph: the steps are differences of the
+                # coordinates and the frames are the directions those steps
+                # span, so a tensor's coordinates reach the operator through
+                # them. `permute` and not `transpose`, which on a tensor takes
+                # two axes rather than a permutation.
+                steps = im.mag(im.subtract(
+                    im.permute(coords[:, points], (1, 2, 0)),
+                    im.permute(coords[:, block], (1, 0))[:, None, :]))
+                (_, lengths, frames) = im.svd(steps, full_matrices=False)
                 # How many directions the stencil spans. The rest of the frame
                 # counts for nothing, which is the same as treating the stencil
                 # as flat in those directions, and a stencil that spans nothing
                 # at all is still given one direction to be fit along.
+                #
+                # On the *magnitudes*: how many directions a stencil spans is a
+                # comparison, so it is a selection, and a selection has no
+                # derivative to keep.
+                # `to_array(..., detach=True)` and not `asarray`: a tensor that
+                # requires a gradient has no array to convert to, which is the
+                # whole reason this function is being translated.
+                widths = to_array(lengths, detach=True)
                 rooms = maximum(
-                    (lengths > _RANK_TOLERANCE * lengths[:, :1]).sum(axis=1), 1)
+                    (widths > _RANK_TOLERANCE * widths[:, :1]).sum(axis=1), 1)
                 for room in unique(rooms):
                     rows = flatnonzero(rooms == room)
                     (basis, linear, design) = _block_design(
@@ -1760,12 +1765,18 @@ def _gradient_blocks(coords, edges, order, /):
                     # Asking `matrix_rank` and `pinv` separately decomposes the
                     # same matrix twice, which on a mesh of any size is the
                     # greater part of what the estimate costs.
-                    (left, singular, right) = linalg.svd(
-                        design, full_matrices=False)
-                    cutoff = (singular[:, :1]
-                              * max(design.shape[1], design.shape[2])
+                    (left, singular, right) = im.svd(design,
+                                                     full_matrices=False)
+                    # The rank test is a selection, so it is taken on the
+                    # magnitudes and detached; the singular values themselves
+                    # stay in their backend, since `inverse` is built from them.
+                    (mag_left, mag_singular, mag_right) = (
+                        to_array(one, detach=True)
+                        for one in (left, singular, right))
+                    cutoff = (mag_singular[:, :1]
+                              * max(mag_left.shape[1], mag_right.shape[1])
                               * _FLOAT_EPSILON)
-                    keep = singular > cutoff
+                    keep = mag_singular > cutoff
                     settled = keep.sum(axis=1) == len(basis)
                     if settled.any():
                         chosen = rows[settled]
@@ -1778,16 +1789,20 @@ def _gradient_blocks(coords, edges, order, /):
                         # right-hand side rather than a stack of either, and
                         # for a design of full rank the two agree to within the
                         # drivers' rounding.
-                        inverse = 1.0 / where(keep[settled], singular[settled],
-                                              1.0)
-                        local = ((right[settled].transpose(0, 2, 1)
-                                  * inverse[:, None, :])
-                                 @ left[settled].transpose(0, 2, 1))
+                        inverse = im.mag(im.where(
+                            keep[settled], singular[settled], 1.0))
+                        inverse = im.mag(im.divide(1.0, inverse))
+                        local = im.mag(im.matmul(
+                            im.multiply(
+                                im.permute(right[settled], (0, 2, 1)),
+                                inverse[:, None, :]),
+                            im.permute(left[settled], (0, 2, 1))))
                         # The operator: what the gradient is, per unit of each
                         # stencil coordinate's value.
                         yield (block[chosen], points[chosen],
-                               einsum('grm,grd->gdm', local[:, linear, :],
-                                      frames[chosen][:, :room, :]))
+                               im.mag(im.einsum(
+                                   'grm,grd->gdm', local[:, linear, :],
+                                   frames[chosen][:, :room, :])))
                     growing.extend(block[rows[~settled]].tolist())
             start = stop
         # What is left grows by a ring of the neighbourhood, unless the geometry
@@ -1806,8 +1821,10 @@ def _gradient_blocks(coords, edges, order, /):
         (step, frame, room) = _stencil_frame(coords, stencils[i], i)
         degree = order
         (basis, linear, design) = _monomial_design(step, frame, room, degree)
-        while degree > 1 and (len(basis) > len(stencils[i])
-                              or linalg.matrix_rank(design) < len(basis)):
+        while degree > 1 and (
+                len(basis) > len(stencils[i])
+                or linalg.matrix_rank(to_array(design, detach=True))
+                < len(basis)):
             degree -= 1
             (basis, linear, design) = _monomial_design(step, frame, room,
                                                        degree)
@@ -1818,9 +1835,11 @@ def _gradient_blocks(coords, edges, order, /):
         # `lstsq` and not the pseudo-inverse the batched path takes, because a
         # stencil that has run out of neighbours is rank-deficient by
         # construction, and this is the path where that matters.
-        operator = (frame[:room].T
-                    @ linalg.lstsq(design, eye(design.shape[0]),
-                                   rcond=None)[0][linear])       # (D, M)
+        operator = im.mag(im.matmul(
+            im.mag(frame[:room]).T,
+            im.mag(im.lstsq(design,
+                            eye(to_array(design, detach=True).shape[0])))[0]
+            [linear]))                                           # (D, M)
         # One coordinate, in the same shapes the blocks above come in.
         yield (asarray([i]), asarray(stencils[i])[None, :],
                operator[None, :, :])
@@ -1835,9 +1854,8 @@ def _estimate_gradient(coords, edges, values, order, /):
     '''
     (dim, count) = (coords.shape[0], coords.shape[1])
     channels = tuple(values.shape[:-1])
-    res = zeros(channels + (dim, count))
     if count == 0:
-        return res
+        return zeros(channels + (dim, count))
     # The channels are flattened for the solves --- one column of the
     # right-hand side per channel --- and folded back into the answer at the
     # end. A solve with a stack of right-hand sides is one call where a solve
@@ -1845,12 +1863,21 @@ def _estimate_gradient(coords, edges, values, order, /):
     width = 1
     for c in channels:
         width *= c
-    flat = values.reshape((width, count))
+    # The values *and* the coordinates promoted together: this is the one place
+    # that turns a stencil's values into a gradient directly rather than
+    # through the sparse operator, so it is where a tensor's coordinates have
+    # to be able to reach --- and the result is assigned into both ways round.
+    (values, coords) = im.promote(values, coords)
+    res = _grid._zeros_for(values, channels + (dim, count))
+    flat = im.mag(im.reshape(values, (width, count)))
     for (nodes, points, operator) in _gradient_blocks(coords, edges, order):
-        rhs = flat[:, points].transpose(1, 2, 0)                 # (B, M, C)
-        hull = einsum('bdm,bmc->bcd', operator, rhs)             # (B, C, D)
+        rhs = im.mag(im.permute(flat[:, points], (1, 2, 0)))      # (B, M, C)
+        hull = im.mag(im.einsum('bdm,bmc->bcd', operator, rhs))   # (B, C, D)
         for (b, node) in enumerate(nodes):
-            res[..., :, node] = hull[b].reshape(channels + (dim,))
+            # Assigned rather than scattered, which a tensor accepts --- it is
+            # numpy *into* a tensor that it does not.
+            res[Ellipsis, :, node] = im.mag(im.reshape(hull[b],
+                                                       channels + (dim,)))
     return res
 
 
@@ -1958,9 +1985,14 @@ def _stencil_frame(coords, stencil, node, /):
     are the directions the stencil spans, and the rest count for nothing, which
     is the same as treating them as flat.
     '''
-    step = (coords[:, stencil] - coords[:, node:node + 1]).T      # (M, D)
-    (_, sizes, frame) = linalg.svd(step, full_matrices=False)
-    room = (sizes > _RANK_TOLERANCE * sizes[0]).sum() if sizes.size else 0
+    step = im.mag(im.subtract(coords[:, stencil],
+                              coords[:, node:node + 1])).T        # (M, D)
+    (_, sizes, frame) = im.svd(step, full_matrices=False)
+    # How many directions it spans is a comparison --- a selection --- so it is
+    # taken on the magnitudes and detached.
+    widths = to_array(sizes, detach=True)
+    room = ((widths > _RANK_TOLERANCE * widths[0]).sum()
+            if len(widths) else 0)
     return (step, frame, max(room, 1))
 
 
@@ -1977,8 +2009,9 @@ def _monomial_design(step, frame, room, degree, /):
     linear = [basis.index(tuple(1 if b == a else 0 for b in range(room)))
               for a in range(room)]
     exponents = asarray(basis)
-    local = step @ frame[:room].T                                 # (M, room)
-    design = (local[:, None, :] ** exponents[None, :, :]).prod(axis=-1)
+    local = im.mag(im.matmul(step, im.mag(frame[:room]).T))       # (M, room)
+    design = im.mag(im.prod(
+        im.pow(local[:, None, :], exponents[None, :, :]), axis=-1))
     return (basis, linear, design)
 
 

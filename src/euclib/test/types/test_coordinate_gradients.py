@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from unittest import TestCase
 
+import numpy as np
 from numpy import array, asarray, zeros
 from numpy import abs as nabs
 from numpy import allclose
@@ -186,27 +187,66 @@ class TestTheCoordinateDerivative(TestCase):
                 # position's z does not reach the interpolation at all.
                 self.assertEqual(float(nabs(coords.grad.numpy()[2]).max()), 0.0)
 
-    def test_an_estimated_gradient_is_refused_rather_than_answered(self):
-        '''The one case where the derivative cannot be had, and why refusing beats answering.
+    def test_an_estimated_gradient_carries_the_derivative_too(self):
+        '''No gradient supplied, so the fit reads one the library estimates.
 
-        The estimate is one sparse operator applied to the values, and that
-        operator is a constant --- a function of the mesh, cached per mesh, and
-        cast to floats --- so it cannot carry a graph. An estimate-fed fit would
-        then return a derivative with a term missing rather than without one,
-        which nothing downstream could detect. Measured: an estimate-fed order 3
-        is out by 0.32 against a central difference, where every path that has
-        its gradient supplied agrees to 1e-9.
+        The estimate was the last thing that could not carry the derivative: it
+        is one sparse operator over the whole mesh, a constant built once per
+        mesh and cast to floats. `_gradient_blocks` and `_estimate_gradient`
+        now build it from the coordinates on the call instead, which is the same
+        construction the operator is collected from --- so the two cannot drift
+        apart, and the estimate is held to a *field* rather than to its operator
+        by `TestTheEstimateAgainstAField`.
+
+        On a mesh whose stencils are not symmetric, and that is a real
+        condition rather than a convenience: the frames the fit is written in
+        come from a singular-value decomposition, whose backward is undefined
+        when a stencil's singular values are equal. A single triangle's stencil
+        has them at `[1, 1, 0]`, and the gradient there comes back `nan` ---
+        loudly, at the backward pass, rather than quietly. See the roadmap.
         '''
         torch = self._torch()
-        coords = torch.tensor(BASE, dtype=torch.float64, requires_grad=True)
-        geom = TriMesh(coords, TOPOLOGY)
-        carried = geom.withprop('v', FIELD)
-        for method in (('bezier', 3), ('polynomial', 2)):
+        side = 6
+        (ix, iy) = np.meshgrid(np.arange(side, dtype=float),
+                               np.arange(side, dtype=float), indexing='ij')
+        coords = np.vstack([ix.ravel(), iy.ravel()])
+        quads = []
+        for i in range(side - 1):
+            for j in range(side - 1):
+                k = i * side + j
+                quads.append((k, k + 1, k + side))
+                quads.append((k + 1, k + side + 1, k + side))
+        quads = np.array(quads).T
+        at = array([[2.3], [2.4]])
+        field = (2.0 * coords[0] + 3.0 * coords[1] + 7.0)[None]
+
+        def value(one, method, /):
+            geom = TriMesh(asarray(one), TriTopology(quads))
+            out = geom.withprop('v', field).prop('v', at=at, interp=method)
+            return float(mag(out).ravel()[0])
+
+        step = 1e-6
+        for method in (('polynomial', 2), ('bezier', 3), ('powell-sabin', 2),
+                       ('clough-tocher', 3)):
+            tensor = torch.tensor(coords, dtype=torch.float64,
+                                  requires_grad=True)
+            geom = TriMesh(tensor, TriTopology(quads))
+            out = geom.withprop('v', field).prop('v', at=at, interp=method)
+            out = out.m if hasattr(out, 'm') else out
+            out.sum().backward()
+            got = tensor.grad.numpy()
+            want = zeros(coords.shape)
+            for i in range(2):
+                for k in range(coords.shape[1]):
+                    (up, down) = (zeros(coords.shape), zeros(coords.shape))
+                    up[i, k], down[i, k] = step, -step
+                    # Both are *added*: `down` carries its own sign.
+                    want[i, k] = (value(coords + up, method)
+                                  - value(coords + down, method)) / (2 * step)
             with self.subTest(method=method):
-                with self.assertRaises(ValueError) as caught:
-                    carried.prop('v', at=AT, interp=method)
-                self.assertIn("supply the gradient",
-                              str(caught.exception).lower().replace('`', ''))
+                self.assertFalse(np.isnan(got).any(),
+                                 "the gradient of an estimated fit is nan")
+                self.assertLess(nabs(got - want).max(), 1e-6)
 
     def test_the_same_fit_answers_once_the_gradient_is_supplied(self):
         '''Which is what says the refusal above is about the estimate and not
