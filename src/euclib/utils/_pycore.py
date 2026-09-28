@@ -426,7 +426,11 @@ def _closest_simplex_slot(coords, indices, choose, query):
         for mem in combinations(range(k1), s):
             (weight, inside, d2) = project_onto_face_paired(
                 corners[:, list(mem)], query)
-            better = inside & (d2 < best_d2)
+            # The comparison is part of the *selection*, so it is taken as
+            # arrays: a distance may be a tensor when the coordinates are, and a
+            # tensor will not compare against the numpy array the best-so-far
+            # distance starts as. The weights themselves stay in their backend.
+            better = inside & (im.to_array(d2) < best_d2)
             if not better.any():
                 continue
             cand = zeros((k1, total))
@@ -579,59 +583,112 @@ def closest_simplex(coords, indices, query, tree=None):
     return _closest_simplex_brute(coords, indices, query)
 
 
-def face_weights(corners, query, /):
-    '''The barycentric weights of positions projected onto faces.
+def _face_projection(corners, query, /):
+    '''The projection of positions onto faces, in the arguments' arithmetic.
 
-    The same projection `project_onto_face` makes, and the difference is why
-    there are two of them. That one is called by the *search*, which is a
-    selection --- which simplex is nearest is a comparison and an ``argmin``, and
-    a selection carries no gradient --- so it takes arrays and detaches. These
-    weights are the part of the search that *is* continuous: they are a function
-    of the position, and a position given as a tensor has a derivative through
-    them. So they are computed with whatever arithmetic the arguments use, and
-    they are computed on the *chosen* faces rather than on every face.
+    The same projection `project_onto_face` makes --- the regression of each
+    position onto a face's edges by pseudo-inverse, with the weights of the
+    corners --- but written with immlib's operations rather than numpy's, so
+    that a position given as a tensor keeps its derivative. The two exist
+    separately because their callers want different things: the search wants a
+    number to compare and may detach, and this wants a value to differentiate.
+    '''
+    (d, s, m) = corners.shape
+    q = query.shape[1]
+    origin = corners[:, 0].T[:, :, None]                    # (M, D, 1)
+    if s == 1:
+        # A single corner has the whole of the weight and no regression to make;
+        # it still needs the distance computed below, since a corner is the
+        # nearest point of its face for many positions and the sub-faces are
+        # compared by that distance.
+        weight = ones((1, m, q))
+    else:
+        edges = im.permute(corners[:, 1:], (2, 0, 1)) - origin  # (M, D, S-1)
+        rel = im.permute(query.T[None, :, :], (0, 2, 1)) - origin   # (M, D, Q)
+        et = im.permute(edges, (0, 2, 1))                   # (M, S-1, D)
+        rest = im.matmul(im.pinv(im.matmul(et, edges)),
+                         im.matmul(et, rel))                # (M, S-1, Q)
+        last = im.subtract(1.0, im.sum(rest, axis=1))       # (M, Q)
+        weight = im.concatenate(
+            [last[None, :, :], im.permute(rest, (1, 0, 2))], axis=0)  # (S, M, Q)
+    near = im.sum(im.multiply(corners[:, :, :, None],
+                              weight[None, :, :, :]), axis=1)
+    diff = query[:, None, :] - near
+    d2 = im.sum(im.multiply(diff, diff), axis=0)
+    # A projection onto a face is only meaningful within it: outside, the
+    # nearest point of the face is on one of its edges or corners, which the
+    # caller tests as a sub-face.
+    # With the same tolerance the numpy projection uses: a projection
+    # fractionally outside is the true nearest point to within rounding, and
+    # rejecting it would let the next sub-face win and answer differently.
+    inside = im.mag(im.all(im.greater_equal(weight, -_TOLERANCE), axis=0))
+    return (weight, inside, im.mag(d2))
+
+
+def face_weights(corners, query, /):
+    '''The weights of the nearest point *on* each simplex, to its position.
+
+    The nearest point of a triangle to a position outside it is on one of its
+    edges or at one of its corners, so the weights are not the regression onto
+    the whole face --- that is a projection onto the face's *plane*, which for a
+    position outside the face is a point beyond it. They are the regression onto
+    whichever sub-face contains the answer, which is why this walks the
+    sub-faces as the search does.
+
+    The difference from the search is arithmetic, not logic. The search
+    *selects*, and a selection carries no gradient, so it detaches and works in
+    numpy. These weights are a continuous function of the position, and they are
+    computed with the arguments' own arithmetic so that a tensor position has a
+    derivative through them.
 
     Parameters
     ----------
     corners : array-like
-        A ``(D, K+1, Q)`` array of the corners of the chosen simplexes.
+        A ``(D, K+1, Q)`` array holding each position's chosen simplex, one
+        simplex per position.
     query : array-like
         A ``(D, Q)`` matrix of positions.
 
     Returns
     -------
     numpy.ndarray
-        A ``(K, Q)`` matrix of the first ``K`` barycentric weights within each
+        A ``(K, Q)`` matrix of the first ``K`` barycentric weights within the
         position's chosen simplex; the final weight is their complement.
     '''
-    (d, s, m) = corners.shape
+    (d, k1, m) = corners.shape
     q = query.shape[1]
     if d != query.shape[0]:
         raise ValueError(
             f"the query positions have dimension {query.shape[0]}, but the"
             f" geometry's coordinates have dimension {d}")
-    origin = corners[:, 0].T[:, :, None]                    # (M, D, 1)
-    if s == 1:
-        # A point has no interior, so the only weight is the whole of it.
-        weight = ones((1, m, q))
-    else:
-        edges = im.permute(corners[:, 1:], (2, 0, 1)) - origin  # (M, D, S-1)
-        rel = im.permute(query.T[None, :, :], (0, 2, 1)) - origin   # (M, D, Q)
-        et = im.permute(edges, (0, 2, 1))                       # (M, S-1, D)
-        # The normal equations of the regression of the position onto the
-        # face's edges, by pseudo-inverse so that a degenerate face yields a
-        # regression rather than an error --- and through immlib, because the
-        # position's derivative is the derivative of this.
-        rest = im.matmul(im.pinv(im.matmul(et, edges)),
-                         im.matmul(et, rel))                # (M, S-1, Q)
-        last = im.subtract(1.0, im.sum(rest, axis=1))       # (M, Q)
-        weight = im.concatenate(
-            [last[None, :, :], im.permute(rest, (1, 0, 2))], axis=0)  # (S, M, Q)
-    # One face per position, so the answer is the diagonal: the weights of the
-    # position's *own* chosen face rather than of every face against it.
-    weights = im.mag(weight)[:-1]                           # (K, M, Q)
+    best_d2 = full((m, q), inf)
+    best_w = zeros((k1 - 1, m, q))
+    for size in range(1, k1 + 1):
+        for members in combinations(range(k1), size):
+            (weight, inside, d2) = _face_projection(
+                corners[:, list(members)], query)
+            # The comparison is part of the *selection*, so it is taken as
+            # arrays: a distance may be a tensor when the coordinates are, and a
+            # tensor will not compare against the numpy array the best-so-far
+            # distance starts as. The weights themselves stay in their backend.
+            better = inside & (im.to_array(d2) < best_d2)
+            if not better.any():
+                continue
+            # Stacked rather than assigned into an array made as numpy: a
+            # weight may be a tensor, since these are the values that carry a
+            # position's derivative, and a tensor cannot be assigned into a
+            # numpy array.
+            pieces = [zeros((m, q)) for _ in range(k1 - 1)]
+            for (j, corner) in enumerate(members):
+                # The last weight is what the others leave of the unit sum, so
+                # it is not among the ones returned.
+                if corner < k1 - 1:
+                    pieces[corner] = weight[j]
+            candidate = im.mag(im.stack(pieces))
+            best_d2 = where(better, im.to_array(d2), best_d2)
+            best_w = im.where(better[None, :, :], candidate, best_w)
     cols = arange(q)
-    return weights[:, cols, cols]                           # (K, Q)
+    return im.mag(best_w)[:, cols, cols]                    # (K, Q)
 
 
 def _closest_simplex_brute(coords, indices, query):
@@ -653,7 +710,11 @@ def _closest_simplex_brute(coords, indices, query):
         for mem in combinations(range(k1), s):
             (weight, inside, d2) = project_onto_face(
                 corners[:, list(mem)], query)
-            better = inside & (d2 < best_d2)
+            # The comparison is part of the *selection*, so it is taken as
+            # arrays: a distance may be a tensor when the coordinates are, and a
+            # tensor will not compare against the numpy array the best-so-far
+            # distance starts as. The weights themselves stay in their backend.
+            better = inside & (im.to_array(d2) < best_d2)
             if not better.any():
                 continue
             cand = zeros((k1, m, q))

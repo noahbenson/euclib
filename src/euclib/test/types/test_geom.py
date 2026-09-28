@@ -370,4 +370,9 @@ class TestTorchBackend(TestCase):
         path = SegPath(coords, SegTopology([[0, 1], [1, 2]]), backend='torch')
         loc = path.to_local(t.tensor([[0.5], [0.5]]))
         self.assertEqual(loc.index.tolist(), [0])
-        self.assertTrue(allclose(loc.weight, [[0.5]], atol=1e-6))
+        # The index is a selection --- which segment is nearest is a comparison
+        # and an `argmin` --- and carries nothing; the weight is the projection
+        # of the position onto the chosen segment, which is continuous in it and
+        # now carries a graph, so it is detached to be read.
+        self.assertTrue(allclose(loc.weight.detach().tolist(), [[0.5]]))
+        self.assertTrue(loc.weight.requires_grad)

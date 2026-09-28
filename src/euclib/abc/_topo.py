@@ -31,6 +31,7 @@ from collections.abc import Mapping
 from collections import namedtuple
 from itertools import combinations
 
+import immlib.math as im
 from numpy import (
     arange, asarray, concatenate, full, integer, unique, zeros)
 from pcollections import llist, pdict
@@ -197,7 +198,10 @@ def check_simplex_loc(loc_type, local_dim, locs, /):
     '''
     loc = loc_type.from_value(locs)
     index = asarray(loc.index)
-    weight = asarray(loc.weight)
+    # Taken as a plain array for the check, which compares shapes and returns
+    # the coordinate untouched: a weight may be a tensor now, being the
+    # continuous part of a position's search.
+    weight = im.to_array(loc.weight)
     if index.ndim != 1:
         raise ValueError(
             f"a local coordinate's index must be a vector; found shape"

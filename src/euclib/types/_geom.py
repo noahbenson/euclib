@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+import immlib.math as im
 from numpy import arange, asarray, concatenate, eye, meshgrid, ones, stack
 from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, llist
@@ -251,9 +252,16 @@ class SegPath(SimplexGeometry):
             The segment containing or nearest each position, and that
             position's first barycentric coordinate within it.
         '''
-        (index, weight) = closest_simplex(self.coords, self.topo.indices,
-                                          as_query(coords),
-                                          self.spatial_index)
+        query = as_query(coords)
+        # The search selects a simplex, and a selection carries no gradient ---
+        # which simplex is nearest is a comparison and an `argmin` --- so it
+        # detaches. The weights *within* the chosen simplex are the continuous
+        # part, so they are computed again here, on the undetached positions and
+        # with the arithmetic those and the coordinates use.
+        (index, _) = closest_simplex(self.coords, self.topo.indices, query,
+                                     self.spatial_index)
+        weight = face_weights(self.coords[:, self.topo.indices[:, index]],
+                              query)
         return self.topo.Loc(index, weight)
 
     def to_global(self, locs, /):
@@ -274,7 +282,12 @@ class SegPath(SimplexGeometry):
         # The weight names the position at the segment's first corner; the
         # second corner's weight is its complement.
         w = loc.weight[0]
-        return corners[:, 0] * w + corners[:, 1] * (1.0 - w)
+        # Through immlib, because the weight may be a tensor: multiplying a
+        # numpy coordinate by one reaches numpy's reflected operator, which
+        # converts the tensor and raises.
+        return im.mag(im.add(im.multiply(corners[:, 0], w),
+                             im.multiply(corners[:, 1],
+                                         im.subtract(1.0, w))))
 
 
 class TriMesh(SimplexGeometry):
@@ -331,9 +344,16 @@ class TriMesh(SimplexGeometry):
             The triangle containing or nearest each position, and that
             position's first two barycentric weights within it.
         '''
-        (index, weight) = closest_simplex(self.coords, self.topo.indices,
-                                          as_query(coords),
-                                          self.spatial_index)
+        query = as_query(coords)
+        # The search selects a simplex, and a selection carries no gradient ---
+        # which simplex is nearest is a comparison and an `argmin` --- so it
+        # detaches. The weights *within* the chosen simplex are the continuous
+        # part, so they are computed again here, on the undetached positions and
+        # with the arithmetic those and the coordinates use.
+        (index, _) = closest_simplex(self.coords, self.topo.indices, query,
+                                     self.spatial_index)
+        weight = face_weights(self.coords[:, self.topo.indices[:, index]],
+                              query)
         return self.topo.Loc(index, weight)
 
     def to_global(self, locs, /):
@@ -352,10 +372,10 @@ class TriMesh(SimplexGeometry):
         loc = self.topo.check_loc(locs)
         corners = _corner_coords(self.coords, self.topo.indices, loc.index)
         w = loc.weight
-        last = 1.0 - w.sum(axis=0)
-        return (corners[:, 0] * w[0]
-                + corners[:, 1] * w[1]
-                + corners[:, 2] * last)
+        last = im.subtract(1.0, im.sum(w, axis=0))
+        return im.mag(im.add(im.add(im.multiply(corners[:, 0], w[0]),
+                                    im.multiply(corners[:, 1], w[1])),
+                             im.multiply(corners[:, 2], last)))
 
 
 class TetMesh(SimplexGeometry):
@@ -435,9 +455,16 @@ class TetMesh(SimplexGeometry):
             The tetrahedron containing or nearest each position, and that
             position's first three barycentric weights within it.
         '''
-        (index, weight) = closest_simplex(self.coords, self.topo.indices,
-                                          as_query(coords),
-                                          self.spatial_index)
+        query = as_query(coords)
+        # The search selects a simplex, and a selection carries no gradient ---
+        # which simplex is nearest is a comparison and an `argmin` --- so it
+        # detaches. The weights *within* the chosen simplex are the continuous
+        # part, so they are computed again here, on the undetached positions and
+        # with the arithmetic those and the coordinates use.
+        (index, _) = closest_simplex(self.coords, self.topo.indices, query,
+                                     self.spatial_index)
+        weight = face_weights(self.coords[:, self.topo.indices[:, index]],
+                              query)
         return self.topo.Loc(index, weight)
 
     def to_global(self, locs, /):
@@ -456,11 +483,11 @@ class TetMesh(SimplexGeometry):
         loc = self.topo.check_loc(locs)
         corners = _corner_coords(self.coords, self.topo.indices, loc.index)
         w = loc.weight
-        last = 1.0 - w.sum(axis=0)
-        return (corners[:, 0] * w[0]
-                + corners[:, 1] * w[1]
-                + corners[:, 2] * w[2]
-                + corners[:, 3] * last)
+        last = im.subtract(1.0, im.sum(w, axis=0))
+        return im.mag(im.add(im.add(im.multiply(corners[:, 0], w[0]),
+                                    im.multiply(corners[:, 1], w[1])),
+                             im.add(im.multiply(corners[:, 2], w[2]),
+                                    im.multiply(corners[:, 3], last))))
 
 
 class PrismMesh(SimplexGeometry):
