@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from itertools import product
 
+from immlib import to_array
+
 from numpy import (
     arange, asarray, ceil, concatenate, floor, full, intp, ones, repeat, sqrt,
     stack, tile, zeros)
@@ -286,7 +288,13 @@ def contains(geom, points, /, tolerance=None):
         # names a cell's center, so the extent runs from half a step before the
         # first center to half a step past the last.
         loc = geom.to_local(query)
-        parts = [asarray(getattr(loc, f)) for f in loc._fields]
+        # `to_array(detach=True)` and not `asarray`: whether a position lies
+        # within a grid is a *selection* --- the index coordinate against the
+        # grid's extent is a comparison --- so detaching is the right thing and
+        # not merely a convenience. And `asarray` would raise on a tensor that
+        # requires a gradient rather than reading past it, which would make a
+        # tensor's query fail here instead of answering.
+        parts = [to_array(getattr(loc, f), detach=True) for f in loc._fields]
         inside = ones(parts[0].reshape(-1).shape, dtype=bool)
         for (p, size) in zip(parts, geom.shape):
             inside = inside & (p.reshape(-1) >= -0.5 - tol) & (

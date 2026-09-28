@@ -451,7 +451,11 @@ class PrismTopology(TriTopology):
             If the components do not have matching shapes.
         '''
         loc = self.Loc.from_value(locs)
-        parts = [asarray(getattr(loc, f))
+        # Through `to_array` and not `asarray`: these components are only read
+        # for their shapes and the loc is returned untouched, so nothing here
+        # wants a derivative --- but a tensor that requires one has no numpy
+        # array to convert to, and `asarray` raises rather than reading it.
+        parts = [im.to_array(getattr(loc, f), detach=True)
                  for f in ('index', 'weight', 'height')]
         (index, weight, height) = parts
         if index.ndim != 1:
@@ -572,11 +576,14 @@ class GridTopology(Topology):
         '''
         loc = self.Loc.from_value(locs)
         # The components are read as plain arrays *for this check only*: their
-        # shapes are compared and the coordinate itself is returned untouched, so
-        # a position given as a tensor that requires a gradient keeps it. Taking
-        # them with `asarray` would raise on such a tensor rather than let the
-        # interpolation carry the gradient through.
-        parts = [im.to_array(getattr(loc, f)) for f in self.Loc._fields]
+        # shapes are compared and the coordinate itself is returned untouched,
+        # so nothing here needs a derivative. `to_array` rather than `asarray`
+        # because a tensor that requires one has no array to convert to and
+        # `asarray` would raise --- the conversion does detach, which costs
+        # nothing since these parts are read for their shapes alone and the loc
+        # is handed back as it came in.
+        parts = [im.to_array(getattr(loc, f), detach=True)
+                 for f in self.Loc._fields]
         shape = parts[0].shape
         for (f, p) in zip(self.Loc._fields[1:], parts[1:]):
             if p.shape != shape:

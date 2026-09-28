@@ -270,3 +270,46 @@ class TestTheCoordinateDerivative(TestCase):
             with self.subTest(method=method):
                 out = carried.prop('v', at=AT, interp=method)
                 self.assertLess(abs(float(mag(out).ravel()[0]) - 7.9), 1e-9)
+
+
+class TestTheLeftoverConversions(TestCase):
+    '''The two places that converted a local coordinate's parts with `asarray`.
+
+    A tensor that requires a gradient has no numpy array to convert to, so
+    `asarray` *raises* rather than reading past it --- which is why these are
+    bugs and not merely losses of a derivative. Both are checks rather than
+    arithmetic: one compares the shapes of a prism local coordinate's
+    components, the other asks whether a grid position lies within the grid's
+    extent. Neither wants a derivative, so `to_array(detach=True)` is the right
+    reading of both --- and it is what makes them answer for a tensor at all.
+    '''
+
+    def test_a_prism_local_coordinate_may_hold_tensors(self):
+        try:
+            import torch
+        except ImportError:                                  # pragma: no cover
+            self.skipTest("torch is not installed")
+        from euclib.types import PrismTopology
+        topo = PrismTopology(array([[0], [1], [2]]), coord_count=4)
+        weight = torch.tensor([[0.2], [0.3]], dtype=torch.float64,
+                              requires_grad=True)
+        height = torch.tensor([[0.5]], dtype=torch.float64,
+                              requires_grad=True)
+        loc = topo.Loc(index=array([0]), weight=weight, height=height)
+        checked = topo.check_loc(loc)
+        # It is a check: the coordinate comes back as it went in.
+        self.assertTrue(checked.weight is weight,
+                        "the check did not hand the coordinate back untouched")
+        self.assertTrue(checked.weight.requires_grad)
+
+    def test_a_grid_containment_question_may_be_asked_of_tensors(self):
+        try:
+            import torch
+        except ImportError:                                  # pragma: no cover
+            self.skipTest("torch is not installed")
+        grid = el.grid((6, 6))
+        inside = torch.tensor([[2.5], [3.5]], dtype=torch.float64,
+                              requires_grad=True)
+        outside = torch.tensor([[9.5], [3.5]], dtype=torch.float64)
+        self.assertTrue(bool(el.contains(grid, inside)[0]))
+        self.assertFalse(bool(el.contains(grid, outside)[0]))
