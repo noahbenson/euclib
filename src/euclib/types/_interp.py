@@ -297,10 +297,13 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     # a generalised *value*, so the estimate is not merely unused but
     # meaningless there.
     if order >= 2 and getattr(geom, 'order', None) in (1, 2, 3):
+        # Handed back rather than converted, like the values: a caller's
+        # gradient, or a property's own, may be a tensor, and the fits are
+        # written to take one.
         if gradient is not UNSET and gradient is not None:
-            fitted = asarray(gradient)
+            fitted = gradient
         elif prop.gradient is not None:
-            fitted = asarray(prop.gradient)
+            fitted = prop.gradient
         else:
             fitted = estimate_gradient(geom, prop, order)
     (loc, outside) = to_loc(geom, at)
@@ -327,7 +330,12 @@ def _substitute_null(res, missed, null, /):
     The result's channel dimensions are leading, so the mask is broadcast
     across them.
     '''
-    res = asarray(res).copy()
+    # Copied through immlib rather than with numpy's `copy`, which a tensor does
+    # not have --- and copied rather than viewed, because the array being marked
+    # is the fit's or the kernel's own and must not be mutated under it. An add
+    # of zero is a copy in either backend, and keeps whatever graph the array
+    # came with.
+    res = im.add(im.mag(res), 0)
     res[(Ellipsis, missed)] = 0 if null is None else null
     return res
 

@@ -1039,6 +1039,46 @@ class TestASimplexTensorProperty(TestCase):
                     got.sum().backward()
                     self.assertIsNotNone(values.grad)
 
+    def test_a_supplied_tensor_gradient_carries_its_own_graph(self):
+        # The third case, and the last of the three: a property's derivative may
+        # be a tensor of its own. It is passed to the fits as it stands rather
+        # than converted, so it reaches their arithmetic --- and a gradient that
+        # a caller computed from something carries the graph of whatever that
+        # was, which a conversion to numpy would cut.
+        torch = self._torch()
+        tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
+                      TriTopology(array([[0], [1], [2]]), coord_count=3))
+        values = torch.tensor([1., 2., 3.], requires_grad=True)
+        supplied = torch.tensor([[1., 1., 1.], [2., 2., 2.]],
+                                requires_grad=True)
+        carried = tri.withprop('v', values, gradient=supplied)
+        loc = tri.topo.Loc(index=array([0]), weight=zeros((2, 1)))
+        for order in (2, 3):
+            with self.subTest(order=order):
+                got = carried.prop('v', at=loc, interp=('bezier', order))
+                got = got.m if hasattr(got, 'm') else got
+                got.sum().backward()
+                self.assertIsNotNone(values.grad)
+                self.assertIsNotNone(supplied.grad)
+
+    def test_a_masked_read_of_a_tensor_still_carries_a_graph(self):
+        # The mask path reached the result through numpy's `copy`, which a tensor
+        # does not have. It is copied through immlib now --- and copied rather
+        # than viewed, because the array being marked belongs to the fit and must
+        # not be mutated under it.
+        torch = self._torch()
+        tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
+                      TriTopology(array([[0], [1], [2]]), coord_count=3))
+        values = torch.tensor([1., 2., 3.], requires_grad=True)
+        mask = array([[False], [True], [False]])
+        loc = tri.topo.Loc(index=array([0]), weight=zeros((2, 1)))
+        got = tri.withprop('v', values, mask=mask).prop(
+            'v', at=loc, interp=('bezier', 3), null=float('nan'))
+        got = got.m if hasattr(got, 'm') else got
+        self.assertTrue(isnan(float(ravel(asarray(got.detach()))[0])))
+        got.sum().backward()
+        self.assertIsNotNone(values.grad)
+
     def test_the_answer_matches_the_numpy_path(self):
         torch = self._torch()
         count = 5
