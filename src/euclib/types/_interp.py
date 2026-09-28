@@ -298,8 +298,7 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     # property's, and a property that carries none has one estimated from the
     # values around the geometry.
     fitted = None
-    if (getattr(geom.coords, 'requires_grad', False)
-            and method in ('clough-tocher', 'powell-sabin')):
+    if getattr(geom.coords, 'requires_grad', False) and method == 'clough-tocher':
         # Refused, for the same reason the estimate is refused below: part of
         # the answer is built from an operator that is a *constant*.
         #
@@ -310,8 +309,7 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         # function of where the corners are, so leaving it out drops a real
         # term: measured against a central difference, Clough-Tocher over tensor
         # coordinates is out by **0.19** where every method that has all its
-        # terms agrees to 1e-9. Powell-Sabin is refused for a different reason
-        # and the same shape --- its incenter and its basis are still numpy.
+        # terms agrees to 1e-9.
         raise ValueError(
             f"the interpolation {method!r} is not available over tensor"
             " coordinates: part of this element's construction is a constant"

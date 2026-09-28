@@ -156,7 +156,8 @@ class TestTheCoordinateDerivative(TestCase):
         # the answer becomes the null --- which is correct, and useless as a
         # difference.
         step = 1e-6
-        for method in (('polynomial', 1), ('bezier', 3), ('polynomial', 2)):
+        for method in (('polynomial', 1), ('bezier', 3), ('polynomial', 2),
+                       ('powell-sabin', 2)):
             coords = torch.tensor(BASE, dtype=torch.float64, requires_grad=True)
             geom = TriMesh(coords, TOPOLOGY)
             out = geom.withprop('v', FIELD, gradient=self._gradient()).prop(
@@ -221,28 +222,29 @@ class TestTheCoordinateDerivative(TestCase):
                 self.assertLess(abs(float(mag(out.detach()).ravel()[0]) - 7.9),
                                 1e-9)
 
-    def test_the_split_elements_are_refused_and_say_why(self):
-        '''Clough-Tocher and Powell-Sabin, which cannot have it yet.
+    def test_clough_tocher_is_refused_and_says_why(self):
+        '''The one method that cannot have it, and the term it would lose.
 
         Clough-Tocher's twelfth number is per *edge* and is estimated through
         one sparse operator over the whole mesh --- a scipy matrix built once
         per mesh and cast to floats, so it cannot carry a graph. That estimate
         is a function of where the corners are, so answering anyway loses a
-        term: measured, Clough-Tocher comes out 0.19 from a central difference
-        where every method with all its terms agrees to 1e-9. Powell-Sabin's
-        incenter and basis are still numpy. Both are refused rather than
-        answered, which is what the assertion here is really checking --- that
-        the failure is a sentence and not a derivative that looks fine.
+        term: measured, Clough-Tocher comes out **0.19** from a central
+        difference where every method with all its terms agrees to 1e-9. It is
+        refused rather than answered, which is what the assertion here is really
+        checking --- that the failure is a sentence and not a derivative that
+        looks fine.
+
+        Powell-Sabin was in this list too until its incenter and its basis were
+        translated; it is checked above now, against the same difference.
         '''
         torch = self._torch()
         coords = torch.tensor(BASE, dtype=torch.float64, requires_grad=True)
         geom = TriMesh(coords, TOPOLOGY)
         carried = geom.withprop('v', FIELD, gradient=self._gradient())
-        for method in (('clough-tocher', 3), ('powell-sabin', 2)):
-            with self.subTest(method=method):
-                with self.assertRaises(ValueError) as caught:
-                    carried.prop('v', at=AT, interp=method)
-                self.assertIn("tensor coordinates", str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            carried.prop('v', at=AT, interp=('clough-tocher', 3))
+        self.assertIn("tensor coordinates", str(caught.exception))
 
     def test_the_same_elements_answer_for_an_array_geometry(self):
         '''Which is what says the refusal is about the coordinates' *backend*

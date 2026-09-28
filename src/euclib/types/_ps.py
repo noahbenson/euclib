@@ -43,6 +43,7 @@ named by the same three numbers on any triangle.
 from __future__ import annotations
 
 import immlib.math as im
+from immlib import quant
 from numpy import (
     arange, argmin, array, asarray, einsum, eye, linalg, stack, zeros)
 
@@ -161,8 +162,11 @@ def centre_weights(sides, /):
     numpy.ndarray
         A length-three vector summing to one.
     '''
-    lengths = asarray(sides, dtype='float64')
-    return lengths / lengths.sum()
+    # Through immlib, so the *side lengths* keep whatever graph the triangle's
+    # corners gave them: the incenter is a function of where the corners are,
+    # and so is every ordinate the element is built from.
+    lengths = im.mag(sides)
+    return im.mag(im.divide(lengths, im.sum(lengths)))
 
 
 def _places(centre, /):
@@ -176,7 +180,7 @@ def _places(centre, /):
     all.
     '''
     out = {'A': array([1.0, 0.0, 0.0]), 'B': array([0.0, 1.0, 0.0]),
-           'C': array([0.0, 0.0, 1.0]), 'Z': asarray(centre, dtype='float64')}
+           'C': array([0.0, 0.0, 1.0]), 'Z': im.mag(centre)}
     out['S_AB'] = array([0.5, 0.5, 0.0])
     out['S_BC'] = array([0.0, 0.5, 0.5])
     out['S_CA'] = array([0.5, 0.0, 0.5])
@@ -191,14 +195,15 @@ def _within(places, piece, /):
     so a position's weights within the piece are that matrix's inverse applied to
     its weights within the macro triangle.
     '''
-    return linalg.inv(stack([places[x] for x in piece], axis=1))
+    # The pseudo-inverse, which is the inverse here: the three columns are a
+    # mini-triangle's corners' weights and are independent.
+    return im.mag(im.pinv(im.stack([places[x] for x in piece], axis=1)))
 
 
 def _value_row(piece, point, places, within, /):
     '''The row reading one mini-triangle's value at a vertex of the split.'''
-    row = zeros(len(ORDINATES))
-    row[SLOTS[piece]] = bernstein(within[piece] @ places[point])
-    return row
+    return _place(bernstein(im.matmul(im.mag(within[piece]),
+                                       im.mag(places[point]))), piece)
 
 
 def _slope_row(piece, point, direction, places, within, /):
@@ -217,17 +222,25 @@ def _slope_row(piece, point, direction, places, within, /):
     directions here be the triangle's *edges*, and so what lets the element serve
     a triangle in space as readily as one in a plane.
     '''
-    step = within[piece] @ asarray(direction, dtype='float64')
-    centre = within[piece] @ places[point]
-    row = zeros(len(ORDINATES))
+    step = im.mag(im.matmul(im.mag(within[piece]), im.mag(direction)))
+    centre = im.mag(im.matmul(im.mag(within[piece]), im.mag(places[point])))
+    # Accumulated, because the multi-indices collide: ``e_here + e_along`` is
+    # the same index for (0, 1) as for (1, 0), so two of the nine pairs reach
+    # each of the six slots and the terms add. Setting rather than adding is how
+    # this first read --- and it answered wrongly, which is what the tests on
+    # the array path caught.
+    zero = im.multiply(im.mag(centre)[0], 0.0)
+    entries = [zero for _ in range(6)]
     for (here, weight) in enumerate(centre):
         one = [0, 0, 0]
         one[here] += 1
         for (along, entry) in enumerate(step):
             two = list(one)
             two[along] += 1
-            row[SLOTS[piece][_AT[tuple(two)]]] += 2.0 * weight * entry
-    return row
+            index = _AT[tuple(two)]
+            entries[index] = im.add(entries[index], im.multiply(
+                im.multiply(2.0, weight), entry))
+    return _place(im.stack(entries), piece)
 
 
 def _sharing():
@@ -250,6 +263,28 @@ def _sharing():
                   for k in here]
         out.append((point, here, thirds))
     return out
+
+
+
+def _zeros_of(like, count, /):
+    """``count`` zeros in the backend of ``like``."""
+    return im.mag(quant(like).new_zeros((count,)))
+
+
+def _place(values, piece, /):
+    """A length-nineteen row, with a mini-triangle's six values at its ordinates.
+
+    Summed from one-hot placings rather than assigned into a row made
+    beforehand: the values are a function of the triangle --- through the
+    incenter, and so through the side lengths --- and a tensor among them will
+    not be assigned into an array made as numpy.
+    """
+    out = _zeros_of(values, len(ORDINATES))
+    for (n, slot) in enumerate(SLOTS[piece]):
+        onehot = zeros(len(ORDINATES))
+        onehot[slot] = 1.0
+        out = im.add(out, im.multiply(onehot, im.mag(values)[n]))
+    return im.mag(out)
 
 
 def basis(centre, /):
@@ -301,7 +336,8 @@ def basis(centre, /):
         for piece in piece_of(vertex):
             add(_value_row(piece, VERTICES[vertex], places, within), 3 * vertex)
         for (place, other) in enumerate(neighbours_of(vertex)):
-            direction = places[VERTICES[other]] - places[VERTICES[vertex]]
+            direction = im.subtract(places[VERTICES[other]],
+                                    places[VERTICES[vertex]])
             for piece in piece_of(vertex):
                 add(_slope_row(piece, VERTICES[vertex], direction, places, within),
                     3 * vertex + 1 + place)
@@ -313,11 +349,15 @@ def basis(centre, /):
         # the two pieces' third corners, which is transverse to the spoke and is
         # a barycentric difference --- so this is a condition the geometry states
         # without a metric, and one a triangle in space can state just as well.
-        direction = places[first] - places[second]
+        direction = im.subtract(places[first], places[second])
         for name in (point, 'Z'):
-            add(_slope_row(one, name, direction, places, within)
-                - _slope_row(two, name, direction, places, within))
-    return linalg.lstsq(asarray(rows), asarray(columns), rcond=None)[0]
+            add(im.mag(im.subtract(
+                _slope_row(one, name, direction, places, within),
+                _slope_row(two, name, direction, places, within))))
+    # The columns are constants --- a unit number at a time --- so they stay
+    # arrays; the solve promotes them along with the rows, and that is what
+    # carries the triangle's derivative through the basis.
+    return im.mag(im.lstsq(im.mag(im.stack(rows)), asarray(columns))[0])
 
 
 def sub_weights(weights, centre, /):
