@@ -61,6 +61,18 @@ project:
             - file: examples/properties/bezier-triangle.md
             - file: examples/properties/bezier-tetrahedron.md
             - file: examples/properties/clough-tocher-triangle.md
+            - file: examples/properties/powell-sabin-triangle.md
+            - file: examples/properties/catmull-rom-path.md
+            # The grid kernels, in the order they build on one another: the
+            # index space first, then the rule a wide stencil needs at the
+            # grid's edge, then the polynomial kernels, and last the two that
+            # are not polynomial kernels at all.
+            - file: examples/properties/grid-linear.md
+            - file: examples/properties/grid-boundary.md
+            - file: examples/properties/grid-cubic.md
+            - file: examples/properties/grid-spline.md
+            - file: examples/properties/grid-lanczos.md
+            - file: examples/properties/grid-polynomial.md
             - file: examples/properties/transfer.md
             - file: examples/properties/immutability.md
         - title: Grids and Images

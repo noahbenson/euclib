@@ -262,3 +262,88 @@ class TestDocs(TestCase):
                                 f"no docstring was collected for {suffix!r}")
         self.assertTrue(any('proc_' in name for name in found),
                         "no calc docstring was collected")
+
+
+class TestTheDocumentationLinks(TestCase):
+    '''Every page is in the contents, and every link resolves to one of them.
+
+    The pages are MyST documents, and MyST resolves a link to another page only
+    if that page is *in the table of contents*. One that is not is treated as a
+    stray file, copied into the build under a hashed name, and linked that way
+    --- so a page that exists but was never added to ``myst.yml`` is two faults
+    at once: it cannot be reached from the navigation, and every link to it
+    comes out as ``build/<truncated-name>-<hash>.md``.
+
+    That is what happened here: eight pages, every one of them written during
+    the interpolation work, linked from their neighbours and absent from the
+    contents. The Clough-Tocher page's link to Powell-Sabin is where it showed.
+    Nothing caught it, because a link that resolves to the wrong thing is not a
+    link that fails --- it renders, and looks like a link, and goes somewhere
+    useless.
+    '''
+
+    def _root(self, /):
+        from pathlib import Path
+        return Path(__file__).resolve().parents[3] / 'docs' / 'euclib'
+
+    def _listed(self, entries, /):
+        '''Every file named by a table of contents, at any depth.'''
+        from pathlib import Path
+        for one in entries or []:
+            if isinstance(one, dict):
+                yield from self._listed(one.get('children'))
+                if 'file' in one:
+                    yield str(Path(one['file']))
+            else:
+                yield str(Path(one))
+
+    def _contents(self, /):
+        import yaml
+        config = yaml.safe_load((self._root() / 'myst.yml').read_text())
+        return set(self._listed(config['project']['toc']))
+
+    def _pages(self, /):
+        root = self._root()
+        return {p for p in root.rglob('*.md')
+                if '_build' not in p.relative_to(root).parts}
+
+    def test_every_page_is_in_the_table_of_contents(self):
+        '''Which is what makes it a document rather than a stray file.'''
+        root = self._root()
+        listed = self._contents()
+        on_disk = {str(p.relative_to(root)) for p in self._pages()}
+        # The API-reference pages are written by docs/generate_api.py during the
+        # build, so they are named in the contents and absent from the tree.
+        generated = {one for one in listed if one.startswith('api/')}
+        with self.subTest(fault='on disk but not in the contents'):
+            self.assertEqual(sorted(on_disk - listed - generated), [])
+        with self.subTest(fault='in the contents but not on disk'):
+            self.assertEqual(sorted(listed - on_disk - generated), [])
+
+    def test_every_link_to_a_page_resolves_to_one_in_the_contents(self):
+        '''Both halves of it: the file has to exist, and MyST has to know it.
+
+        The second is the one that goes wrong quietly. A link to a page that is
+        not in the contents still *renders* --- as a link to a hashed copy of
+        the file under ``build/`` --- so nothing is obviously broken and the
+        reader lands somewhere useless.
+        '''
+        import re
+        root = self._root()
+        listed = self._contents()
+        pattern = re.compile(r'!?\[[^\]]*\]\(([^)]+)\)')
+        for page in sorted(self._pages()):
+            text = re.sub(r'```.*?```', '', page.read_text(), flags=re.S)
+            for target in pattern.findall(text):
+                (path, _, _) = target.partition('#')
+                if not path or '://' in path or not path.endswith('.md'):
+                    continue
+                resolved = (page.parent / path).resolve()
+                with self.subTest(page=str(page.relative_to(root)),
+                                  links_to=target):
+                    self.assertTrue(resolved.exists(), f"{target} is not a file")
+                    rel = str(resolved.relative_to(root.resolve()))
+                    self.assertIn(rel, listed,
+                                  f"{target} is not in the table of contents, so"
+                                  f" MyST will link a hashed copy of it under"
+                                  f" build/ rather than the page")
