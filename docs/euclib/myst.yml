@@ -86,3 +86,8 @@ project:
 
 site:
   template: book-theme
+  options:
+    # The text in the header bar, beside the menu button. Without it the theme
+    # shows its own name --- the built page comes out with `Made with MyST` in
+    # the home link --- which is what this replaces.
+    logo_text: euclib
