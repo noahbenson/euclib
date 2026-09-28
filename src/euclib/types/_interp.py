@@ -44,8 +44,8 @@ from itertools import combinations, product
 from math import factorial
 
 from numpy import (
-    arange, argsort, asarray, clip, concatenate, einsum, eye, finfo,
-    flatnonzero, floor, linalg, maximum, minimum, moveaxis, ones, prod,
+    arange, argsort, asarray, broadcast_to, clip, concatenate, einsum, eye,
+    finfo, flatnonzero, floor, linalg, maximum, minimum, moveaxis, ones, prod,
     ravel_multi_index, sqrt, unique, where, zeros)
 
 # ``immlib.math`` under a short name, as the backend-following operations are
@@ -1752,8 +1752,28 @@ def _gradient_blocks(coords, edges, order, /):
                     (widths > _RANK_TOLERANCE * widths[:, :1]).sum(axis=1), 1)
                 for room in unique(rooms):
                     rows = flatnonzero(rooms == room)
+                    # The basis the fit is written in. Where a stencil spans the
+                    # whole space --- the usual case, and every stencil of a
+                    # mesh that is not a sheet --- *any* orthonormal basis will
+                    # do, because the answer does not depend on which one: the
+                    # coefficients rotate with the frame and the gradient they
+                    # give back does not. So the ambient axes are used, and they
+                    # are constants --- which keeps the singular *vectors* out of
+                    # the differentiated expression entirely.
+                    #
+                    # That matters because their backward is undefined when a
+                    # pair of singular values ties, which a symmetric stencil
+                    # gives exactly: see the warning on `torch.linalg.svd`, and
+                    # see the note by `local` below. A stencil that does not span
+                    # the space --- a sheet's, or one with a single point ---
+                    # still needs a basis for the part it does span, and takes
+                    # the decomposition's.
+                    if int(room) == dim:
+                        here_frames = broadcast_to(eye(dim), frames.shape)
+                    else:
+                        here_frames = frames[rows]
                     (basis, linear, design) = _block_design(
-                        steps[rows], frames[rows], int(room), order)
+                        steps[rows], here_frames, int(room), order)
                     if len(basis) > size:
                         # Fewer coordinates than the polynomial has monomials:
                         # no rank of the design can settle this, and these grow.
@@ -1789,20 +1809,25 @@ def _gradient_blocks(coords, edges, order, /):
                         # right-hand side rather than a stack of either, and
                         # for a design of full rank the two agree to within the
                         # drivers' rounding.
-                        inverse = im.mag(im.where(
-                            keep[settled], singular[settled], 1.0))
-                        inverse = im.mag(im.divide(1.0, inverse))
-                        local = im.mag(im.matmul(
-                            im.multiply(
-                                im.permute(right[settled], (0, 2, 1)),
-                                inverse[:, None, :]),
-                            im.permute(left[settled], (0, 2, 1))))
+                        # Through `pinv` and not by hand out of the singular
+                        # vectors: the hand-rolled form differentiates through
+                        # `U` and `V` separately, and that backward is undefined
+                        # when a pair of singular values ties --- see the
+                        # warning on `torch.linalg.svd`, which says the
+                        # gradients "will only be finite when A does not have
+                        # repeated singular values". `rtol` is the rank test's
+                        # own relative threshold, so the same directions are
+                        # dropped and the answer is unchanged.
+                        local = im.mag(im.pinv(
+                            design[settled],
+                            rtol=(max(design.shape[1], design.shape[2])
+                                  * _FLOAT_EPSILON)))
                         # The operator: what the gradient is, per unit of each
                         # stencil coordinate's value.
                         yield (block[chosen], points[chosen],
                                im.mag(im.einsum(
                                    'grm,grd->gdm', local[:, linear, :],
-                                   frames[chosen][:, :room, :])))
+                                   here_frames[:len(chosen)][:, :room, :])))
                     growing.extend(block[rows[~settled]].tolist())
             start = stop
         # What is left grows by a ring of the neighbourhood, unless the geometry

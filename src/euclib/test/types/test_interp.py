@@ -2263,6 +2263,66 @@ class TestTheEstimateAgainstAField(TestCase):
                 quads.append((k + 1, k + side + 1, k + side))
         return TriMesh(coords, TriTopology(np.array(quads).T))
 
+    def test_a_regular_lattice_s_gradient_is_finite_and_right(self):
+        '''The neighbourhoods of a regular lattice are exactly symmetric.
+
+        And that used to make the estimate come back `nan`: `torch.linalg.svd`'s
+        backward "will only be finite when A does not have repeated singular
+        values", in its own words, and a symmetric stencil gives exactly that.
+        The fit reached the singular vectors twice --- once for the directions
+        the stencil spans, once for its design --- and both are now taken another
+        way. A lattice is the case that fails, and it is not exotic: it is what
+        a generated mesh looks like, and it fails while a triangulated grid does
+        not, because a grid's diagonal makes every vertex's ring lopsided.
+
+        Checked against a central difference and not merely for a nan, since a
+        route whose backward is *defined* is not the same as one whose answer is
+        right --- and this fix changes which basis the fit is written in.
+        '''
+        import torch
+        import numpy as np
+        from euclib.types._interp import estimate_gradient
+
+        (rows, cols) = (4, 5)
+        coords = np.array([[c + 0.5 * r for c in range(cols) for r in range(rows)],
+                           [r * (np.sqrt(3) / 2) for c in range(cols)
+                            for r in range(rows)]])
+        tris = []
+        for c in range(cols - 1):
+            for r in range(rows - 1):
+                a = c * rows + r; b = a + rows
+                tris.append((a, a + 1, b)); tris.append((a + 1, b + 1, b))
+        topo = np.array(tris).T
+        field = (2.0 * coords[0] + 3.0 * coords[1]
+                 + 0.1 * coords[0] ** 2)[None]
+
+        def value(one, /):
+            geom = TriMesh(asarray(one), TriTopology(topo))
+            got = estimate_gradient(geom, geom.withprop(
+                'v', field)._prop_for('v', None), 2)
+            return float(np.asarray(getattr(got, 'm', got)).sum())
+
+        tensor = torch.tensor(coords, dtype=torch.float64, requires_grad=True)
+        geom = TriMesh(tensor, TriTopology(topo))
+        out = estimate_gradient(geom, geom.withprop(
+            'v', torch.tensor(field, dtype=torch.float64))._prop_for('v', None), 2)
+        out = out.m if hasattr(out, 'm') else out
+        out.sum().backward()
+        got = tensor.grad.numpy()
+        self.assertFalse(np.isnan(got).any(),
+                         "a symmetric lattice came back nan")
+
+        step = 1e-6
+        want = np.zeros(coords.shape)
+        for i in range(coords.shape[0]):
+            for k in range(coords.shape[1]):
+                (up, down) = (np.zeros(coords.shape), np.zeros(coords.shape))
+                up[i, k], down[i, k] = step, -step
+                # Both are *added*: `down` carries its own sign.
+                want[i, k] = (value(coords + up) - value(coords + down)) \
+                    / (2 * step)
+        self.assertLess(np.abs(got - want).max(), 1e-5)
+
     def test_it_gives_an_affine_field_s_slope(self):
         from euclib.types._interp import estimate_gradient
         mesh = self._mesh(6)
