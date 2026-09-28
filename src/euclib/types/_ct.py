@@ -141,18 +141,66 @@ def gradient(controls, corners, w, /):
     symmetric in the right way, cannot tell the two apart and a lopsided one
     can.
     '''
-    # The two directions from the first corner, as the columns of a matrix.
+    # The two directions from the first corner, as the columns of a matrix,
+    # and the same choice of arithmetic as `_corners`: this is the inner loop of
+    # the element's conditions, and dispatch through immlib costs more than the
+    # two-by-two it is dispatching.
+    two = directional(controls, w, 1)
+    if not (_is_tensor(corners) or _is_tensor(two)):
+        along = array([corners[:, 1] - corners[:, 0],
+                       corners[:, 2] - corners[:, 0]]).T
+        wanted = stack([two, directional(controls, w, 2)], axis=-1)
+        # The pseudo-inverse and not the inverse: a triangle is usually a
+        # surface in three dimensions, where the two edge directions do not span
+        # the space and no inverse exists. What it gives is the gradient's part
+        # *in* the triangle's plane, which is the only part a field on the
+        # triangle can mean.
+        return einsum('jk,...k->...j', linalg.pinv(along.T), wanted)
     along = im.mag(im.stack([im.subtract(corners[:, 1], corners[:, 0]),
                              im.subtract(corners[:, 2], corners[:, 0])],
                             axis=-1))
-    wanted = im.mag(im.stack([directional(controls, w, 1),
-                              directional(controls, w, 2)], axis=-1))
-    # The pseudo-inverse and not the inverse: a triangle is usually a surface in
-    # three dimensions, where the two edge directions do not span the space and
-    # no inverse exists. What it gives is the gradient's part *in* the
-    # triangle's plane, which is the only part a field on the triangle can mean.
+    wanted = im.mag(im.stack([two, directional(controls, w, 2)], axis=-1))
     return im.mag(im.einsum('jk,...k->...j', im.pinv(along.T), wanted))
 
+
+
+
+def _is_tensor(one, /):
+    """Whether an argument is a torch tensor rather than an array."""
+    return type(one).__module__.split('.')[0] == 'torch'
+
+
+
+def _stacked(values, /):
+    """The values as one array, in whichever backend they are.
+
+    Immlib's stack for a tensor and numpy's for arrays: the rows are built some
+    fifty times per basis, and a quantity wrapped and unwrapped on each of them
+    is most of what the array path would otherwise pay for this.
+    """
+    if any(_is_tensor(one) for one in values):
+        return im.mag(im.stack(values))
+    return asarray(values)
+
+
+
+def _difference(one, two, /):
+    """``one - two``, in whichever backend the arguments are."""
+    if _is_tensor(one) or _is_tensor(two):
+        return im.mag(im.subtract(one, two))
+    return one - two
+
+
+def _dot(one, two, /):
+    """The last-axis dot product, in whichever backend the arguments are.
+
+    Through immlib for a tensor and numpy's own for arrays, for the same reason
+    `_stacked` is: this is the innermost expression of the element's conditions
+    and is evaluated once per control per row.
+    """
+    if _is_tensor(one) or _is_tensor(two):
+        return im.mag(im.sum(im.multiply(one, two), axis=-1))
+    return asarray(one) @ asarray(two)
 
 
 def _zeros_of(like, count, /):
@@ -175,8 +223,13 @@ def _placed(values, piece, /):
     there --- and a tensor among them will not be assigned into an array made as
     numpy.
     """
+    raw = im.mag(values)
+    if not _is_tensor(raw):
+        row = zeros(30)
+        row[piece * 10:(piece + 1) * 10] = raw
+        return row
     return im.mag(im.concatenate(
-        [_zeros_of(values, piece * 10), im.mag(values),
+        [_zeros_of(values, piece * 10), raw,
          _zeros_of(values, 30 - (piece + 1) * 10)]))
 
 
@@ -189,8 +242,13 @@ def _corners(triangle, k, /):
     dimensions leading and the corners following.
     """
     (a, b) = EDGES[k]
-    # Through immlib: `array` of a list reaches numpy, and a list holding a
-    # tensor that requires a gradient has no numpy array to reach.
+    # immlib for a tensor, because `array` of a list reaches numpy and a list
+    # holding one that requires a gradient has no numpy array to reach --- and
+    # numpy for an array, because this is called six hundred times per basis and
+    # immlib wraps a quantity on each of them.
+    if not _is_tensor(triangle):
+        return array([triangle[:, a], triangle[:, b],
+                      triangle.mean(axis=1)]).T
     return im.mag(im.stack([triangle[:, a], triangle[:, b],
                             im.mean(triangle, axis=1)], axis=-1))
 
@@ -227,7 +285,7 @@ def _row_from(functional, k, /):
     the condition evaluated on unit controls: nothing is written down by hand,
     and nothing can be misremembered.
     """
-    return _placed(im.stack([functional(_unit_controls(k, n))
+    return _placed(_stacked([functional(_unit_controls(k, n))
                              for n in range(10)]), k)
 
 
@@ -282,15 +340,22 @@ def _c1(triangle, samples=5, /):
             for component in (0, 1):
                 # Two pieces reach this row, so it is their two placements
                 # added rather than written one after the other into one array.
+                tensor = _is_tensor(triangle)
                 parts = []
                 for (piece, sign) in ((k, 1.0), (other, -1.0)):
                     w = _weights_on_edge(piece, vertex, s)
                     corners = _corners(triangle, piece)
-                    parts.append(_placed(im.stack([
-                        im.mag(im.multiply(sign, im.mag(gradient(
-                            _unit_controls(piece, n)[piece], corners, w
-                        ))[component])) for n in range(10)]), piece))
-                rows.append(im.mag(im.add(parts[0], parts[1])))
+                    values = [gradient(_unit_controls(piece, n)[piece],
+                                       corners, w)[component]
+                              for n in range(10)]
+                    if tensor:
+                        values = [im.mag(im.multiply(sign, im.mag(one)))
+                                  for one in values]
+                    else:
+                        values = [sign * one for one in values]
+                    parts.append(_placed(_stacked(values), piece))
+                rows.append(im.mag(im.add(parts[0], parts[1])) if tensor
+                            else parts[0] + parts[1])
     return rows
 
 
@@ -413,19 +478,17 @@ def element_rows(triangle, /):
             # drops whatever graph was behind it, without failing --- so the row
             # would come back looking right with the coordinates' derivative
             # quietly gone.
-            along = im.subtract(triangle[:, other], triangle[:, vertex])
+            along = _difference(triangle[:, other], triangle[:, vertex])
             rows.append((_row_from(
                 lambda c, w=w, k=k, d=along:
-                im.mag(im.sum(im.multiply(
-                    gradient(c[k], _corners(triangle, k), w), d), axis=-1)), k),
+                _dot(gradient(c[k], _corners(triangle, k), w), d), k),
                 ('slope', vertex, other)))
     for k in range(3):
         w = array([0.5, 0.5, 0.0])
         across = across_vector(triangle, k)
         rows.append((_row_from(
             lambda c, w=w, k=k, d=across:
-            im.mag(im.sum(im.multiply(
-                gradient(c[k], _corners(triangle, k), w), d), axis=-1)), k),
+            _dot(gradient(c[k], _corners(triangle, k), w), d), k),
             ('across', k)))
     return rows
 
