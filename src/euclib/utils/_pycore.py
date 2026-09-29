@@ -1264,6 +1264,21 @@ def tetrahedron_box_intersection(tet, bounds, tolerance=0.0):
         A ``(4, T)`` integer matrix of the tetrahedra that fill the region,
         indexing ``vertices``.
     '''
+    # A tetrahedron of no volume has no region to fill, and asking for one builds
+    # the faces of a solid that is not there: the corners of a flat tetrahedron
+    # are coplanar, so two of its faces are collinear and the frame across one of
+    # them is a division by zero. Real data has them --- a cortical surface is
+    # the white and pial surfaces of a brain, which *touch* wherever the two meet,
+    # and 4.88% of the example subject's left hemisphere's prisms are flat, with
+    # 4.69% of their tetrahedra enclosing nothing. The volumes are exactly zero,
+    # not nearly, and the smallest nonzero one is 8.5e-07, so the test needs no
+    # tolerance.
+    corners = asarray(tet)
+    flat = abs(_tetrahedron_volume([tuple(float(v) for v in corners[:, i])
+                                    for i in range(corners.shape[1])]))
+    if flat <= _EPSILON:
+        return (corners[:, :0], zeros((corners.shape[0] + 1, 0), dtype=int))
+
     corners = asarray(tet)
     box = asarray(bounds)
     dim = corners.shape[0]
