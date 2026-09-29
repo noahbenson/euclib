@@ -30,7 +30,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 import immlib.math as im
-from numpy import arange, asarray, concatenate, eye, meshgrid, ones, stack
+from numpy import (arange, asarray, concatenate, eye, meshgrid, ones, stack,
+                   where, zeros)
 from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, lazy, llist
 
@@ -515,6 +516,46 @@ def _tetlayer(coords0, coords1, indices, coord_count, elevations, backend, /):
     topo = TetTopology(prism_tetrahedra(indices, layers, coord_count),
                        coord_count=layers * int(coord_count), backend=backend)
     return TetMesh(corners, topo, backend=backend)
+
+
+def prism_layer_values(values, indices, coord_count, /):
+    """The values a stack of layers gives its vertices.
+
+    Parameters
+    ----------
+    values : array-like
+        A ``(C..., K, M, 3)`` array of a prism property's values: the channel
+        dimensions leading, then one row per elevation, per triangle, per
+        corner.
+    indices : array-like
+        A ``(3, M)`` integer matrix of triangle corners, the prism mesh's own
+        coordinates.
+    coord_count : int
+        How many coordinates the prism mesh has, so that layer ``k``\'s vertices
+        are ``k * coord_count + i``.
+
+    Returns
+    -------
+    array-like
+        A ``(C..., K, N)`` array, one column per coordinate of one layer, in the
+        backend of ``values``.
+    """
+    values = asarray(values)
+    indices = asarray(indices)
+    (layers, triangles) = (values.shape[-3], values.shape[-2])
+    count = int(coord_count)
+    # The flat order of the values is ``triangle * 3 + corner``, which is the
+    # transpose of the indices' own, so the two are read in the same order.
+    named = indices.T.ravel()
+    # One column per coordinate, holding the mean of the triangles naming it.
+    shares = zeros((triangles * 3, count))
+    shares[arange(triangles * 3), named] = 1.0
+    seen = shares.sum(axis=0)
+    shares = shares * where(seen > 0, 1.0 / where(seen > 0, seen, 1.0), 0.0)
+    # One contraction over the values' triangle-and-corner axis at once.
+    flat = im.mag(im.reshape(values, values.shape[:-2] + (triangles * 3,)))
+    joined = im.mag(im.einsum('...kq,qn->...kn', flat, shares))
+    return im.mag(im.reshape(joined, values.shape[:-2] + (count,)))
 
 
 class PrismMesh(SimplexGeometry):

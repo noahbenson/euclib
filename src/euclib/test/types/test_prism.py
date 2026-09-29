@@ -15,6 +15,7 @@ from numpy import (allclose, array, asarray, concatenate, linalg,
 from euclib.abc import is_geometry, is_simplex_topology
 from euclib.types import (
     PrismMesh, PrismTopology, PrismLoc, TetMesh, TriMesh)
+from euclib.types._geom import prism_layer_values
 
 
 # Fixtures ###################################################################
@@ -412,3 +413,54 @@ class TestPrismMesh(TestCase):
         below = pm.to_local(array([[0.2], [0.4], [-3.0]]))
         self.assertAlmostEqual(float(below.height[0, 0]), 0.0)
         self.assertAlmostEqual(float(pm.to_global(below)[2, 0]), 0.0)
+
+
+class TestTheValueDistribution(TestCase):
+    '''Giving a stack of layers the values its vertices have.
+
+    A prism property's values are per *triangle*, per elevation, per corner ---
+    ``(C..., K, M, 3)`` --- and a stack's tetrahedra are built from the prism
+    mesh's own *coordinates*. A coordinate is shared by every triangle that has
+    it for a corner, so the value a vertex takes has to be read off the
+    triangles that name it.
+
+    The reading is the **mean**, and the interesting case is the one where the
+    triangles disagree: for a continuous property they agree and the mean is the
+    value, but an inconsistent input has no "first" triangle to take it from
+    that is not an arbitrary choice, and averaging is the symmetric answer. That
+    is what these check, since it is the choice a reader would want to see
+    argued rather than buried.
+    '''
+
+    #: Two triangles sharing coordinate 2, over five coordinates.
+    INDICES = array([[0, 2], [1, 3], [2, 4]])
+
+    def _values(self, /):
+        # (C=1, K=1, M=2, 3): triangle 0 says 1, 2, 3 and triangle 1 says 3, 4, 5.
+        return array([[[[1.0, 2.0, 3.0], [3.0, 4.0, 5.0]]]])
+
+    def test_each_coordinate_takes_what_its_triangles_say(self):
+        got = asarray(prism_layer_values(self._values(), self.INDICES, 5))
+        self.assertEqual(got.shape, (1, 1, 5))
+        # Coordinate 2 is named by both, with 3 either time.
+        self.assertTrue(allclose(got.ravel(), [1.0, 2.0, 3.0, 4.0, 5.0]))
+
+    def test_a_coordinate_two_triangles_disagree_about_is_averaged(self):
+        values = self._values()
+        values[0, 0, 1, 0] = 30.0            # now triangle 1 says 30 and 3
+        got = asarray(prism_layer_values(values, self.INDICES, 5))
+        self.assertTrue(allclose(got.ravel(), [1.0, 2.0, 16.5, 4.0, 5.0]),
+                        "the shared coordinate did not take the mean")
+
+    def test_the_elevation_axis_is_carried_through(self):
+        two = concatenate([self._values(), self._values() + 10.0], axis=1)
+        got = asarray(prism_layer_values(two, self.INDICES, 5))
+        self.assertEqual(got.shape, (1, 2, 5))
+        self.assertTrue(allclose(got[0, 0], [1.0, 2.0, 3.0, 4.0, 5.0]))
+        self.assertTrue(allclose(got[0, 1], [11.0, 12.0, 13.0, 14.0, 15.0]))
+
+    def test_the_channels_lead(self):
+        chan = concatenate([self._values(), self._values() * 2.0], axis=0)
+        got = asarray(prism_layer_values(chan, self.INDICES, 5))
+        self.assertEqual(got.shape, (2, 1, 5))
+        self.assertTrue(allclose(got[1, 0], [2.0, 4.0, 6.0, 8.0, 10.0]))
