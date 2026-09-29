@@ -39,7 +39,7 @@ from ..abc import (
     Geometry, Property, SimplexGeometry, UNSET, as_coords, as_query, calc,
     check_coordinfo, split_property_name)
 from ..utils import (
-    face_weights,
+    face_weights, refine_prism,
     closest_prism, closest_simplex, nearest_vertices, simplex_measures)
 from ._topo import (
     GridTopology, PrismTopology, SegTopology, TetTopology, TriTopology,
@@ -786,6 +786,13 @@ class PrismMesh(SimplexGeometry):
         parallel --- and then refines that estimate until it reproduces the
         position.
 
+        The search for the prism a position lies in is detached from any
+        derivative: which prism holds a position is a *choice*, and a choice has
+        no derivative. The Newton refinement that follows is not a choice, so a
+        query that carries a gradient gets the refinement re-run where the
+        gradient survives, and the coordinates within the prism come back with
+        it.
+
         A position *outside* every prism is answered with the nearest position
         on one of them, as it is for the simplex geometries. That is the
         position the tetrahedra give --- they fill the prisms and the search
@@ -807,6 +814,21 @@ class PrismMesh(SimplexGeometry):
         (index, weight, height) = closest_prism(
             self.coords0, self.coords1, self.topo.indices, self.tetrahedra,
             as_query(coords))
+        if getattr(coords, 'requires_grad', False):
+            # The search is detached, and rightly: which prism holds a position
+            # is a *choice*, and a choice has no derivative. What follows it is
+            # not a choice --- Newton's method on `p(u, v, e) - query = 0` --- so
+            # a query that carries a derivative gets the refinement run again
+            # where that derivative survives. The prism each position was found
+            # in still comes from the search, so only the coordinates within the
+            # prism are re-derived.
+            x = concatenate([asarray(weight).T, asarray(height).T], axis=1)
+            # `im.mag` unwraps the quantity without cutting the graph --- and a
+            # `asarray` here would cut it --- so the coordinates come back as the
+            # query's own backend, with the derivative attached.
+            refined = refine_prism(self.coords0, self.coords1, asarray(index),
+                                   self.topo.indices, x, as_query(coords))
+            (weight, height) = (refined[:, :2].T, refined[:, 2][None, :])
         return self.topo.Loc(index, weight, height)
 
 

@@ -1459,6 +1459,112 @@ def closest_prism(coords0, coords1, indices, tetrahedra, query,
 
 # Spatial Subdivision ########################################################
 
+def prism_residual(corners0, corners1, prism, indices, x, wanted, /):
+    '''The residual and Jacobian of one Newton step on a prism's interior.
+
+    A position within a prism is ``(1 - e) * X0(u, v) + e * X1(u, v)``, written
+    relative to the triangle's *third* corner so that ``u`` and ``v`` are the two
+    weights a `PrismLoc` stores. Newton solves that for the query.
+
+    Parameters
+    ----------
+    corners0, corners1 : array-like
+        The ``(3, N)`` coordinates of each surface.
+    prism : array-like
+        One integer per query: the prism it was found in.
+    indices : array-like
+        The ``(3, M)`` triangle corners.
+    x : array-like
+        A ``(Q, 3)`` matrix of the current ``(u, v, e)`` estimate.
+    wanted : array-like
+        A ``(3, Q)`` matrix of the positions being located.
+
+    Returns
+    -------
+    res : array-like
+        The ``(3, Q)`` residual, ``p(u, v, e) - wanted``.
+    jac : array-like
+        The ``(3, 3, Q)`` Jacobian of the residual in ``(u, v, e)``: the
+        position's axes lead, as they do in the residual, so entry ``[i, j, q]``
+        is the derivative of axis ``i`` of the residual at query ``q`` in
+        direction ``j`` of ``(u, v, e)``.
+
+    Notes
+    -----
+    Every operation here is `immlib.math`'s, so the loop works in whatever
+    backend the arguments are in: numbers for the search, and tensors when the
+    query carries a derivative that the answer should carry too.
+    '''
+    (a, b, c) = (indices[0][prism], indices[1][prism], indices[2][prism])
+    (a0, b0, c0) = (corners0[:, a], corners0[:, b], corners0[:, c])
+    (a1, b1, c1) = (corners1[:, a], corners1[:, b], corners1[:, c])
+    # Every operation goes through immlib rather than Python's own arithmetic:
+    # the corners are numbers and the estimate may be a tensor, and a bare `+`
+    # between the two gives a tensor's error or, worse, a silent answer.
+    sub = im.subtract
+    e0 = im.mag(sub(a0, c0))
+    e1 = im.mag(sub(b0, c0))
+    f0 = im.mag(sub(sub(a1, c1), e0))
+    f1 = im.mag(sub(sub(b1, c1), e1))
+    dc = im.mag(sub(c1, c0))
+    (u, v, e) = (x[:, 0], x[:, 1], x[:, 2])
+    drift = im.mag(im.add(dc, im.add(im.multiply(u, f0), im.multiply(v, f1))))
+    res = im.mag(im.subtract(
+        im.add(c0, im.add(im.multiply(u, e0),
+                          im.add(im.multiply(v, e1), im.multiply(e, drift)))),
+        wanted))
+    jac = im.mag(im.stack([im.mag(im.add(e0, im.multiply(e, f0))),
+                           im.mag(im.add(e1, im.multiply(e, f1))),
+                           drift], axis=1))
+    return (res, jac)
+
+
+def refine_prism(corners0, corners1, prism, indices, x, wanted, /):
+    '''Refines a prism's local coordinates onto the positions they locate.
+
+    The same iteration `closest_prism` runs after its search, written so that the
+    answer carries whatever derivative `wanted` does. The search itself stays
+    detached: which prism holds a position is a choice, and a choice has no
+    derivative.
+
+    Parameters
+    ----------
+    corners0, corners1 : array-like
+        The ``(3, N)`` coordinates of each surface.
+    prism : array-like
+        One integer per query: the prism the search chose.
+    indices : array-like
+        The ``(3, M)`` triangle corners.
+    x : array-like
+        A ``(Q, 3)`` matrix: the search's starting estimate of ``(u, v, e)``.
+    wanted : array-like
+        A ``(3, Q)`` matrix of the positions being located.
+
+    Returns
+    -------
+    array-like
+        A ``(Q, 3)`` matrix of the refined ``(u, v, e)``.
+    '''
+    for _ in range(_PRISM_STEPS):
+        (res, jac) = prism_residual(corners0, corners1, prism, indices, x,
+                                    wanted)
+        # One 3x3 solve per query, written as an inverse rather than a
+        # factorization: the systems are tiny, and a `pinv` is the one batched
+        # linear solve every backend immlib reaches agrees on. Both arrays carry
+        # the position's *axes* leading --- one matrix per axis and one row per
+        # axis --- so both are read query-first before the contraction.
+        mat = im.mag(im.permute(jac, (2, 0, 1)))             # (Q, 3, 3)
+        rhs = im.mag(im.permute(res, (1, 0)))                # (Q, 3)
+        step = im.mag(im.einsum('qij,qj->qi', im.pinv(mat),
+                                im.multiply(-1.0, rhs)))
+        x = im.mag(im.add(x, step))
+    return x
+
+
+#: How many Newton steps to take before giving up on a prism.
+_PRISM_STEPS = 40
+
+
 def bounds_of(coords, indices=None):
     '''Returns the bounding box of a set of points or of a set of simplices.
 

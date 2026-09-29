@@ -561,3 +561,96 @@ class TestReadingThroughTheStack(TestCase):
         with self.assertRaises(ValueError):
             mesh.prop('v', at=at, interp=('bezier', 2),
                       gradient=zeros((1, 3, 3, 1, 3)))
+
+
+class TestLocatingATensorPosition(TestCase):
+    '''A prism's `to_local` when the query carries a derivative.
+
+    A prism's local coordinates are a *nonlinear* function of the position
+    whenever its two surfaces are not parallel, so the search cannot invert a
+    linear system the way a simplex does. It finds the prism with the
+    tetrahedral decomposition --- a cell *choice*, rightly detached --- and
+    refines with Newton's method, which is not a choice and can carry a
+    derivative. These check that it does, and that the answer is the one the
+    numpy path gives.
+    '''
+
+    #: A prism whose two surfaces are *not* parallel, so the local coordinates
+    #: are genuinely nonlinear: with parallel surfaces the search alone is
+    #: already exact and a broken refinement would go unnoticed.
+    LOWER = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+    UPPER = array([[0.6, 1.4, 0.2], [0.2, 0.1, 1.3], [1.0, 1.0, 1.0]])
+
+    #: A position strictly inside that prism.
+    INSIDE = array([[0.3], [0.3], [0.5]])
+
+    def _mesh(self, /, *, level=False):
+        """The slanted prism, or one whose surfaces are level."""
+        upper = self.LOWER + array([[0.], [0.], [1.]]) if level else self.UPPER
+        return PrismMesh(stack([self.LOWER, upper]),
+                         PrismTopology([[0], [1], [2]]))
+
+    def _torch(self, /):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is not installed")
+        return torch
+
+    @staticmethod
+    def _plain(x, /):
+        """A tensor's numbers, detached --- `asarray` refuses a grad tensor."""
+        return asarray(x.detach()) if hasattr(x, 'detach') else asarray(x)
+
+    def test_a_tensor_query_locates_the_same_position(self):
+        torch = self._torch()
+        mesh = self._mesh()
+        plain = mesh.to_local(self.INSIDE)
+        queried = mesh.to_local(
+            torch.tensor(self.INSIDE, dtype=torch.float64, requires_grad=True))
+        self.assertTrue(allclose(self._plain(queried.weight),
+                                 asarray(plain.weight), atol=1e-9))
+        self.assertTrue(allclose(self._plain(queried.height),
+                                 asarray(plain.height), atol=1e-9))
+        self.assertEqual(asarray(queried.index).ravel().tolist(),
+                         asarray(plain.index).ravel().tolist())
+
+    def test_the_coordinates_carry_the_query_s_derivative(self):
+        torch = self._torch()
+        mesh = self._mesh()
+        at = torch.tensor(self.INSIDE, dtype=torch.float64, requires_grad=True)
+        loc = mesh.to_local(at)
+        for part in (loc.weight, loc.height):
+            self.assertTrue(getattr(part, 'requires_grad', False),
+                            "the coordinates came back detached")
+
+    def test_a_level_prism_s_elevation_is_the_position_s_height(self):
+        # When the two surfaces are level, the position's z is exactly the
+        # elevation, so d(height)/d(z) is 1 and d(height)/d(x, y) is 0 --- an
+        # answer known without the mesh, which is what makes it worth checking.
+        torch = self._torch()
+        mesh = self._mesh(level=True)
+        at = torch.tensor(self.INSIDE, dtype=torch.float64, requires_grad=True)
+        loc = mesh.to_local(at)
+        loc.height.sum().backward()
+        self.assertTrue(allclose(at.grad.numpy().ravel(), [0.0, 0.0, 1.0],
+                                 atol=1e-9),
+                        f"the elevation's gradient came back {at.grad}")
+
+    def test_the_refinement_lands_where_the_search_did_not_start(self):
+        # The refinement is the only part that is re-run, so it is worth knowing
+        # it converges from somewhere other than its own answer. Starting from a
+        # point the search would never return, it reaches the same coordinates.
+        from euclib.utils import closest_prism, refine_prism
+        mesh = self._mesh()
+        (index, weight, height) = closest_prism(
+            mesh.coords0, mesh.coords1, mesh.topo.indices, mesh.tetrahedra,
+            self.INSIDE)
+        want = concatenate([asarray(weight).T, asarray(height).T], axis=1)
+        # The prism's first corner, as a start for a point well away from it.
+        start = array([[1.0, 0.0, 0.0]])
+        got = asarray(refine_prism(mesh.coords0, mesh.coords1, asarray(index),
+                                   mesh.topo.indices, start,
+                                   self.INSIDE))
+        self.assertTrue(allclose(got, want, atol=1e-9),
+                        f"the refinement reached {got}, not {want}")

@@ -76,7 +76,8 @@ from ._pycore import (  # noqa: E402
     is_pointdata, unique_columns, unique_coords, simplex_measures,
     bounds_of, simplex_boxes, octree_split, quadtree_split,
     nearest_vertices, project_onto_face, face_weights, closest_simplex,
-    closest_prism, barycentric_coords, cross3, closest_segment_params,
+    closest_prism, refine_prism, prism_residual, barycentric_coords,
+    cross3, closest_segment_params,
     segments_intersect, barycentric_in_triangle,
     segments_triangles_intersect, triangles_segments_intersect,
     tetrahedron_box_intersection)
