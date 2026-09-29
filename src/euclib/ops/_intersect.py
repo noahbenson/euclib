@@ -301,7 +301,12 @@ def contains(geom, points, /, tolerance=None):
                 p.reshape(-1) <= (size - 0.5) + tol)
         return inside
     back = geom.to_global(geom.to_local(query))
-    gap = asarray(query) - asarray(back)
+    # Detached, and for the same reason the grid branch above is: whether a
+    # position belongs to a geometry is a *selection* --- a comparison against a
+    # tolerance --- and a selection has no derivative. `to_array(detach=True)`
+    # and not `asarray`, which raises on a tensor that requires a gradient
+    # rather than reading past it, and so would refuse a query it can answer.
+    gap = to_array(query, detach=True) - to_array(back, detach=True)
     return sqrt((gap * gap).sum(axis=0)) <= tol
 
 

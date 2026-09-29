@@ -13,6 +13,7 @@ from numpy import (allclose, array, asarray, concatenate, linalg,
                    mean as np_mean, ones, stack, zeros)
 
 from euclib.abc import is_geometry, is_simplex_topology
+from euclib.ops import contains, distance
 from euclib.types import (
     PrismMesh, PrismTopology, PrismLoc, TetMesh, TriMesh)
 from euclib.types._geom import prism_layer_values
@@ -654,3 +655,89 @@ class TestLocatingATensorPosition(TestCase):
                                    self.INSIDE))
         self.assertTrue(allclose(got, want, atol=1e-9),
                         f"the refinement reached {got}, not {want}")
+
+
+class TestContainmentAndDistance(TestCase):
+    '''Where a prism's boundary is, and how far away a point is.
+
+    Both are answered through `to_local` and `to_global`: a position belongs to a
+    geometry when the nearest position of the geometry is the position itself,
+    and its distance is how far that nearest position is. So these are also a
+    test of the round trip --- a defect in either direction shows up here as a
+    boundary in the wrong place.
+
+    The prism is *level* --- the same triangle at z = 0 and at z = 1 --- so that
+    the interior can be written down without the mesh: ``0 <= x``, ``0 <= y``,
+    ``x + y <= 1``, and ``0 <= z <= 1``. Every case below is a consequence of
+    that and of nothing else, which is what makes them worth asserting rather
+    than recording.
+    '''
+
+    #: The triangle, at z = 0.
+    LOWER = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+
+    def _mesh(self, /, height=1.0):
+        '''The level prism, its top surface ``height`` above the bottom.'''
+        return PrismMesh(stack([self.LOWER, self.LOWER
+                                + array([[0.], [0.], [height]])]),
+                         PrismTopology([[0], [1], [2]]))
+
+    def test_a_position_belongs_exactly_when_it_is_inside(self):
+        mesh = self._mesh()
+        cases = [
+            ('the first corner', [0.0, 0.0, 0.0], True),
+            ('the second corner', [1.0, 0.0, 0.0], True),
+            ('the third corner', [0.0, 1.0, 0.0], True),
+            ('the middle of an edge', [0.5, 0.0, 0.5], True),
+            ('the centre, halfway up', [1. / 3., 1. / 3., 0.5], True),
+            ('just inside a face', [0.25, 0.25, 0.5], True),
+            ('on the top face', [0.25, 0.25, 1.0], True),
+            ('above the top face', [0.25, 0.25, 1.5], False),
+            ('below the bottom face', [0.25, 0.25, -0.5], False),
+            ('past the hypotenuse', [0.75, 0.75, 0.5], False),
+            ('beyond the first corner', [-0.5, 0.0, 0.5], False),
+        ]
+        for (name, point, want) in cases:
+            got = contains(mesh, array(point)[:, None])
+            self.assertEqual(bool(asarray(got).ravel()[0]), want,
+                             f"{name} was reported {'inside' if not want else 'outside'}")
+
+    def test_a_tensor_query_is_answered_like_a_plain_one(self):
+        # Whether a position belongs to a geometry is a *selection*, so a query
+        # carrying a gradient is answered rather than refused --- and answered
+        # the same way.
+        torch = self._torch()
+        mesh = self._mesh()
+        for point in ([0.25, 0.25, 0.5], [0.75, 0.75, 0.5]):
+            query = torch.tensor(point, dtype=torch.float64,
+                                 requires_grad=True)[:, None]
+            got = contains(mesh, query)
+            self.assertEqual(bool(asarray(got).ravel()[0]),
+                             all(v >= 0 for v in point[:2]) and sum(point[:2]) <= 1)
+
+    def test_the_distance_to_a_prism_is_the_gap_to_its_nearest_surface(self):
+        # A prism two above the first, its own surfaces at z = 2 and z = 3. Its
+        # *coordinates* are both planes, so `distance` measures all six: the
+        # lower plane is one from the original's top face and the upper is two.
+        mesh = self._mesh()
+        other = self._mesh(height=1.0)
+        other = PrismMesh(stack([self.LOWER + array([[0.], [0.], [2.]]),
+                                 self.LOWER + array([[0.], [0.], [3.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        got = asarray(distance(mesh, other)).ravel()
+        self.assertTrue(allclose(got, [1.0, 1.0, 1.0, 2.0, 2.0, 2.0]),
+                        f"the distances came back {got.tolist()}")
+
+    def test_a_position_inside_has_no_distance(self):
+        mesh = self._mesh()
+        inside = array([[1. / 3., 0.3], [1. / 3., 0.3], [0.5, 0.5]])
+        got = asarray(distance(mesh, inside)).ravel()
+        self.assertTrue(allclose(got, [0.0, 0.0]),
+                        f"a position inside was given a distance of {got.tolist()}")
+
+    def _torch(self, /):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is not installed")
+        return torch

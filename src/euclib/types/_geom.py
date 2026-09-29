@@ -763,16 +763,26 @@ class PrismMesh(SimplexGeometry):
             A ``(D, Q)`` matrix of positions.
         '''
         loc = self.topo.check_loc(locs)
-        corners = _corner_coords(self.coords0, self.topo.indices, loc.index)
+        # Through immlib rather than Python's own arithmetic, because the
+        # coordinates are the geometry's numbers while the weights may be a
+        # tensor: `numpy * tensor` raises from numpy's side with a message that
+        # does not name the line. This is also what lets a position carry a
+        # derivative back to the local coordinates it came from.
         weight = loc.weight
-        last = 1.0 - weight.sum(axis=0)
-        lower = (corners[:, 0] * weight[0] + corners[:, 1] * weight[1]
-                 + corners[:, 2] * last)
-        corners = _corner_coords(self.coords1, self.topo.indices, loc.index)
-        upper = (corners[:, 0] * weight[0] + corners[:, 1] * weight[1]
-                 + corners[:, 2] * last)
+        last = im.mag(im.subtract(1.0, im.mag(im.sum(im.mag(weight), axis=0))))
+
+        def blended(surface, /):
+            '''The position within one surface, at these weights.'''
+            corners = _corner_coords(surface, self.topo.indices, loc.index)
+            terms = [im.multiply(corners[:, i], w)
+                     for (i, w) in enumerate((weight[0], weight[1], last))]
+            return im.mag(im.add(im.add(terms[0], terms[1]), terms[2]))
+
+        lower = blended(self.coords0)
+        upper = blended(self.coords1)
         height = loc.height[0]
-        return lower * (1.0 - height) + upper * height
+        return im.mag(im.add(im.multiply(lower, im.subtract(1.0, height)),
+                             im.multiply(upper, height)))
 
     def to_local(self, coords, /):
         '''Locates positions within the prism mesh.
@@ -828,7 +838,20 @@ class PrismMesh(SimplexGeometry):
             # query's own backend, with the derivative attached.
             refined = refine_prism(self.coords0, self.coords1, asarray(index),
                                    self.topo.indices, x, as_query(coords))
-            (weight, height) = (refined[:, :2].T, refined[:, 2][None, :])
+            # The refinement solves for the *query*, which is what the answer is
+            # for a position on or within the prism. For one *outside* it, the
+            # answer is the nearest position instead --- and that is what the
+            # search already found, since the search clamps to the tetrahedra.
+            # Refining toward the query there would move off the prism, because a
+            # prism's parameterization inverts for a position beyond it just as
+            # well as for one within. So the refinement is kept only where the
+            # query is *strictly* interior, and the search's own answer --- which
+            # is the boundary position there --- is kept elsewhere.
+            (u, v, e) = (x[:, 0], x[:, 1], x[:, 2])
+            strict = (u > 0.0) & (v > 0.0) & (u + v < 1.0) & (e > 0.0) & (e < 1.0)
+            kept = im.mag(im.add(im.multiply(refined, strict[:, None]),
+                                 im.multiply(x, (1.0 - strict)[:, None])))
+            (weight, height) = (kept[:, :2].T, kept[:, 2][None, :])
         return self.topo.Loc(index, weight, height)
 
 
