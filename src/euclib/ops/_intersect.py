@@ -25,8 +25,8 @@ from itertools import product
 from immlib import to_array
 
 from numpy import (
-    arange, asarray, ceil, concatenate, floor, full, intp, ones, repeat, sqrt,
-    stack, tile, zeros)
+    arange, asarray, ceil, concatenate, cumsum, floor, full, intp, ones, repeat,
+    sqrt, stack, tile, zeros)
 
 from ..abc import Geometry, as_query
 from ..types import Grid, SegPath, TriMesh
@@ -385,33 +385,53 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
     pieces = []
     from_tet = []
     from_voxel = []
-    for i in range(corners.shape[2]):
-        inside = index_space[i]                      # (3, 4) in index space
-        # The voxels the tetrahedron can reach, from its own extent in index
-        # space: a tetrahedron reaches only the cells its box meets. An index
-        # names a cell's center, so the cell numbered `v` covers the half step
-        # on either side of it, and the first cell whose region reaches a
-        # coordinate `x` is the one whose center is within half a step of it.
-        low = floor(inside.min(axis=1) + 0.5).astype(int).clip(0, None)
-        high = ceil(inside.max(axis=1) - 0.5).astype(int).clip(
-            None, [s - 1 for s in shape])
-        for voxel in product(*(range(low[a], high[a] + 1)
-                               for a in range(3))):
-            bounds = stack([asarray(voxel, dtype=float) - 0.5,
-                            asarray(voxel, dtype=float) + 0.5], axis=1)
-            (vertices, tets) = tetrahedron_box_intersection(
-                inside, bounds, tol)
-            if tets.shape[1] == 0:
-                continue
-            # Kept in *index* space for now: the pieces are carried back out in
-            # one affine call at the end rather than one each, for the same
-            # reason the corners went in that way --- a call costs about 28
-            # microseconds whatever it is given, and there are 1,536 pieces here
-            # against 384 tetrahedra.
-            pieces.append((vertices, tets))
-            from_tet.append(full(tets.shape[1], i))
-            from_voxel.append(stack([full(tets.shape[1], voxel[a])
-                                     for a in range(3)]))
+    # The voxels each tetrahedron can reach, from its own extent in index space:
+    # a tetrahedron reaches only the cells its box meets. An index names a cell's
+    # center, so the cell numbered `v` covers the half step on either side of it,
+    # and the first cell whose region reaches a coordinate `x` is the one whose
+    # center is within half a step of it.
+    #
+    # Every tetrahedron's reach at once, rather than one at a time: a `min` over
+    # the axes of all of them is one pass, where a `min` per tetrahedron is 384.
+    reach_lo = floor(index_space.min(axis=2) + 0.5).astype(int).clip(0, None)
+    reach_hi = ceil(index_space.max(axis=2) - 0.5).astype(int).clip(
+        None, [s - 1 for s in shape])
+    spans = (reach_hi - reach_lo + 1).clip(0)          # (M, 3)
+    counts = spans.prod(axis=1)                        # (M,)
+
+    total = int(counts.sum())
+    # Every pair of a tetrahedron and a voxel, as arrays. A tetrahedron's reach
+    # is its own, so the pairs are ragged, and `repeat` is what turns a count per
+    # tetrahedron into one entry per pair. `within` then counts up through each
+    # box; it is broken into the three axes with the last varying fastest, which
+    # is the order a nested walk over them would have taken.
+    pair_of_tet = repeat(arange(tets), counts)
+    starts = concatenate([[0], cumsum(counts)[:-1]])
+    within = arange(total) - repeat(starts, counts)
+    offsets = zeros((total, 3), dtype=int)
+    for axis in (2, 1, 0):
+        offsets[:, axis] = within % spans[pair_of_tet, axis]
+        within = within // spans[pair_of_tet, axis]
+    voxel_of = reach_lo[pair_of_tet] + offsets          # (P, 3)
+    bounds_of = stack([voxel_of - 0.5, voxel_of + 0.5], axis=2)  # (P, 3, 2)
+    # Indexed rather than sliced, so that each pair's tetrahedron is a
+    # *contiguous* array: the kernel is 635 times slower on one that is not, and
+    # a fancy index copies. The cut is the one part of this that stays a loop,
+    # because each pair's region is a different shape; it is 1.7 microseconds a
+    # pair, against the walk it used to sit inside.
+    inside_of = index_space[pair_of_tet]                # (P, 3, 4)
+    for j in range(total):
+        (vertices, local) = tetrahedron_box_intersection(
+            inside_of[j], bounds_of[j], tol)
+        if local.shape[1] == 0:
+            continue
+        # Kept in *index* space: the pieces are carried back out in one affine
+        # call at the end rather than one each, for the same reason the corners
+        # went in that way --- a call costs about 28 microseconds whatever it is
+        # given, and there are more pieces than tetrahedra.
+        pieces.append((vertices, local))
+        from_tet.append(full(local.shape[1], pair_of_tet[j]))
+        from_voxel.append(tile(voxel_of[j][:, None], (1, local.shape[1])))
     if not pieces:
         # An empty result is a tetrahedral mesh with no coordinates and no
         # tetrahedra, not a mesh with a placeholder in it.
