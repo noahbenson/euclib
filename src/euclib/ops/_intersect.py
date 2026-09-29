@@ -365,11 +365,28 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
     to_index = grid.affine_inverse
     to_global = grid.affine
     corners = mesh.coords[:, mesh.topo.indices]      # (3, 4, M)
+    # Every tetrahedron carried into index space in *one* affine call rather
+    # than one call each. An affine costs about 28 microseconds whatever it is
+    # given --- it builds a quantity and a unit context per call --- and the same
+    # 1,536 points cost 86 microseconds together, so the difference is not
+    # arithmetic but the per-call overhead. The corners are put end to end for
+    # the call and the shape is restored after.
+    (dim, per_tet, tets) = corners.shape
+    flat = to_index.apply(corners.reshape(dim, per_tet * tets))
+    # Laid out as one *C-contiguous* block per tetrahedron, rather than as three
+    # planes that a tetrahedron is a column of, and copied rather than
+    # transposed, because the kernel below is sensitive to the layout: on a
+    # tetrahedron held as a transposed view it takes 1,335 microseconds where a
+    # contiguous one takes 2.1 --- a factor of 635, and the whole operation was
+    # thirty times slower before this copy. `_half_spaces` is indifferent to it,
+    # so it is the kernel alone. One copy of the batch costs a few microseconds;
+    # the alternative, a copy per tetrahedron, costs more than it saves.
+    index_space = flat.reshape(dim, per_tet, tets).transpose(2, 0, 1).copy()
     pieces = []
     from_tet = []
     from_voxel = []
     for i in range(corners.shape[2]):
-        inside = to_index.apply(corners[:, :, i])    # (3, 4) in index space
+        inside = index_space[i]                      # (3, 4) in index space
         # The voxels the tetrahedron can reach, from its own extent in index
         # space: a tetrahedron reaches only the cells its box meets. An index
         # names a cell's center, so the cell numbered `v` covers the half step
