@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from unittest import TestCase
 
-from numpy import allclose, array, asarray, concatenate, linalg, stack, zeros
+from numpy import (allclose, array, asarray, concatenate, linalg,
+                   mean as np_mean, ones, stack, zeros)
 
 from euclib.abc import is_geometry, is_simplex_topology
 from euclib.types import (
@@ -118,6 +119,47 @@ class TestPrismTopology(TestCase):
             topo.check_loc(PrismLoc(array([0, 1]),
                                     array([[0.25], [0.25]]),
                                     array([[0.5]])))
+
+
+class TestPrismInterpolation(TestCase):
+    '''What a prism will and will not interpolate.
+
+    A prism takes the first order and refuses the rest. It is not a simplex, so
+    there is no element to fit the higher orders on; and a property of a prism
+    may carry more elevations than the geometry has surfaces, so its values have
+    an axis that a fit of the geometry's two surfaces cannot see. Both are
+    *deferred* rather than refused by design --- see the roadmap --- and until
+    they are built, the refusal has to say so rather than fail somewhere deep:
+    it used to accept the request and raise `LazyError` from the gradient
+    estimate, which names neither the method nor the reason.
+    '''
+
+    def _mesh(self, /):
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        return PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                         PrismTopology([[0], [1], [2]]))
+
+    def test_it_declares_what_it_can_honour(self):
+        from euclib.abc import supported_interp
+        mesh = self._mesh()
+        self.assertEqual(supported_interp(mesh.topo),
+                         (('nearest', 0), ('polynomial', 1), ('bezier', 1)),
+                         "a prism claims an interpolation it cannot honour")
+
+    def test_the_first_order_answers_and_the_rest_refuses(self):
+        mesh = self._mesh()
+        at = np_mean(concatenate([mesh.coords0, mesh.coords1], axis=1),
+                     axis=1)[:, None]
+        carried = mesh.withprop('v', ones(3))
+        for method in (('nearest', 0), ('polynomial', 1), ('bezier', 1)):
+            with self.subTest(method=method):
+                carried.prop('v', at=at, interp=method)
+        for method in (('polynomial', 2), ('polynomial', 3), ('bezier', 2),
+                       ('bezier', 3)):
+            with self.subTest(method=method):
+                with self.assertRaises(NotImplementedError) as caught:
+                    carried.prop('v', at=at, interp=method)
+                self.assertIn('not implemented', str(caught.exception).lower())
 
 
 class TestPrismMesh(TestCase):

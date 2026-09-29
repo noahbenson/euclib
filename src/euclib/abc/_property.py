@@ -168,6 +168,16 @@ INTERP_SUPPORTED_TETRAHEDRON = (('nearest', 0), ('polynomial', 1),
                                 ('polynomial', 2), ('polynomial', 3),
                                 ('bezier', 1), ('bezier', 2), ('bezier', 3))
 
+#: The interpolations a *prism* supports. A prism is a triangle extruded along
+#: an elevation rather than a simplex, and a property of one may carry more
+#: elevations than the geometry has surfaces --- so the two things the higher
+#: orders are built from do not apply: there is no simplex to fit, and the
+#: values' own elevation axis is not something a tetrahedral fit of the
+#: geometry's two surfaces can see. What the first order can do is the
+#: linear blend within the triangle. The rest is deferred rather than refused;
+#: see the roadmap.
+INTERP_SUPPORTED_PRISM = (('nearest', 0), ('polynomial', 1), ('bezier', 1))
+
 #: The valid extrapolation orders. Only 0 (nearest point on the object) is
 #: supported; ``None`` means "no extrapolation".
 EXTRAP_ORDERS = (None, 0)

@@ -42,8 +42,8 @@ from ..utils import (
     SpatialTree, content_hash, simplex_boxes, values_equal, simplex_measures)
 from ._property import (
     INTERP_QUALITATIVE, INTERP_SUPPORTED, INTERP_SUPPORTED_GRID,
-    INTERP_SUPPORTED_SEGMENT, INTERP_SUPPORTED_TETRAHEDRON,
-    INTERP_SUPPORTED_TRIANGLE, Property, UNSET,
+    INTERP_SUPPORTED_PRISM, INTERP_SUPPORTED_SEGMENT,
+    INTERP_SUPPORTED_TETRAHEDRON, INTERP_SUPPORTED_TRIANGLE, Property, UNSET,
     is_property)
 from ._topo import Topology, SimplexTopology
 
@@ -124,9 +124,14 @@ def supported_interp(topo, /):
     if order == 1:
         return INTERP_SUPPORTED_SEGMENT
     # A prism mesh reports a triangle's order with a third local dimension; its
-    # own interpolation is deferred, so it does not take the triangle's.
-    if order == 2 and getattr(topo, 'local_dim', None) == 2:
+    # own interpolation is deferred, so it does not take the triangle's --- and
+    # it must not fall through to the general set either, which claims the
+    # higher orders. A prism gets its own, which is what the first order can do.
+    local_dim = getattr(topo, 'local_dim', None)
+    if order == 2 and local_dim == 2:
         return INTERP_SUPPORTED_TRIANGLE
+    if order == 2 and local_dim == 3:
+        return INTERP_SUPPORTED_PRISM
     if order == 3 and getattr(topo, 'local_dim', None) == 3:
         return INTERP_SUPPORTED_TETRAHEDRON
     return INTERP_SUPPORTED
