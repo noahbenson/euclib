@@ -269,6 +269,57 @@ class TriTopology(SimplexTopology):
         return check_simplex_loc(self.Loc, self.local_dim, locs)
 
 
+def prism_tetrahedra(indices, layers, coord_count, /):
+    """The tetrahedra that fill a stack of prism surfaces.
+
+    A prism --- two triangles whose corners are joined --- splits into three
+    tetrahedra, and the standard split runs from a corner of the first surface
+    across to the second. A *stack* of them, which is what a property with
+    several elevations asks for, is filled the same way **between each pair of
+    adjacent layers**: every layer is a copy of the same triangle topology, and
+    each neighbouring pair is split by the same three tetrahedra.
+
+    That is what makes an elevation-bearing property interpolable by the
+    tetrahedral methods rather than by something written for the purpose: a
+    position's height falls between two layers, and those are the two layers the
+    tetrahedron it lies in has for corners, so the blend the property wants is
+    the one the geometry already gives.
+
+    Parameters
+    ----------
+    indices : array-like
+        A ``(3, M)`` integer matrix of triangle corners, one per layer.
+    layers : int
+        How many surfaces the stack has. Two is the geometry's own case.
+    coord_count : int
+        The number of coordinates in *one* layer, so that layer ``k``\'s corners
+        are ``k * coord_count + i``.
+
+    Returns
+    -------
+    numpy.ndarray
+        A ``(4, 3M(L-1))`` integer matrix whose columns are the tetrahedra, with
+        one prism\'s own tetrahedra consecutive.
+    """
+    idx = normalize_indices(indices)
+    n = int(coord_count)
+    (a, b, c) = (idx[0], idx[1], idx[2])
+    parts = []
+    for k in range(int(layers) - 1):
+        # The fan runs from layer k to layer k+1, so both are offset: the
+        # lower corners by k and the upper by one more.
+        (lo, up) = (k * n, (k + 1) * n)
+        for corners in ((lo + a, lo + b, lo + c, up + a),
+                        (lo + b, lo + c, up + a, up + b),
+                        (lo + c, up + a, up + b, up + c)):
+            parts.append(concatenate([asarray(v)[None, :] for v in corners],
+                                     axis=0))
+    # One prism's own tetrahedra occupy consecutive columns --- three for each
+    # pair of layers it spans --- so that a tetrahedron's index divided by the
+    # count per prism is the index of the prism it belongs to.
+    return stack(parts, axis=2).reshape(4, -1)
+
+
 class TetTopology(SimplexTopology):
     '''The connectivity of a tetrahedral mesh: simplices of order 3.
 
@@ -403,7 +454,7 @@ class PrismTopology(TriTopology):
         return 2
 
     @calc('tetrahedra')
-    def proc_tetrahedra(indices, coord_count):
+    def proc_tetrahedra(indices, coord_count, n_sides):
         '''The tetrahedra that each prism decomposes into.
 
         Each prism splits into three tetrahedra, which is how a prism mesh is
@@ -417,19 +468,29 @@ class PrismTopology(TriTopology):
             coordinates, with the second surface's coordinates following the
             first's.
         '''
-        idx = normalize_indices(indices)
-        n = int(coord_count)
-        (a, b, c) = (idx[0], idx[1], idx[2])
-        parts = []
-        for corners in ((a, b, c, n + a),
-                        (b, c, n + a, n + b),
-                        (c, n + a, n + b, n + c)):
-            parts.append(concatenate([asarray(v)[None, :] for v in corners],
-                                     axis=0))
-        # The three tetrahedra of one prism occupy three consecutive columns, so
-        # that a tetrahedron's index divided by the number of tetrahedra per
-        # prism is the index of the prism it belongs to.
-        return stack(parts, axis=2).reshape(4, -1)
+        return prism_tetrahedra(indices, n_sides, coord_count)
+
+    @calc('tettopo')
+    def proc_tettopo(indices, coord_count, n_sides, tetrahedra, backend):
+        '''The tetrahedral topology that fills this prism mesh.
+
+        The default, which is the geometry's own two surfaces: a prism mesh is
+        a pair of triangle surfaces, so its tetrahedra run from one to the
+        other. A *property* may carry more elevations than the geometry has
+        surfaces --- see `PrismMesh.tetlayer` --- and a stack of them is filled
+        the same way, layer by layer, which is what `prism_tetrahedra` does for
+        any number of layers. This is the two-surface case of it, given as a
+        topology a `TetMesh` can be built on.
+
+        Returns
+        -------
+        tettopo : TetTopology
+            The topology whose coordinates are the prism's two surfaces laid
+            end to end: coordinate ``i`` of the first is ``i`` and of the
+            second is ``N + i``.
+        '''
+        return TetTopology(tetrahedra, coord_count=int(n_sides) * int(coord_count),
+                           backend=backend)
 
     def check_loc(self, locs, /):
         '''Coerces and validates a prism local coordinate.

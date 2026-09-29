@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from unittest import TestCase
 
-from numpy import allclose, array, stack, zeros
+from numpy import allclose, array, asarray, concatenate, linalg, stack, zeros
 
 from euclib.abc import is_geometry, is_simplex_topology
 from euclib.types import (
@@ -57,6 +57,41 @@ class TestPrismTopology(TestCase):
     def test_it_decomposes_each_prism_into_three_tetrahedra(self):
         topo = _topo()
         self.assertEqual(topo.tetrahedra.shape, (4, 6))
+
+    def test_the_decomposition_fills_a_stack_of_layers(self):
+        '''The same fan, between every pair of adjacent layers.
+
+        A property may carry more elevations than the geometry has surfaces, and
+        the way those are interpolated is to fill the *stack* of layers with the
+        same three tetrahedra per pair --- so that a position's height falls
+        between the two layers its own tetrahedron has for corners, and the
+        blend is one the tetrahedral methods already give. The check is that
+        the pieces fill the stack: their volumes must add to its.
+
+        With uneven spacing, because real elevations are uneven, and that is the
+        case a fixed layer size would get wrong.
+        '''
+        from euclib.types._topo import prism_tetrahedra
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        volume = 0.5                       # a unit right triangle, one tall
+
+        def tet_volume(corners, /):
+            (a, b, c, d) = corners
+            return abs(linalg.det(stack([b - a, c - a, d - a]))) / 6.0
+
+        for elevations in (array([0.0, 1.0]), array([0.0, 0.5, 1.0]),
+                           array([0.0, 0.2, 0.9, 1.0]),
+                           array([0.0, 0.1, 0.2, 0.3, 1.0])):
+            coords = concatenate([lower + array([[0.], [0.], [t]])
+                                  for t in elevations], axis=1)
+            tets = prism_tetrahedra(array([[0], [1], [2]]), len(elevations), 3)
+            total = sum(tet_volume([coords[:, i] for i in column])
+                        for column in asarray(tets).T.tolist())
+            want = volume * (elevations[-1] - elevations[0])
+            with self.subTest(layers=len(elevations)):
+                self.assertEqual(asarray(tets).shape[1], 3 * (len(elevations) - 1))
+                self.assertLess(abs(total - want), 1e-12,
+                                "the tetrahedra do not fill the stack")
 
     def test_check_loc_accepts_well_formed_coordinates(self):
         topo = _topo()
