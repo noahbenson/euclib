@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import immlib.math as im
 from numpy import asarray, concatenate, stack
-from pcollections import lazy
 
 from ..abc import (
     SimplexTopology, Topology, calc, check_simplex_loc, make_loc,
@@ -490,13 +489,8 @@ class PrismTopology(TriTopology):
             end to end: coordinate ``i`` of the first is ``i`` and of the
             second is ``N + i``.
         '''
-        # A *lazy* and not the topology itself: a topology is a *planobject* and
-        # a calc's output is a value, so one built inside a calc has its own
-        # plan, that plan is never run, and the class it is built for comes out
-        # truncated --- which is what this did when it returned the topology.
-        return lazy(TetTopology, tetrahedra,
-                    coord_count=int(n_sides) * int(coord_count),
-                    backend=backend)
+        return TetTopology(tetrahedra, coord_count=int(n_sides) * int(coord_count),
+                           backend=backend)
 
     def check_loc(self, locs, /):
         '''Coerces and validates a prism local coordinate.
