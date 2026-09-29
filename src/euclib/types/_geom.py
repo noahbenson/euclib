@@ -32,7 +32,7 @@ from collections.abc import Mapping
 import immlib.math as im
 from numpy import arange, asarray, concatenate, eye, meshgrid, ones, stack
 from immlib import math as imath, to_array, to_tensor
-from pcollections import ldict, llist
+from pcollections import ldict, lazy, llist
 
 from ..abc import (
     Geometry, Property, SimplexGeometry, UNSET, as_coords, as_query, calc,
@@ -42,7 +42,7 @@ from ..utils import (
     closest_prism, closest_simplex, nearest_vertices, simplex_measures)
 from ._topo import (
     GridTopology, PrismTopology, SegTopology, TetTopology, TriTopology,
-    VertexTopology)
+    VertexTopology, prism_tetrahedra)
 from ._transform import Affine
 
 
@@ -490,6 +490,33 @@ class TetMesh(SimplexGeometry):
                                     im.multiply(corners[:, 3], last))))
 
 
+def _tetlayer(coords0, coords1, indices, coord_count, elevations, backend, /):
+    """The stack of layers at a set of elevations, as a tetrahedral mesh.
+
+    A property may carry more elevations than the geometry has surfaces, and the
+    way those interpolate is to fill the *stack*: every layer is the triangle
+    surface `PrismMesh.elevation` gives at that elevation, and the tetrahedra are
+    `prism_tetrahedra`'s fan between each pair of adjacent layers. A position's
+    height then falls between two layers, and those are the two layers the
+    tetrahedron it lies in has for corners --- so the blend the property wants is
+    the one the tetrahedral methods already give, at whatever order they are
+    asked for.
+
+    The layer coordinates are the geometry's own two surfaces blended, which is
+    exactly what `elevation` does for one of them.
+
+    Module-level, and called from inside a `pcollections.lazy`: the lazy closes
+    over the fields, so nothing of the mesh is in scope by the time it runs.
+    """
+    steps = asarray(elevations, dtype='float64')
+    corners = concatenate([coords0 * (1.0 - t) + coords1 * t for t in steps],
+                          axis=1)
+    layers = int(steps.size)
+    topo = TetTopology(prism_tetrahedra(indices, layers, coord_count),
+                       coord_count=layers * int(coord_count), backend=backend)
+    return TetMesh(corners, topo, backend=backend)
+
+
 class PrismMesh(SimplexGeometry):
     '''A prism mesh: a pair of triangle sheets joined corner to corner.
 
@@ -788,6 +815,77 @@ class PrismMesh(SimplexGeometry):
         '''
         return TetMesh(concatenate([coords0, coords1], axis=1), topo.tettopo,
                        backend=backend)
+
+    @calc('_tetlayer_cache')
+    def proc_tetlayer_cache(properties, elevations, topo, coords0, coords1,
+                            coord_count, backend):
+        '''The stack of layers each property's elevations ask for.
+
+        A prism's property may name a *vector* of elevations, and its values then
+        live on that many layers --- more than the geometry's two surfaces.
+        Interpolating one means filling the stack with tetrahedra, which is worth
+        doing once: two properties naming the same elevations want the same
+        stack, and a mesh may be read repeatedly.
+
+        So this is a mapping from an elevation vector, as a tuple, to the
+        property names that use it and a `pcollections.lazy` that builds the mesh
+        when `tetlayer` first asks. A property with **matrix** elevations --- one
+        elevation per position, which is rare --- is left out: it has no single
+        stack to build, and recomputing it on use costs little.
+
+        The mapping is returned as ``(mapping,)``: a calc's return value *is* its
+        outputs --- a plain mapping would be read as outputs *named* by its keys,
+        and a tuple as one output per name --- so a single output that is itself
+        a structure has to be wrapped.
+
+        A `lazy` and not the mesh, because the mesh is built when it is first
+        asked for and the same one comes back after that.
+
+        Returns
+        -------
+        dict
+            One entry per distinct elevation vector: the property names that use
+            it, and the lazy mesh.
+        '''
+        entries = {}
+        for (pname, _) in properties.items():
+            named = elevations.get(pname, None)
+            if named is None:
+                continue
+            named = asarray(named)
+            if named.ndim != 1:
+                continue
+            key = tuple(float(t) for t in named)
+            if key not in entries:
+                entries[key] = ([], lazy(_tetlayer, coords0, coords1,
+                                         topo.indices, coord_count, named,
+                                         backend))
+            entries[key][0].append(pname)
+        return (dict((key, (tuple(names), mesh))
+                     for (key, (names, mesh)) in entries.items()),)
+
+    def tetlayer(self, elevations, /):
+        '''The stack of layers at a set of elevations, as a tetrahedral mesh.
+
+        Parameters
+        ----------
+        elevations : array-like
+            A vector of elevations, which is what a prism property's may be.
+
+        Returns
+        -------
+        TetMesh
+            The same stack for the same elevations however often it is asked
+            for, and shared with any property that names the same elevations.
+        '''
+        key = tuple(float(t) for t in asarray(elevations))
+        entry = self._tetlayer_cache.get(key, None)
+        if entry is None:
+            raise KeyError(
+                f"no layer of this mesh is at the elevations {key}; a stack is"
+                f" built for the elevations a *property* names, and this mesh"
+                f" names {sorted(self._tetlayer_cache)}")
+        return entry[1]()
 
     def to_tetmesh(self):
         '''Returns the tetrahedral mesh that decomposes this prism mesh.

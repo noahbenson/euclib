@@ -121,6 +121,113 @@ class TestPrismTopology(TestCase):
                                     array([[0.5]])))
 
 
+class TestTheLayerCache(TestCase):
+    '''The stack of layers a property's elevations ask for.
+
+    A property may name more elevations than the geometry has surfaces, and
+    interpolating one means filling the *stack* with tetrahedra --- one layer per
+    elevation, and `prism_tetrahedra`\'s fan between each pair. Then a position\'s
+    height falls between two layers, and those are the two layers the tetrahedron
+    it lies in has for corners, so the blend the property wants comes out of the
+    tetrahedral methods rather than from anything written for the purpose.
+
+    It is worth building once: two properties naming the same elevations want the
+    same stack, and a mesh may be read repeatedly. The cache is keyed by the
+    elevation *vector* as a tuple, and a property with *matrix* elevations --- one
+    per position, which is rare --- is left out, having no single stack to build.
+    '''
+
+    def _prism(self, /):
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        return (PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                          PrismTopology([[0], [1], [2]])),
+                lower)
+
+    #: A field that bends in z, so no fit of two surfaces can hold it: the
+    #: *middle* layer is the point. A lambda in a class body is bound as a
+    #: method, so it is declared static rather than taking `self`.
+    FIELD = staticmethod(lambda p, t: 2.0 * p[0] + 3.0 * p[1] + t ** 2)
+
+    def test_it_builds_one_stack_per_elevation_vector(self):
+        (mesh, lower) = self._prism()
+        ev = array([0.0, 0.5, 1.0])
+        vals = array([[[self.FIELD(lower[:, i], t) for i in range(3)]
+                       for t in ev]])
+        carried = mesh.withprop('v', (ev, vals))
+        self.assertEqual(sorted(carried._tetlayer_cache), [(0.0, 0.5, 1.0)])
+        self.assertEqual([n for (n, _) in carried._tetlayer_cache.values()],
+                         [('v',)])
+        # Two properties naming the same elevations share the one stack.
+        two = carried.withprop('w', (ev, vals * 2.0))
+        self.assertEqual(len(two._tetlayer_cache), 1)
+        self.assertEqual([n for (n, _) in two._tetlayer_cache.values()],
+                         [('v', 'w')])
+        # And one with its own elevations gets its own.
+        three = two.withprop('u', (array([0.0, 1.0]), zeros((2, 3))))
+        self.assertEqual(len(three._tetlayer_cache), 2)
+
+    def test_the_stack_is_the_layers_and_the_fan_between_them(self):
+        (mesh, lower) = self._prism()
+        ev = array([0.0, 0.5, 1.0])
+        carried = mesh.withprop('v', (ev, zeros((1, 3, 3))))
+        layer = carried.tetlayer(ev)
+        self.assertIsInstance(layer, TetMesh)
+        self.assertEqual(layer.coord_count, 9)          # three layers of three
+        self.assertEqual(layer.simplex_count[layer.order], 6)   # three per pair
+        # Each layer is the two surfaces blended, which is what `elevation` does.
+        coords = asarray(layer.coords)
+        for (k, t) in enumerate(ev):
+            self.assertTrue(allclose(coords[:, 3 * k:3 * (k + 1)],
+                                     lower * (1.0 - t)
+                                     + (lower + array([[0.], [0.], [1.]])) * t))
+        # And the same stack comes back, however often it is asked for.
+        self.assertIs(carried.tetlayer(ev), layer)
+
+    def test_it_interpolates_the_elevations_it_was_given(self):
+        '''The point of the exercise, and checked against the field.
+
+        At an elevation the answer must be that elevation's own values, exactly;
+        between two the tetrahedron blends them linearly, because that is what a
+        linear fit does between its own corners --- and the blend's value is known
+        independently, so it is not merely self-consistent.
+        '''
+        (mesh, lower) = self._prism()
+        ev = array([0.0, 0.5, 1.0])
+        vals = array([[[self.FIELD(lower[:, i], t) for i in range(3)]
+                       for t in ev]])
+        carried = mesh.withprop('v', (ev, vals))
+        # The property's values are (elevation, corner); the stack's coordinates
+        # are the layers end to end, so the two orders agree under a reshape.
+        layer = carried.tetlayer(ev).withprop(
+            'v', vals.reshape(1, -1), gradient=zeros((1, 3, vals.size)))
+
+        for (x, y) in ((0.33, 0.33), (0.2, 0.5)):
+            for z in (0.0, 0.5, 1.0):
+                at = array([[x], [y], [z]])
+                got = layer.prop('v', at=at, interp=('polynomial', 1))
+                got = float(mag(got).ravel()[0])
+                with self.subTest(point=(x, y, z)):
+                    self.assertLess(abs(got - self.FIELD(array([x, y]), z)),
+                                    1e-12,
+                                    "an elevation's own values did not come back")
+            # Between layers the blend is the mean of the two nearest, which for
+            # this field is known: (f(0) + f(0.5)) / 2 at the midpoint.
+            at = array([[x], [y], [0.25]])
+            got = float(mag(layer.prop('v', at=at,
+                                       interp=('polynomial', 1))).ravel()[0])
+            want = 0.5 * (self.FIELD(array([x, y]), 0.0)
+                          + self.FIELD(array([x, y]), 0.5))
+            with self.subTest(point=(x, y, 0.25)):
+                self.assertLess(abs(got - want), 1e-12,
+                                "the blend between layers is not linear")
+
+
+def mag(one, /):
+    '''The magnitude, whether the argument is a quantity or an
+    array.'''
+    return asarray(one.m) if hasattr(one, 'm') else asarray(one)
+
+
 class TestPrismInterpolation(TestCase):
     '''What a prism will and will not interpolate.
 
