@@ -464,3 +464,100 @@ class TestTheValueDistribution(TestCase):
         got = asarray(prism_layer_values(chan, self.INDICES, 5))
         self.assertEqual(got.shape, (2, 1, 5))
         self.assertTrue(allclose(got[1, 0], [2.0, 4.0, 6.0, 8.0, 10.0]))
+
+
+class TestReadingThroughTheStack(TestCase):
+    '''A prism whose property names more than two elevations.
+
+    A prism property may carry a *vector* of elevations --- more layers than the
+    geometry's two surfaces --- and there is no fit of the surfaces that can hold
+    the values on the layers between. What can hold them is the stack of
+    tetrahedra between the layers, which is a `TetMesh` like any other: so the
+    answer is the stack's own interpolation, with the property's values put onto
+    its vertices and the position carried out to the stack's coordinates.
+
+    The checks here are the two the design turns on --- that a value *on* a layer
+    comes back exactly, since that layer is a corner of some tetrahedron, and
+    that a value *between* two layers comes back as their linear blend. A field
+    that bends in z makes both visible: nothing that fits only the two surfaces
+    can reproduce the middle of it.
+    '''
+
+    #: The elevations the property below is given.
+    ELEVATIONS = array([0.0, 0.5, 1.0])
+
+    def _prism(self, /):
+        '''A unit prism whose property bends in z.'''
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        mesh = PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                         PrismTopology([[0], [1], [2]]))
+        # (C..., K, M, 3): no channels, a row per elevation, one triangle.
+        values = array([[self._field(lower[:, i], t) for i in range(3)]
+                        for t in self.ELEVATIONS]).reshape(3, 1, 3)
+        return mesh.withprop('v', (self.ELEVATIONS, values))
+
+    @staticmethod
+    def _field(point, height, /):
+        '''A field that bends in z: ``2x + 3y + z^2``.'''
+        return 2.0 * point[0] + 3.0 * point[1] + height ** 2
+
+    @staticmethod
+    def _at(mesh, height, /):
+        '''The centre of the prism's only triangle, at a height.'''
+        return mesh.topo.Loc(index=array([0]),
+                             weight=array([[1.0 / 3.0], [1.0 / 3.0]]),
+                             height=array([[height]]))
+
+    def _read(self, mesh, height, interp, /):
+        res = mesh.prop('v', at=self._at(mesh, height), interp=interp)
+        return float(asarray(getattr(res, 'm', res)).ravel()[0])
+
+    def test_a_value_on_a_layer_comes_back_exactly(self):
+        mesh = self._prism()
+        # The centre of the triangle is the mean of its three corners, and the
+        # field is affine in x and y, so what belongs there is the field at the
+        # centre --- once the z term is known, which the layer fixes.
+        for height in self.ELEVATIONS:
+            got = self._read(mesh, height, ('polynomial', 1))
+            want = self._field(array([1. / 3., 1. / 3.]), height)
+            self.assertAlmostEqual(got, want, places=12)
+
+    def test_a_value_between_two_layers_is_their_linear_blend(self):
+        mesh = self._prism()
+        for (height, below, above) in ((0.25, 0.0, 0.5), (0.75, 0.5, 1.0)):
+            got = self._read(mesh, height, ('polynomial', 1))
+            at = array([1. / 3., 1. / 3.])
+            want = 0.5 * (self._field(at, below) + self._field(at, above))
+            self.assertAlmostEqual(got, want, places=12)
+            # And the deviation from the field's own value is the second
+            # difference of `z^2` over the half interval --- which is the error
+            # of a linear interpolation of a quadratic, not a defect.
+            self.assertAlmostEqual(want - self._field(at, height), 0.0625,
+                                   places=12)
+
+    def test_the_orders_the_surface_refuses_are_answered_by_the_stack(self):
+        mesh = self._prism()
+        # A quadratic in z, on three layers: the cubic Bezier fit reproduces it.
+        for interp in (('bezier', 2), ('bezier', 3)):
+            got = self._read(mesh, 0.5, interp)
+            want = self._field(array([1. / 3., 1. / 3.]), 0.5)
+            self.assertAlmostEqual(got, want, places=6,
+                                   msg=f"{interp} did not reproduce the field")
+
+    def test_a_scalar_elevation_is_left_to_the_surface_methods(self):
+        # One elevation is not a stack: nothing is between the layers, so the
+        # prism's own shorter list applies and the higher orders still refuse.
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        mesh = PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                         PrismTopology([[0], [1], [2]]))
+        mesh = mesh.withprop('v', (array([0.0]), ones((1, 3))))
+        self._read(mesh, 0.0, ('polynomial', 1))
+        with self.assertRaises(NotImplementedError):
+            self._read(mesh, 0.5, ('bezier', 2))
+
+    def test_a_supplied_gradient_is_refused_rather_than_ignored(self):
+        mesh = self._prism()
+        at = self._at(mesh, 0.5)
+        with self.assertRaises(ValueError):
+            mesh.prop('v', at=at, interp=('bezier', 2),
+                      gradient=zeros((1, 3, 3, 1, 3)))

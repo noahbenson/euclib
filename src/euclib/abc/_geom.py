@@ -715,7 +715,8 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         # is a concrete-type concern, and euclib.abc must not import
         # euclib.types.
         from ..types._interp import interpolate
-        return interpolate(self, self._prop_for(pname, None), at, **kw)
+        return interpolate(self, self._prop_for(pname, None), at,
+                           name=pname, **kw)
 
     # Updating ##############################################################
 

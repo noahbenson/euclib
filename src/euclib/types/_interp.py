@@ -227,8 +227,57 @@ def _flat(x, /):
 
 # Interpolation ##############################################################
 
+
+def _interp_prism_stack(geom, prop, loc, method, order, name, /, **kw):
+    '''A prism's property read through the stack of its own elevations.
+
+    A prism property may name a *vector* of elevations --- more layers than the
+    geometry has surfaces --- and the way those interpolate is the stack of
+    tetrahedra between them. That stack is a `TetMesh` like any other, so the
+    answer is the stack's own interpolation with the property's values put onto
+    its vertices: the blend between two elevation layers is the one the
+    tetrahedral methods already give, at whatever order they are asked for.
+
+    A property whose elevations are a *matrix* --- one elevation per position,
+    which is rare --- has no single stack to build and is not routed here.
+
+    Returns
+    -------
+    array-like
+        The values, with the property's channel dimensions leading.
+    '''
+    from ._geom import prism_layer_values
+    elevations = asarray(geom.elevations[name])
+    stack = geom.tetlayer(elevations)
+    # The values are per triangle, per elevation, per corner; the stack's
+    # vertices are per coordinate, so they are distributed onto it.
+    values = prism_layer_values(asarray(prop.value), geom.topo.indices,
+                                _stack_coord_count(stack, elevations))
+    # The stack's coordinates are one flat axis rather than a layer and a
+    # coordinate --- layer `k`'s vertex `i` is `k * count + i`, which is the
+    # order `_tetlayer` builds them in and `prism_tetrahedra` reads them in.
+    values = im.mag(im.reshape(values, values.shape[:-2] + (-1,)))
+    carried = stack.withprop(PRISM_STACK_NAME, values)
+    where = geom.to_global(loc)
+    return carried.prop(PRISM_STACK_NAME, at=where, interp=(method, order),
+                        **kw)
+
+
+#: The name the stack carries a prism property's values under. A stack is built
+#: for the elevations a property names and cached, so this is written to a *new*
+#: mesh every time and never to the cached one.
+PRISM_STACK_NAME = '__euclib_prism_stack__'
+
+
+def _stack_coord_count(stack, elevations, /):
+    '''How many coordinates one layer of a stack has.'''
+    total = asarray(stack.coords).shape[1]
+    return total // int(asarray(elevations).size)
+
+
 def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
-                mask=UNSET, border=UNSET, gradient=UNSET, hessian=UNSET):
+                mask=UNSET, border=UNSET, gradient=UNSET, hessian=UNSET,
+                name=None):
     '''Reads a property at a set of positions.
 
     Parameters
@@ -265,6 +314,12 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         The hessian, on the same terms. No method uses one yet --- the cubic
         fit of a tetrahedron will --- so this is accepted and ignored.
 
+    name : str, optional
+        The property's *name*. A `Property` does not carry one --- only the
+        fields some calc reads exist on a planobject --- and a prism needs it to
+        find the elevations the property was given, so the caller, which has the
+        name in hand, passes it along.
+
     Returns
     -------
     array-like
@@ -284,7 +339,12 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         # meaning: whatever the property asked for, a position can only be
         # answered with the value of the nearest point.
         (method, order) = ('nearest', 0)
-    supported = supported_interp(geom.topo)
+    if _reads_through_a_stack(geom, name):
+        # The stack of tetrahedra is what answers, so the methods on offer are
+        # the ones *it* supports, not the prism surface's shorter list.
+        supported = supported_interp(geom.topo.tettopo)
+    else:
+        supported = supported_interp(geom.topo)
     if (method, order) not in supported:
         raise NotImplementedError(
             f"the interpolation ({method!r}, {order}) is not implemented for"
@@ -305,7 +365,22 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         # Handed back rather than converted, like the values: a caller's
         # gradient, or a property's own, may be a tensor, and the fits are
         # written to take one.
-        if gradient is not UNSET and gradient is not None:
+        if _reads_through_a_stack(geom, name):
+            # The stack of tetrahedra is what answers, and it estimates its own
+            # gradient from the values on its own vertices. One estimated on the
+            # prism's surfaces would be the derivative of a different function,
+            # and one the property carries is shaped for the prism's coordinates
+            # rather than the stack's --- so neither is used, and a caller who
+            # supplied one is told rather than quietly overruled.
+            if gradient is not UNSET and gradient is not None:
+                raise ValueError(
+                    f"the gradient of {name!r} was supplied, but this prism's"
+                    f" properties are read through the stack of their"
+                    f" elevations, which estimates a gradient of its own; the"
+                    f" supplied one is shaped for the prism's coordinates and"
+                    f" cannot be used")
+            fitted = None
+        elif gradient is not UNSET and gradient is not None:
             fitted = gradient
         elif prop.gradient is not None:
             fitted = prop.gradient
@@ -315,6 +390,14 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     if isinstance(geom, Grid):
         (res, drawn) = _interp_grid(geom, prop, loc, method, order, border)
         missed = _masked_grid(mask, drawn)
+    elif _reads_through_a_stack(geom, name):
+        # A prism with more layers than surfaces: the stack of tetrahedra
+        # between them is a `TetMesh`, and the answer is its own interpolation.
+        # The mask is per *position* and the stack's coordinates are the same
+        # positions, so it carries straight across.
+        res = _interp_prism_stack(geom, prop, loc, method, order, name,
+                                  mask=mask)
+        missed = None
     else:
         (res, corners, drawn) = _interp_simplex(geom, prop, loc, method,
                                                order, fitted)
@@ -327,6 +410,25 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     if missed is not None and missed.any():
         res = _substitute_null(res, missed, null)
     return res
+
+
+def _reads_through_a_stack(geom, name, /):
+    '''Whether a property of this geometry is read through a layer stack.
+
+    True for a prism mesh whose property names a *vector* of elevations --- more
+    layers than the geometry's two surfaces. A property whose elevations are a
+    matrix is per position, so it has no single stack; one with a scalar
+    elevation has nothing to blend between, and the surface methods answer it.
+    '''
+    elevations = getattr(geom, 'elevations', None)
+    if elevations is None or not hasattr(geom, 'tetlayer'):
+        return False
+    if name is None:
+        return False
+    named = elevations.get(name, None)
+    if named is None:
+        return False
+    return asarray(named).ndim == 1 and asarray(named).size > 1
 
 
 def _substitute_null(res, missed, null, /):
