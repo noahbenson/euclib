@@ -765,8 +765,20 @@ class PrismMesh(SimplexGeometry):
         return TriMesh(self.coords0 * (1.0 - e) + self.coords1 * e, topo,
                        backend=self.backend)
 
-    def to_tetmesh(self):
-        '''Returns the tetrahedral mesh that decomposes this prism mesh.
+    @calc('tetmesh')
+    def proc_tetmesh(coords0, coords1, topo, backend):
+        '''The tetrahedral mesh that decomposes this prism mesh.
+
+        The geometry's own two surfaces, laid end to end --- coordinate ``i``
+        of the first is ``i`` and of the second is ``N + i`` --- and filled by
+        the topology's tetrahedra. A prism mesh is a stack of two surfaces, and
+        this is the case of it the geometry itself supplies; a *property* may
+        carry more elevations than that, and its stack is built on demand by
+        `tetlayer`.
+
+        A calc rather than a method because it is a function of the mesh alone
+        and a mesh may want it more than once: the method this replaces
+        rebuilt the joined coordinates and the whole topology on every call.
 
         Returns
         -------
@@ -774,11 +786,19 @@ class PrismMesh(SimplexGeometry):
             A tetrahedral mesh whose tetrahedra are the three-per-prism
             decomposition of this mesh's prisms.
         '''
-        coords = concatenate([self.coords0, self.coords1], axis=1)
-        topo = TetTopology(self.topo.tetrahedra,
-                           coord_count=2 * self.coord_count,
-                           backend=self.backend)
-        return TetMesh(coords, topo, backend=self.backend)
+        return TetMesh(concatenate([coords0, coords1], axis=1), topo.tettopo,
+                       backend=backend)
+
+    def to_tetmesh(self):
+        '''Returns the tetrahedral mesh that decomposes this prism mesh.
+
+        Returns
+        -------
+        TetMesh
+            The same mesh `tetmesh` is; this is the name it had before there
+            was a calc, kept because a method reads better at a call site.
+        '''
+        return self.tetmesh
 
     def withprop(self, name, values=UNSET, /, **meta):
         '''Returns a copy of the mesh with a property added or altered.
