@@ -403,7 +403,12 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
                 inside, bounds, tol)
             if tets.shape[1] == 0:
                 continue
-            pieces.append((to_global.apply(vertices), tets))
+            # Kept in *index* space for now: the pieces are carried back out in
+            # one affine call at the end rather than one each, for the same
+            # reason the corners went in that way --- a call costs about 28
+            # microseconds whatever it is given, and there are 1,536 pieces here
+            # against 384 tetrahedra.
+            pieces.append((vertices, tets))
             from_tet.append(full(tets.shape[1], i))
             from_voxel.append(stack([full(tets.shape[1], voxel[a])
                                      for a in range(3)]))
@@ -414,15 +419,16 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
                          _TetTopology(zeros((4, 0), dtype=int), coord_count=0))
         return (empty, zeros(0, dtype=int), zeros((3, 0), dtype=int))
     # Lay every piece's vertices end to end, and shift each piece's own
-    # tetrahedra to point at the place its vertices landed.
-    coords = []
+    # tetrahedra to point at the place its vertices landed. Every piece is
+    # carried out of index space by *one* affine call at the end rather than one
+    # each; the only thing the assembly needs from a piece here is how many
+    # vertices it has, which is its width.
     tets = []
     offset = 0
     for (vertices, local) in pieces:
-        coords.append(vertices)
         tets.append(local + offset)
         offset += vertices.shape[1]
-    all_coords = concatenate(coords, axis=1)
+    all_coords = to_global.apply(concatenate([v for (v, _) in pieces], axis=1))
     all_tets = concatenate(tets, axis=1)
     built = _TetMesh(all_coords,
                      _TetTopology(all_tets, coord_count=all_coords.shape[1]))
