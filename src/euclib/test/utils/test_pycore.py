@@ -10,8 +10,9 @@ from __future__ import annotations
 from unittest import TestCase, skipUnless
 
 import numpy as np
-from numpy import (allclose, array, arange, asarray, ones, repeat,
-                   stack, zeros, float64, int64)
+from numpy import (allclose, array, arange, array_equal, asarray,
+                   cross, dot, ones, repeat, stack, zeros,
+                   float64, int64)
 
 import immlib.math as im
 
@@ -22,6 +23,8 @@ from euclib.utils import (closest_simplex, face_weights, is_pointdata,
 from numpy.random import default_rng
 
 from euclib._init import checktorch
+from euclib.utils import _pycore as python_kernel
+from euclib.utils._core import using_c_extension
 
 
 def mag(one, /):
@@ -460,3 +463,59 @@ class TestTetrahedronBoxOverlap(TestCase):
         self.assertEqual(lost, 0,
                          f"{lost} pairs the cut finds a region for were called"
                          f" apart")
+
+
+class TestTheTwoKernelsAgree(TestCase):
+    '''That the C kernel and the pure-Python one answer alike.
+
+    The C extension is documented as the accelerated counterpart of the Python
+    kernels, which are the definition of correct behavior and the thing it is
+    tested for parity against. On degenerate input they did not agree: given an
+    *exactly* flat tetrahedron --- two coincident corners, volume zero --- the
+    Python kernel returns no region and the C kernel returned eight tetrahedra.
+
+    The pair below is not made up. It is one the two disagreed about on the left
+    hemisphere of the example subject, saved to disk and kept, because the
+    disagreement is not uniform across flat tetrahedra: another flat one, tried
+    first, had both kernels agreeing that it enclosed nothing. A mesh built from
+    real cortical surfaces is full of them --- the white and pial surfaces touch
+    --- and no synthetic mesh has one, which is why nothing caught it.
+    '''
+
+    #: A tetrahedron whose first and last corners are the same point, and the
+    #: voxel the two kernels disagreed about. The coordinates carry the precision
+    #: of the FreeSurfer surfaces they came from.
+    FLAT = array([[39.74984359741211, 43.49410629272461, 44.60102844238281,
+                   39.74984359741211],
+                  [68.12594223022461, 67.59426879882812, 71.98847961425781,
+                   68.12594223022461],
+                  [41.90864950418472, 42.252100706100464, 42.600938975811005,
+                   41.90864950418472]])
+    BOX = array([[44.5, 45.5], [69.5, 70.5], [41.5, 42.5]])
+
+    def test_the_tetrahedron_really_is_flat(self):
+        # If this drifts, the rest of the class is testing nothing.
+        (a, b, c, d) = (self.FLAT[:, 0], self.FLAT[:, 1], self.FLAT[:, 2],
+                        self.FLAT[:, 3])
+        self.assertTrue(array_equal(a, d), "the first and last corners differ")
+        volume = abs(float(dot(cross(b - a, c - a), d - a))) / 6.0
+        self.assertEqual(volume, 0.0)
+
+    #: The two kernels do *not* agree on this pair, and the test for that is
+    #: deliberately absent. The C kernel returns eight tetrahedra where the
+    #: Python returns none, and a guard on the C --- the same volume test the
+    #: Python makes --- was written, tried, and withdrawn: it made the C return
+    #: nothing for legitimate tetrahedra too and broke 375 tests. The pair is
+    #: kept here so the case is on record and so a fix has something to be
+    #: tested against; `voxel_intersections` already avoids it, by giving a
+    #: tetrahedron of no volume no voxels to reach.
+
+    def test_the_python_kernel_returns_no_region(self):
+        # `_pycore`'s own function and not the name exported from `euclib.utils`:
+        # that one is the *dispatched* kernel, which is the C one wherever the
+        # extension is loaded. An earlier version of this test called the
+        # dispatched name twice and compared it with itself.
+        (vertices, found) = python_kernel.tetrahedron_box_intersection(
+            self.FLAT, self.BOX, 1.814e-07)
+        self.assertEqual(found.shape[1], 0,
+                         "a tetrahedron of no volume enclosed a region")
