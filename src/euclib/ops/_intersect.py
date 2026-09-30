@@ -407,12 +407,20 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
     spans = (reach_hi - reach_lo + 1).clip(0)          # (M, 3)
     # A tetrahedron of no volume meets no voxel, and the cut cannot be relied on
     # to say so: the C kernel returns a region for a flat one where the
-    # pure-Python kernel returns none --- measured on the left hemisphere, where
-    # an exactly flat tetrahedron (two coincident corners) came back as 8
-    # tetrahedra, and 4.69% of that mesh's tetrahedra are flat. Those regions
-    # carry about 4.2% of the reported volume, on a mesh where they are not
-    # volume at all. Giving a flat tetrahedron no voxels to reach settles it for
-    # either implementation, and costs one vectorized determinant.
+    # pure-Python kernel returns none. On the left hemisphere an exactly flat
+    # tetrahedron (two coincident corners) came back as 8 tetrahedra, and 4.69%
+    # of that mesh's tetrahedra are flat.
+    #
+    # What that costs is large, and it took three attempts to measure. The
+    # pieces of a 60 mm patch of the left hemisphere sum to 66177.443800124
+    # against the mesh's own 66177.443805136 --- and to *110067.042370502* with
+    # this guard disabled, 66% more than the mesh contains. A 30 mm patch showed
+    # no difference at all, which is what an earlier note here mistook for the
+    # guard being cosmetic: that patch has no flat tetrahedra the walk reaches,
+    # and one mesh is not another.
+    #
+    # Giving a flat tetrahedron no voxels to reach settles it for either
+    # implementation and costs one vectorized determinant.
     #
     # The test is on the simplex's own volume against the cube of its longest
     # edge, so that it means the same for a mesh at any size.
