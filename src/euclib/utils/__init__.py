@@ -28,7 +28,6 @@ from ._core import (
     closest_simplex,
     face_weights,
     closest_prism,
-    tetrahedron_box_overlap,
     refine_prism,
     prism_residual,
     barycentric_coords,
@@ -53,7 +52,7 @@ __all__ = (
     'octree_split', 'quadtree_split',
     'nearest_vertices', 'project_onto_face', 'closest_simplex',
     'face_weights',
-    'closest_prism', 'barycentric_coords', 'tetrahedron_box_overlap', 'refine_prism', 'prism_residual',
+    
     'cross3', 'closest_segment_params', 'segments_intersect',
     'barycentric_in_triangle', 'segments_triangles_intersect',
     'triangles_segments_intersect',

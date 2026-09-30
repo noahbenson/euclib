@@ -11,15 +11,13 @@ from unittest import TestCase, skipUnless
 
 import numpy as np
 from numpy import (allclose, array, arange, array_equal, asarray,
-                   cross, dot, ones, repeat, stack, zeros,
-                   float64, int64)
+                   cross, dot, ones, stack, zeros, float64, int64)
 
 import immlib.math as im
 
 from euclib.utils import (closest_simplex, face_weights, is_pointdata,
-                     tetrahedron_box_overlap,
-                     tetrahedron_box_intersection,
-                          simplex_measures, unique_columns, unique_coords)
+                          tetrahedron_box_intersection, simplex_measures,
+                          unique_columns, unique_coords)
 from numpy.random import default_rng
 
 from euclib._init import checktorch
@@ -358,111 +356,6 @@ class TestFaceWeights(TestCase):
         d2 = im.sum(im.multiply(diff, diff), axis=0)
         inside = im.mag(im.all(im.greater_equal(weight, -_TOLERANCE), axis=0))
         return (weight, inside, d2)
-
-
-class TestTetrahedronBoxOverlap(TestCase):
-    '''The separating-axis test that says whether a pair is worth cutting.
-
-    Its cases are ones whose answers are known without running anything --- a
-    shape inside the other, a shared face, a shared edge, a shared corner, two
-    near misses --- because this predicate was written three times before it was
-    right, and each wrong version passed the aggregates it was measured on. One
-    omitted the face (b, c, d) and tested the plane of (a, b, d) twice; another
-    survived a pair if *any* axis failed to separate it, which is the inverse of
-    what a separating-axis test says.
-    '''
-
-    #: The unit cube, which every case below is stated against.
-    LOW = array([0.0, 0.0, 0.0])
-    HIGH = array([1.0, 1.0, 1.0])
-
-    def _one(self, tet, /, tolerance=0.0, low=None, high=None):
-        '''One pair, through the batch interface.'''
-        low = self.LOW if low is None else array(low, dtype=float)
-        high = self.HIGH if high is None else array(high, dtype=float)
-        tets = array(tet, dtype=float).reshape(3, 4, 1)
-        bounds = stack([low, high], axis=1).reshape(3, 2, 1)
-        return bool(tetrahedron_box_overlap(tets, bounds, tolerance)[0])
-
-    def test_a_tetrahedron_inside_a_box_meets_it(self):
-        inside = array([[0.3, 0.4, 0.3, 0.4],
-                        [0.3, 0.3, 0.4, 0.4],
-                        [0.3, 0.3, 0.3, 0.5]])
-        self.assertTrue(self._one(inside))
-        self.assertFalse(self._one(inside + 10.0),
-                         "a tetrahedron ten units away was called meeting")
-
-    def test_a_box_inside_a_tetrahedron_meets_it(self):
-        big = array([[0.5, 2.0, 0.5, 0.5],
-                     [0.5, 0.5, 2.0, 0.5],
-                     [0.5, 0.5, 0.5, 2.0]])
-        self.assertTrue(self._one(big))
-
-    def test_sharing_a_face_is_meeting(self):
-        below = array([[0.25, 0.75, 0.25, 0.25],
-                       [0.25, 0.25, 0.75, 0.25],
-                       [-1.0, -1.0, -1.0, 0.0]])
-        self.assertTrue(self._one(below))
-
-    def test_sharing_an_edge_is_meeting(self):
-        # The segment x = 0, y = 0, z in [0, 1] is a corner-to-corner edge of the
-        # box. The first two corners span it; the other two stand off it.
-        edge = array([[0.0, 0.0, -0.5, 0.5],
-                      [0.0, 0.0, 0.5, -0.5],
-                      [0.0, 1.0, 0.0, 0.0]])
-        self.assertTrue(self._one(edge))
-
-    def test_sharing_a_corner_is_meeting(self):
-        corner = array([[-1.0, -1.0, -1.0, 0.0],
-                        [-1.0, -1.0, -1.0, 0.0],
-                        [-1.0, -1.0, -1.0, 0.0]])
-        self.assertTrue(self._one(corner))
-
-    def test_a_near_miss_is_not_meeting(self):
-        corner = array([[-1.0, -1.0, -1.0, 0.0],
-                        [-1.0, -1.0, -1.0, 0.0],
-                        [-1.0, -1.0, -1.0, 0.0]])
-        pulled = corner - 0.01
-        self.assertFalse(self._one(pulled))
-        self.assertTrue(self._one(pulled, tolerance=0.02),
-                        "a 0.01 gap was not closed by a tolerance of 0.02")
-
-    def test_a_sliver_meets_and_a_raised_one_does_not(self):
-        sliver = array([[0.1, 0.9, 0.1, 0.5],
-                        [0.1, 0.1, 0.9, 0.5],
-                        [0.5, 0.5, 0.5, 0.51]])
-        self.assertTrue(self._one(sliver))
-        self.assertFalse(self._one(sliver + array([[0.0], [0.0], [2.0]])))
-
-    def test_a_flat_tetrahedron_meets_where_it_lies(self):
-        # Two corners identical: the tetrahedron is a triangle. This mesh is
-        # full of them --- the white and pial surfaces of a brain touch, so
-        # 4.69% of the example subject's tetrahedra enclose nothing --- and it
-        # is the case a first version of this predicate got wrong.
-        flat = array([[0.2, 0.8, 0.2, 0.2],
-                      [0.2, 0.2, 0.8, 0.2],
-                      [0.5, 0.5, 0.5, 0.5]])
-        self.assertTrue(self._one(flat))
-        self.assertFalse(self._one(flat + array([[0.0], [0.0], [3.0]])))
-
-    def test_it_agrees_with_the_cut_on_random_pairs(self):
-        # The cut is slow but tested, so it is the oracle for whether a pair has
-        # a region. Any disagreement in the direction of the predicate saying
-        # "apart" where the cut finds a region would discard volume.
-        rng = default_rng(20260929)
-        tets = rng.uniform(-0.5, 1.5, size=(3, 4, 4000))
-        bounds = repeat(stack([self.LOW, self.HIGH], axis=1)[:, :, None], 4000,
-                        axis=2)
-        mine = tetrahedron_box_overlap(tets, bounds, 1e-9)
-        theirs = zeros(4000, dtype=bool)
-        for i in range(4000):
-            (_, found) = tetrahedron_box_intersection(tets[:, :, i],
-                                                      bounds[:, :, i], 1e-9)
-            theirs[i] = found.shape[1] > 0
-        lost = int((theirs & ~mine).sum())
-        self.assertEqual(lost, 0,
-                         f"{lost} pairs the cut finds a region for were called"
-                         f" apart")
 
 
 class TestTheTwoKernelsAgree(TestCase):
