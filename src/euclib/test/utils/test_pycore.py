@@ -394,19 +394,41 @@ class TestTheTwoKernelsAgree(TestCase):
         volume = abs(float(dot(cross(b - a, c - a), d - a))) / 6.0
         self.assertEqual(volume, 0.0)
 
-    #: The two kernels do *not* agree on this pair, and the test for that is
-    #: deliberately absent. The C kernel returns eight tetrahedra where the
-    #: Python returns none --- and that is not a curiosity: on a 60 mm patch of
-    #: the left hemisphere the pieces overweight the mesh by 66% when the flat
-    #: tetrahedra are not skipped, so the disagreement inflates the operation's
-    #: output.
-    #:
-    #: A guard on the C --- the same volume test the Python makes --- was
-    #: written, tried and withdrawn: it made the C return nothing for legitimate
-    #: tetrahedra too and broke 375 tests. The pair is kept here so the case is
-    #: on record and a fix has something to be tested against.
-    #: `voxel_intersections` avoids it instead, by giving a tetrahedron of no
-    #: volume no voxels to reach, and that guard is what keeps its output right.
+    #: The two kernels disagree about this pair no longer, but they did: the C
+    #: kernel returned eight tetrahedra where the Python returned none, and on a
+    #: 60 mm patch of the left hemisphere that inflated the pieces' volume by
+    #: 66% when the flat tetrahedra were not skipped. The guard that fixed it had
+    #: to skip the region's *corners* and its *filling* together --- an earlier
+    #: attempt set the corner count to zero and left the flow to reach the
+    #: filling, which then ran on normals that had never been computed.
+
+    def test_the_two_kernels_agree_on_it(self):
+        # The dispatched kernel is the C one wherever the extension is loaded.
+        # Where it is absent there is nothing to compare, and the case is skipped
+        # rather than passing for the wrong reason.
+        if not using_c_extension:
+            self.skipTest("the C extension is not loaded")
+        (_, native) = python_kernel.tetrahedron_box_intersection(
+            self.FLAT, self.BOX, 1.814e-07)
+        (_, dispatched) = tetrahedron_box_intersection(
+            self.FLAT, self.BOX, 1.814e-07)
+        self.assertEqual(
+            dispatched.shape[1], native.shape[1],
+            f"the C kernel returned {dispatched.shape[1]} tetrahedra where the"
+            f" pure-Python one returned {native.shape[1]}")
+
+    def test_a_solid_tetrahedron_still_gives_a_region(self):
+        # The guard must not fire on a tetrahedron that has volume.
+        solid = array([[0.0, 1.0, 0.0, 0.0],
+                       [0.0, 0.0, 1.0, 0.0],
+                       [0.0, 0.0, 0.0, 1.0]])
+        bounds = array([[0.0, 1.0], [0.0, 1.0], [0.0, 1.0]])
+        for kernel in (tetrahedron_box_intersection,
+                       python_kernel.tetrahedron_box_intersection):
+            (_, found) = kernel(solid, bounds, 1e-9)
+            self.assertEqual(found.shape[1], 1,
+                             f"{kernel} gave {found.shape[1]} tetrahedra for a"
+                             f" solid one")
 
     def test_the_python_kernel_returns_no_region(self):
         # `_pycore`'s own function and not the name exported from `euclib.utils`:

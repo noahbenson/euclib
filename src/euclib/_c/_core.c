@@ -827,41 +827,75 @@ core_tetrahedron_box_region(PyObject *self, PyObject *args,
         Py_DECREF(tet);
         return NULL;
     }
-    region_corners((const double *)PyArray_DATA(tet),
-                   (const double *)PyArray_DATA(bounds), tolerance,
-                   kept, &nkept, normal, offset);
-    /* Each face gives at most one tetrahedron per corner it has beyond the
-     * second, and there are ten faces, so this bounds the answer. */
-    limit = (npy_intp)NPLANES * (MAXFACE - 2);
-    filled = (npy_intp *)PyMem_Malloc((size_t)limit * 4 * sizeof(npy_intp));
-    if (filled == NULL) {
-        PyErr_NoMemory();
-        goto done;
-    }
-    if (nkept == 4) {
-        /* A region of four corners is a tetrahedron already, and is returned as
-         * one rather than as a fan of itself. */
-        double edges[3][3];
-        double volume;
-        int q;
-        for (p = 0; p < 3; ++p) {
-            for (q = 0; q < 3; ++q) {
-                edges[p][q] = kept[p + 1][q] - kept[0][q];
-            }
+    /* A tetrahedron of no volume encloses nothing. `region_corners` does not
+     * see that on its own --- given an exactly flat one it reports a region
+     * where the pure-Python kernel reports none --- and the two are documented
+     * as parity-tested counterparts. Measured on the left hemisphere, one such
+     * tetrahedron came back as eight from here and none from there; 4.69% of
+     * that mesh's tetrahedra are flat, because a cortical surface is two
+     * surfaces that touch.
+     *
+     * Both the corners *and* the filling are skipped. An earlier attempt set
+     * `nkept` to zero and left the flow to reach `region_fill`, which then ran
+     * on normals and offsets that had never been computed and returned
+     * nonsense --- 375 tests' worth. */
+    {
+        const double *c = (const double *)PyArray_DATA(tet);
+        double e1[3], e2[3], e3[3], cr[3], det;
+        int k;
+        for (k = 0; k < 3; ++k) {
+            e1[k] = TET_AT(c, k, 1) - TET_AT(c, k, 0);
+            e2[k] = TET_AT(c, k, 2) - TET_AT(c, k, 0);
+            e3[k] = TET_AT(c, k, 3) - TET_AT(c, k, 0);
         }
-        volume = det3(edges[0], edges[1], edges[2]) / 6.0;
-        if (fabs(volume) > EPSILON) {
-            filled[0] = 0;
-            filled[1] = 1;
-            filled[2] = 2;
-            filled[3] = 3;
-            total = 1;
-        } else {
+        cr[0] = e2[1] * e3[2] - e2[2] * e3[1];
+        cr[1] = e2[2] * e3[0] - e2[0] * e3[2];
+        cr[2] = e2[0] * e3[1] - e2[1] * e3[0];
+        det = cr[0] * e1[0] + cr[1] * e1[1] + cr[2] * e1[2];
+        if (det < 0.0) {
+            det = -det;
+        }
+        if (det / 6.0 <= EPSILON) {
+            nkept = 0;
             total = 0;
+        } else {
+        region_corners((const double *)PyArray_DATA(tet),
+                       (const double *)PyArray_DATA(bounds), tolerance,
+                       kept, &nkept, normal, offset);
+        /* Each face gives at most one tetrahedron per corner it has beyond the
+         * second, and there are ten faces, so this bounds the answer. */
+        limit = (npy_intp)NPLANES * (MAXFACE - 2);
+        filled = (npy_intp *)PyMem_Malloc((size_t)limit * 4 * sizeof(npy_intp));
+        if (filled == NULL) {
+            PyErr_NoMemory();
+            goto done;
         }
-    } else {
-        total = region_fill(kept, nkept, normal, offset, tolerance, filled,
-                            limit);
+        if (nkept == 4) {
+            /* A region of four corners is a tetrahedron already, and is returned as
+             * one rather than as a fan of itself. */
+            double edges[3][3];
+            double volume;
+            int q;
+            for (p = 0; p < 3; ++p) {
+                for (q = 0; q < 3; ++q) {
+                    edges[p][q] = kept[p + 1][q] - kept[0][q];
+                }
+            }
+            volume = det3(edges[0], edges[1], edges[2]) / 6.0;
+            if (fabs(volume) > EPSILON) {
+                filled[0] = 0;
+                filled[1] = 1;
+                filled[2] = 2;
+                filled[3] = 3;
+                total = 1;
+            } else {
+                total = 0;
+            }
+        } else {
+            total = region_fill(kept, nkept, normal, offset, tolerance, filled,
+                                limit);
+        }
+        }
     }
     if (total < 0) {
         PyErr_SetString(PyExc_RuntimeError,
