@@ -503,12 +503,17 @@ class TestTheTwoKernelsAgree(TestCase):
 
     #: The two kernels do *not* agree on this pair, and the test for that is
     #: deliberately absent. The C kernel returns eight tetrahedra where the
-    #: Python returns none, and a guard on the C --- the same volume test the
-    #: Python makes --- was written, tried, and withdrawn: it made the C return
-    #: nothing for legitimate tetrahedra too and broke 375 tests. The pair is
-    #: kept here so the case is on record and so a fix has something to be
-    #: tested against; `voxel_intersections` already avoids it, by giving a
-    #: tetrahedron of no volume no voxels to reach.
+    #: Python returns none --- and that is not a curiosity: on a 60 mm patch of
+    #: the left hemisphere the pieces overweight the mesh by 66% when the flat
+    #: tetrahedra are not skipped, so the disagreement inflates the operation's
+    #: output.
+    #:
+    #: A guard on the C --- the same volume test the Python makes --- was
+    #: written, tried and withdrawn: it made the C return nothing for legitimate
+    #: tetrahedra too and broke 375 tests. The pair is kept here so the case is
+    #: on record and a fix has something to be tested against.
+    #: `voxel_intersections` avoids it instead, by giving a tetrahedron of no
+    #: volume no voxels to reach, and that guard is what keeps its output right.
 
     def test_the_python_kernel_returns_no_region(self):
         # `_pycore`'s own function and not the name exported from `euclib.utils`:
