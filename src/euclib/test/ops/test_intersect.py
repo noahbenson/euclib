@@ -11,14 +11,16 @@ from unittest import TestCase
 
 import numpy as np
 
-from numpy import allclose, array, eye, sort
+from numpy import allclose, array, asarray, eye, sort
 
 from euclib.utils import (segments_triangles_intersect,
                           triangles_segments_intersect)
 from euclib.ops import (
+    voxel_surface_intersections,
     contains, mesh_intersections, path_crossings, path_intersections,
     tolerance_of, voxel_intersections)
 from euclib.types import (
+    grid,
     Grid, GridTopology, SegPath, SegTopology, TetMesh, TetTopology, TriMesh,
     TriTopology, VertexSet, VertexTopology, affine_translation)
 
@@ -451,3 +453,57 @@ class TestPathCrossingsAreExhaustive(TestCase):
                     mine.add((int(got_segments[k]), int(got_triangles[k]),
                               tuple(np.round(got_points[:, k], 9))))
                 self.assertEqual(mine, want)
+
+
+class TestVoxelSurfaceIntersections(TestCase):
+    '''Cutting a triangle mesh against a grid, where the pieces must tile it.
+
+    A surface has no interior, so what a triangle contributes to a voxel is an
+    *area*, and the pieces' areas must sum to the mesh's own. That is the
+    invariant everything here is checked against --- the same one the
+    tetrahedral version is checked against by volume, and the one that caught
+    every error in it.
+    '''
+
+    def _square(self, /):
+        '''A square of area 0.64, in the plane z = 0.5.'''
+        coords = array([[0.1, 0.9, 0.1, 0.9],
+                        [0.1, 0.1, 0.9, 0.9],
+                        [0.5, 0.5, 0.5, 0.5]])
+        return TriMesh(coords, TriTopology([[0, 0], [1, 3], [3, 2]]))
+
+    def _grid(self, /, step=0.4, count=4):
+        affine = eye(4)
+        affine[:3, :3] *= step
+        return grid((count, count, count), affine=affine)
+
+    def test_the_pieces_tile_the_surface(self):
+        mesh = self._square()
+        cells = self._grid()
+        (pieces, _, _) = voxel_surface_intersections(mesh, cells)
+        want = float(asarray(mesh.measures).sum())
+        got = float(asarray(pieces.measures).sum()) * 0.4 ** 2
+        self.assertAlmostEqual(got, want, places=9,
+                               msg=f"the pieces cover {got}, not {want}")
+
+    def test_a_surface_lying_in_a_grid_face_is_counted_once(self):
+        # The plane z = 0.5 is a face of the grid when the step is 0.4 and the
+        # origin is 0. Enumerated with a *closed* extent the triangle would be
+        # in the voxel below and the one above, and its area counted twice;
+        # voxels are half-open so that a face belongs to the one above.
+        mesh = self._square()
+        (pieces, _, voxels) = voxel_surface_intersections(mesh, self._grid())
+        want = float(asarray(mesh.measures).sum())
+        got = float(asarray(pieces.measures).sum()) * 0.4 ** 2
+        self.assertAlmostEqual(got, want, places=9)
+        self.assertEqual(sorted({int(v) for v in voxels[2]}), [1],
+                         "the flat square should be in exactly one layer of z")
+
+    def test_every_piece_names_its_triangle_and_its_voxel(self):
+        mesh = self._square()
+        cells = self._grid()
+        (pieces, tris, voxels) = voxel_surface_intersections(mesh, cells)
+        count = pieces.topo.indices.shape[1]
+        self.assertEqual(tris.shape, (count,))
+        self.assertEqual(voxels.shape, (3, count))
+        self.assertTrue((tris >= 0).all() and (tris < 2).all())

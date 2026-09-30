@@ -30,7 +30,9 @@ from numpy import (
 
 from ..abc import Geometry, as_query
 from ..types import Grid, SegPath, TriMesh
-from ..utils import segments_intersect, segments_triangles_intersect
+from ..utils import (segments_intersect, segments_triangles_intersect,
+                     triangle_box_polygon)
+from ..utils._pycore import polygon_fan
 
 
 # Helpers ####################################################################
@@ -486,6 +488,142 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
     built = _TetMesh(all_coords,
                      _TetTopology(all_tets, coord_count=all_coords.shape[1]))
     return (built, concatenate(from_tet), concatenate(from_voxel, axis=1))
+
+
+
+def voxel_surface_intersections(mesh, grid, /, tolerance=None):
+    '''Decomposes the overlap of a triangle mesh and a grid into triangles.
+
+    Each triangle is cut against each voxel it reaches, and the piece they share
+    is a polygon --- a triangle clipped by a box --- which is then covered with
+    triangles. So a *surface* is resampled onto a grid: what a triangle
+    contributes to a voxel is an area, not a volume, because a surface has no
+    interior.
+
+    The cutting happens in the grid's *index space*, where a voxel is the unit
+    box and every voxel looks alike, as it does for the tetrahedral version. That
+    is what lets an affine grid whose axes are not aligned with the coordinate
+    axes be handled by a test that knows only about boxes.
+
+    Parameters
+    ----------
+    mesh : TriMesh
+        The triangle mesh.
+    grid : Grid
+        A three-dimensional grid.
+    tolerance : float or None, optional
+        How far outside a face a corner may lie and still count. The default,
+        ``None``, uses a small fraction of the mesh's size.
+
+    Returns
+    -------
+    pieces : TriMesh
+        A triangle mesh of the pieces, in no particular order. Its surface area
+        is the mesh's own, since the pieces tile it.
+    triangles : numpy.ndarray
+        A length-``T`` vector naming the mesh triangle each piece came from.
+    voxels : numpy.ndarray
+        A ``(3, T)`` matrix of the grid cell indices each piece came from.
+
+    Raises
+    ------
+    TypeError
+        If either argument is not of the expected kind.
+    ValueError
+        If the grid is not three-dimensional.
+    '''
+    from ..types import TriMesh as _TriMesh
+    from ..types import TriTopology as _TriTopology
+    from ..utils import triangle_box_polygon
+    if not isinstance(mesh, TriMesh):
+        raise TypeError(f"expected a TriMesh; found {type(mesh)}")
+    if not isinstance(grid, Grid):
+        raise TypeError(f"expected a Grid; found {type(grid)}")
+    if len(grid.shape) != 3:
+        raise ValueError(
+            f"a voxel grid has three dimensions; this one has"
+            f" {len(grid.shape)}")
+    tol = tolerance_of(mesh) if tolerance is None else float(tolerance)
+    shape = tuple(grid.shape)
+    to_index = grid.affine_inverse
+    corners = mesh.coords[:, mesh.topo.indices]           # (3, 3, M)
+    (dim, per_tri, triangles) = corners.shape
+    flat = to_index.apply(corners.reshape(dim, per_tri * triangles))
+    index_space = flat.reshape(dim, per_tri, triangles).transpose(2, 0, 1).copy()
+    # A triangle of no area shares no area with anything, and clipping one gives
+    # a polygon that is a segment at best. Skipping them here is the same
+    # treatment the tetrahedral version gives a tetrahedron of no volume.
+    edges = [index_space[:, :, i] - index_space[:, :, 0] for i in (1, 2)]
+    area = sqrt((cross(edges[0], edges[1], axis=1) ** 2).sum(axis=1)) / 2.0
+    span = sqrt(sum((e * e).sum(axis=1) for e in edges))
+    live = area > _FLAT_RATIO * (span / 2.0) ** 2
+
+    # A voxel `v` owns `[v - 0.5, v + 0.5)` --- a *half-open* extent, so that a
+    # face belongs to the voxel above it and not to both. A surface can lie
+    # exactly *in* a shared face, and with a closed extent such a triangle is
+    # enumerated in both voxels and its area counted twice; the pieces then
+    # overweight the mesh. Half-open enumeration puts it in one voxel, and every
+    # piece has its own area with nothing for a caller to scale.
+    #
+    # So `v` is reached when `[v - 0.5, v + 0.5)` meets `[lo, hi]`, which is
+    # `v - 0.5 <= hi` and `v + 0.5 > lo`. For an integer `v` that is
+    # `floor(lo - 0.5) + 1` through `floor(hi + 0.5)`.
+    #
+    # The tetrahedral version writes this the other way round, as a closed
+    # extent, and is right to: a tetrahedron with volume has `lo < hi` in every
+    # axis, where the two forms agree. A triangle is *flat* in one axis, and
+    # there they do not --- the closed form collapses to `lo > hi` and
+    # enumerates nothing at all.
+    reach_lo = (floor(index_space.min(axis=2) - 0.5) + 1).astype(int).clip(0, None)
+    reach_hi = floor(index_space.max(axis=2) + 0.5).astype(int).clip(
+        None, [s - 1 for s in shape])
+    spans = (reach_hi - reach_lo + 1).clip(0)
+    spans[~live] = 0
+    counts = spans.prod(axis=1)
+    total = int(counts.sum())
+    if total == 0:
+        empty = _TriMesh(zeros((3, 0)),
+                         _TriTopology(zeros((3, 0), dtype=int), coord_count=0))
+        return (empty, zeros(0, dtype=int), zeros((3, 0), dtype=int))
+    pair_of_tri = repeat(arange(triangles), counts)
+    starts = concatenate([[0], cumsum(counts)[:-1]])
+    within = arange(total) - repeat(starts, counts)
+    offsets = zeros((total, 3), dtype=int)
+    spans_of = spans[pair_of_tri]
+    for axis in (2, 1, 0):
+        offsets[:, axis] = within % spans_of[:, axis]
+        within = within // spans_of[:, axis]
+    voxel_of = reach_lo[pair_of_tri] + offsets
+    bounds_of = stack([voxel_of - 0.5, voxel_of + 0.5], axis=2)
+    inside_of = index_space[pair_of_tri]
+    pieces = []
+    from_tri = []
+    from_voxel = []
+    for i in range(total):
+        polygon = triangle_box_polygon(inside_of[i], bounds_of[i], tol)
+        count = polygon.shape[1]
+        if count < 3:
+            continue
+        local = polygon_fan(count)
+        pieces.append((polygon, local))
+        from_tri.append(full(local.shape[1], pair_of_tri[i]))
+        from_voxel.append(tile(voxel_of[i][:, None], (1, local.shape[1])))
+    if not pieces:
+        empty = _TriMesh(zeros((3, 0)),
+                         _TriTopology(zeros((3, 0), dtype=int), coord_count=0))
+        return (empty, zeros(0, dtype=int), zeros((3, 0), dtype=int))
+    coords = []
+    faces = []
+    offset = 0
+    for (vertices, local) in pieces:
+        coords.append(vertices)
+        faces.append(local + offset)
+        offset += vertices.shape[1]
+    all_coords = concatenate(coords, axis=1)
+    all_faces = concatenate(faces, axis=1)
+    built = _TriMesh(all_coords,
+                     _TriTopology(all_faces, coord_count=all_coords.shape[1]))
+    return (built, concatenate(from_tri), concatenate(from_voxel, axis=1))
 
 
 def mesh_intersections(first, second, /, tolerance=None):

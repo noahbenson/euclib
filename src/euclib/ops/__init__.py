@@ -16,7 +16,7 @@ from __future__ import annotations
 from ._cross import positions_of, sample, transfer
 from ._intersect import (
     contains, mesh_intersections, path_crossings, path_intersections,
-    tolerance_of, voxel_intersections)
+    tolerance_of, voxel_intersections, voxel_surface_intersections)
 from ._distance import distance, nearest, separation
 from ._geodesic import geodesic
 
@@ -26,4 +26,5 @@ from ._geodesic import geodesic
 __all__ = ('distance', 'nearest', 'separation', 'geodesic',
            'positions_of', 'sample', 'transfer',
            'path_crossings', 'path_intersections', 'contains',
-           'tolerance_of', 'voxel_intersections', 'mesh_intersections')
+           'tolerance_of', 'voxel_intersections',
+           'voxel_surface_intersections', 'mesh_intersections')

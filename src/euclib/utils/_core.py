@@ -80,7 +80,7 @@ from ._pycore import (  # noqa: E402
     cross3, closest_segment_params,
     segments_intersect, barycentric_in_triangle,
     segments_triangles_intersect, triangles_segments_intersect,
-    tetrahedron_box_intersection)
+    tetrahedron_box_intersection, triangle_box_polygon)
 
 # The kernels the C extension provides. Each is registered against its
 # pure-Python counterpart, which is what any call that the C version cannot take

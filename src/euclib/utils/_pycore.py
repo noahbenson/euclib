@@ -1057,6 +1057,95 @@ def _half_spaces(tet, bounds):
     return (stack(normals, axis=1), asarray(offsets))
 
 
+
+def triangle_box_polygon(corners, bounds, tolerance=0.0):
+    '''The polygon a triangle and a box share, as its corners in order.
+
+    A triangle cut by a box is a convex polygon --- the triangle's corners that
+    are inside, joined by the points where its edges cross the box's faces --- so
+    it is found by clipping the triangle against each of the box's six planes in
+    turn. That is Sutherland and Hodgman's method, and for a box whose faces are
+    the coordinate planes each step is a comparison and a linear interpolation.
+
+    This is what a triangle mesh contributes to a voxel: a surface has no
+    interior, so the piece they share is an *area*, not a volume, and the caller
+    triangulates the polygon if it wants triangles back.
+
+    Parameters
+    ----------
+    corners : numpy.ndarray
+        A ``(3, 3)`` matrix: the triangle's three corners.
+    bounds : numpy.ndarray
+        A ``(3, 2)`` box, as the low and high coordinate along each axis.
+    tolerance : float, optional
+        How far outside a face a corner may lie and still be counted. The
+        default is ``0``.
+
+    Returns
+    -------
+    numpy.ndarray
+        A ``(3, V)`` matrix of the polygon's corners in order around it, or a
+        ``(3, 0)`` matrix when they share nothing. Fewer than three corners mean
+        the same thing: a point or a segment has no area.
+    '''
+    corners = asarray(corners, dtype='float64')
+    bounds = asarray(bounds, dtype='float64')
+    poly = [corners[:, i] for i in range(3)]
+    for axis in range(3):
+        for (value, above) in ((float(bounds[axis, 0]), True),
+                               (float(bounds[axis, 1]), False)):
+            if not poly:
+                return zeros((3, 0))
+            out = []
+            count = len(poly)
+            for i in range(count):
+                a = poly[i]
+                b = poly[(i + 1) % count]
+                # How far each end is on the inside of this face. Both ends
+                # being equally far means they are on the same side, so the
+                # interpolation below never divides by zero.
+                da = (a[axis] - value) if above else (value - a[axis])
+                db = (b[axis] - value) if above else (value - b[axis])
+                a_in = da >= -tolerance
+                b_in = db >= -tolerance
+                if a_in:
+                    out.append(a)
+                if a_in != b_in:
+                    out.append(a + (da / (da - db)) * (b - a))
+            poly = out
+    if len(poly) < 3:
+        return zeros((3, 0))
+    return stack(poly, axis=1)
+
+
+
+def polygon_fan(count):
+    '''Triangulates a convex polygon as a fan from its first corner.
+
+    A convex polygon is covered by the triangles from one corner to each
+    consecutive pair of the others, and there are ``count - 2`` of them. The
+    polygon's corners must be in order around it, which is what
+    `triangle_box_polygon` gives.
+
+    Parameters
+    ----------
+    count : int
+        How many corners the polygon has.
+
+    Returns
+    -------
+    numpy.ndarray
+        A ``(3, count - 2)`` integer matrix of corner indices, or a
+        ``(3, 0)`` matrix when there are fewer than three corners and no area to
+        cover.
+    '''
+    count = int(count)
+    if count < 3:
+        return zeros((3, 0), dtype='intp')
+    k = arange(1, count - 1, dtype='intp')
+    return stack([zeros(k.shape, dtype='intp'), k, k + 1])
+
+
 def tetrahedron_box_vertices(tet, bounds, tolerance=0.0):
     '''Finds the corners of the region a tetrahedron and a box share.
 

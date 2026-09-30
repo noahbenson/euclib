@@ -37,7 +37,8 @@ from ._core import (
     barycentric_in_triangle,
     segments_triangles_intersect,
     triangles_segments_intersect,
-    tetrahedron_box_vertices, tetrahedron_box_intersection)
+    tetrahedron_box_vertices, tetrahedron_box_intersection,
+    triangle_box_polygon)
 from ._hash import content_hash, values_equal
 from ._spatial import SpatialTree
 
@@ -57,5 +58,6 @@ __all__ = (
     'barycentric_in_triangle', 'segments_triangles_intersect',
     'triangles_segments_intersect',
     'tetrahedron_box_vertices', 'tetrahedron_box_intersection',
+    'triangle_box_polygon',
     'content_hash', 'values_equal',
     'SpatialTree')
