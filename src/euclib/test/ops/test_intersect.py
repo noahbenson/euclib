@@ -254,6 +254,23 @@ class TestVoxelIntersections(TestCase):
         self.assertLess(pieces.coord_count, 4 * count,
                         "every piece has its own copy of every corner")
 
+    def test_the_properties_come_along(self):
+        # Every coordinate of the pieces lies inside the mesh it was cut from,
+        # so each property can be read at them. This is what lets a caller
+        # integrate a tetrahedral mesh's property over a voxel.
+        big = TetMesh(array([[0., 2., 0., 0.], [0., 0., 2., 0.],
+                             [0., 0., 0., 2.]]),
+                      TetTopology([[0], [1], [2], [3]]))
+        # A field that varies, so an interpolation that did nothing would show.
+        big = big.withprop('s', asarray(big.coords).sum(axis=0, keepdims=True))
+        (pieces, _) = voxel_intersections(big, self._grid())
+        self.assertEqual(sorted(pieces.properties), ['s'])
+        got = asarray(pieces['s'])
+        want = asarray(pieces.coords).sum(axis=0, keepdims=True)
+        self.assertTrue(allclose(got, want),
+                        f"the property did not follow the pieces: {got} against"
+                        f" {want}")
+
     def test_the_cutting_happens_in_index_space(self):
         # A finer grid cuts the tetrahedron into more pieces, and their total
         # volume is its own however many there are.
