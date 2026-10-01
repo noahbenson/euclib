@@ -762,6 +762,16 @@ class TestTheTetmeshCarriesTheProperties(TestCase):
     def test_the_tetmesh_lists_it(self):
         self.assertEqual(sorted(self._prism().tetmesh.properties), ['f'])
 
+    def test_the_elevation_lists_it_too(self):
+        self.assertEqual(sorted(self._prism().elevation(0.5).properties), ['f'])
+
+    def test_the_elevation_reads_the_prism_s_values(self):
+        # The surface at an elevation lies inside the prism, so the property can
+        # be read at its coordinates. One value per coordinate, as the prism
+        # itself has.
+        got = asarray(self._prism().elevation(0.5)['f']).ravel().tolist()
+        self.assertEqual(got, [10.0, 20.0, 30.0])
+
     def test_and_reading_it_gives_the_prism_s_values(self):
         # The tetrahedra's coordinates are the prism's two surfaces, so a
         # coordinate property of the prism follows both: coordinate i of the

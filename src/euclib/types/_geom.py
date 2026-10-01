@@ -35,7 +35,7 @@ from numpy import (arange, asarray, concatenate, eye, meshgrid, ones, stack,
 from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, lazy, llist
 
-from ..abc._geom import _value_of
+from ..abc._geom import _carried_property, _value_of
 from ..abc import (
     Geometry, Property, SimplexGeometry, UNSET, as_coords, as_query, calc,
     check_coordinfo, split_property_name)
@@ -897,8 +897,20 @@ class PrismMesh(SimplexGeometry):
         e = float(height)
         topo = TriTopology(self.topo.indices, coord_count=self.coord_count,
                            backend=self.backend)
-        return TriMesh(self.coords0 * (1.0 - e) + self.coords1 * e, topo,
-                       backend=self.backend)
+        built = TriMesh(self.coords0 * (1.0 - e) + self.coords1 * e, topo,
+                        backend=self.backend)
+        # The properties come along, as they do for `tetmesh`: the surface at an
+        # elevation lies inside the prism, so each property can be read at its
+        # coordinates. Lazily, since a mesh's properties are usually not read.
+        for (name, prop) in self.properties.items():
+            try:
+                interp = prop.interp
+            except AttributeError:
+                interp = UNSET
+            built = built.withprop(
+                name, lazy(_carried_property, self, name, built.coords),
+                **({} if interp is UNSET else {'interp': interp}))
+        return built
 
     @calc('tetmesh')
     def proc_tetmesh(coords0, coords1, topo, backend, properties):
