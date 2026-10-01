@@ -567,11 +567,12 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
     -------
     pieces : TriMesh
         A triangle mesh of the pieces, in no particular order. Its surface area
-        is the mesh's own, since the pieces tile it.
-    triangles : numpy.ndarray
-        A length-``T`` vector naming the mesh triangle each piece came from.
+        is the mesh's own, since the pieces tile it; every triangle of it lies
+        entirely within one voxel; and no coordinate appears twice, so pieces
+        that meet share their corners.
     voxels : numpy.ndarray
-        A ``(3, T)`` matrix of the grid cell indices each piece came from.
+        A ``(3, T)`` matrix of the grid cell indices each piece came from, one
+        column per triangle of ``pieces``.
 
     Raises
     ------
@@ -594,6 +595,7 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
     tol = tolerance_of(mesh) if tolerance is None else float(tolerance)
     shape = tuple(grid.shape)
     to_index = grid.affine_inverse
+    to_global = grid.affine
     corners = mesh.coords[:, mesh.topo.indices]           # (3, 3, M)
     (dim, per_tri, triangles) = corners.shape
     flat = to_index.apply(corners.reshape(dim, per_tri * triangles))
@@ -644,34 +646,51 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
     voxel_of = reach_lo[pair_of_tri] + offsets
     bounds_of = stack([voxel_of - 0.5, voxel_of + 0.5], axis=2)
     inside_of = index_space[pair_of_tri]
-    pieces = []
-    from_tri = []
-    from_voxel = []
+    # The polygon's corners are *welded* as the pieces are built, as they are
+    # for the tetrahedral version: a location already seen keeps the index it
+    # was given, so no coordinate appears twice and pieces that meet along an
+    # edge share it. A surface is where this matters most --- a triangle's
+    # corners are shared with every neighbour, and a clipped edge produces the
+    # same point for every voxel it passes through.
+    coords = []
+    seen = {}
+    faces = []
+    voxel_of_piece = []
     for i in range(total):
         polygon = triangle_box_polygon(inside_of[i], bounds_of[i], tol)
         count = polygon.shape[1]
         if count < 3:
             continue
         local = polygon_fan(count)
-        pieces.append((polygon, local))
-        from_tri.append(full(local.shape[1], pair_of_tri[i]))
-        from_voxel.append(tile(voxel_of[i][:, None], (1, local.shape[1])))
-    if not pieces:
+        remap = zeros(count, dtype='intp')
+        for k in range(count):
+            key = (float(polygon[0, k]), float(polygon[1, k]),
+                   float(polygon[2, k]))
+            at = seen.get(key)
+            if at is None:
+                at = len(coords)
+                seen[key] = at
+                coords.append(polygon[:, k])
+            remap[k] = at
+        faces.append(remap[local])
+        voxel_of_piece.append(tile(voxel_of[i][:, None], (1, local.shape[1])))
+    if not faces:
         empty = _TriMesh(zeros((3, 0)),
                          _TriTopology(zeros((3, 0), dtype=int), coord_count=0))
-        return (empty, zeros(0, dtype=int), zeros((3, 0), dtype=int))
-    coords = []
-    faces = []
-    offset = 0
-    for (vertices, local) in pieces:
-        coords.append(vertices)
-        faces.append(local + offset)
-        offset += vertices.shape[1]
-    all_coords = concatenate(coords, axis=1)
+        return (empty, zeros((3, 0), dtype=int))
+    all_coords = to_global.apply(stack(coords, axis=1))
     all_faces = concatenate(faces, axis=1)
     built = _TriMesh(all_coords,
                      _TriTopology(all_faces, coord_count=all_coords.shape[1]))
-    return (built, concatenate(from_tri), concatenate(from_voxel, axis=1))
+    for (name, prop) in mesh.properties.items():
+        try:
+            interp = prop.interp
+        except AttributeError:
+            interp = UNSET
+        built = built.withprop(
+            name, lazy(_carried_property, mesh, name, built.coords),
+            **({} if interp is UNSET else {'interp': interp}))
+    return (built, concatenate(voxel_of_piece, axis=1))
 
 
 def mesh_intersections(first, second, /, tolerance=None):

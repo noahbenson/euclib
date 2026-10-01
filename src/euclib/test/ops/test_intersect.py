@@ -507,9 +507,9 @@ class TestVoxelSurfaceIntersections(TestCase):
     def test_the_pieces_tile_the_surface(self):
         mesh = self._square()
         cells = self._grid()
-        (pieces, _, _) = voxel_surface_intersections(mesh, cells)
+        (pieces, _) = voxel_surface_intersections(mesh, cells)
         want = float(asarray(mesh.measures).sum())
-        got = float(asarray(pieces.measures).sum()) * 0.4 ** 2
+        got = float(asarray(pieces.measures).sum())
         self.assertAlmostEqual(got, want, places=9,
                                msg=f"the pieces cover {got}, not {want}")
 
@@ -519,18 +519,39 @@ class TestVoxelSurfaceIntersections(TestCase):
         # in the voxel below and the one above, and its area counted twice;
         # voxels are half-open so that a face belongs to the one above.
         mesh = self._square()
-        (pieces, _, voxels) = voxel_surface_intersections(mesh, self._grid())
+        (pieces, voxels) = voxel_surface_intersections(mesh, self._grid())
         want = float(asarray(mesh.measures).sum())
-        got = float(asarray(pieces.measures).sum()) * 0.4 ** 2
+        got = float(asarray(pieces.measures).sum())
         self.assertAlmostEqual(got, want, places=9)
         self.assertEqual(sorted({int(v) for v in voxels[2]}), [1],
                          "the flat square should be in exactly one layer of z")
 
-    def test_every_piece_names_its_triangle_and_its_voxel(self):
+    def test_every_piece_names_its_voxel(self):
         mesh = self._square()
         cells = self._grid()
-        (pieces, tris, voxels) = voxel_surface_intersections(mesh, cells)
+        (pieces, voxels) = voxel_surface_intersections(mesh, cells)
         count = pieces.topo.indices.shape[1]
-        self.assertEqual(tris.shape, (count,))
         self.assertEqual(voxels.shape, (3, count))
-        self.assertTrue((tris >= 0).all() and (tris < 2).all())
+        self.assertTrue((voxels >= 0).all())
+
+    def test_the_pieces_share_their_vertices(self):
+        # No coordinate appears twice. A surface is where that matters most: a
+        # triangle's corners are shared with every neighbour.
+        mesh = self._square()
+        (pieces, _) = voxel_surface_intersections(mesh, self._grid())
+        count = pieces.topo.indices.shape[1]
+        self.assertGreater(count, 4, "the case is only interesting if it splits")
+        self.assertLess(pieces.coord_count, 3 * count,
+                        "every piece has its own copy of every corner")
+
+    def test_the_properties_come_along(self):
+        coords = array([[0.1, 0.9, 0.1, 0.9],
+                        [0.1, 0.1, 0.9, 0.9],
+                        [0.5, 0.5, 0.5, 0.5]])
+        mesh = TriMesh(coords, TriTopology([[0, 0], [1, 3], [3, 2]]))
+        mesh = mesh.withprop('s', asarray(mesh.coords).sum(axis=0, keepdims=True))
+        (pieces, _) = voxel_surface_intersections(mesh, self._grid())
+        self.assertEqual(sorted(pieces.properties), ['s'])
+        got = asarray(pieces['s'])
+        want = asarray(pieces.coords).sum(axis=0, keepdims=True)
+        self.assertTrue(allclose(got, want))
