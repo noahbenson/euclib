@@ -429,6 +429,29 @@ class SimplexTopology(Topology):
                 f" indices, which requires {needed}")
         return count
 
+    @calc('vertices')
+    def proc_vertices(coord_count, backend):
+        '''The topology of this geometry\'s vertices, as a point cloud.
+
+        Every geometry has coordinates, and a topology that names each of them
+        once --- simplices of order 0, with one corner apiece. It is what a
+        caller wants for a *nearest* answer rather than the geometry\'s own
+        rule: a point cloud has no interior, so its interpolation is forced to
+        report the value at the nearest coordinate, where the geometry itself
+        reports the value at the heaviest corner of the containing simplex. The
+        same property read through the two gives both.
+
+        Returns
+        -------
+        vertices : VertexTopology
+            The topology whose coordinates are this one\'s own.
+        '''
+        # Imported here rather than at module scope: the topology types are a
+        # concrete-type concern, and euclib.abc must not import euclib.types.
+        from ..types._topo import VertexTopology
+        return VertexTopology(arange(int(coord_count))[None, :],
+                              coord_count=int(coord_count), backend=backend)
+
     @calc('order', 'dim', 'local_dim', lazy=False)
     def proc_order(indices):
         '''The primary simplex order and the topology's dimensions.
