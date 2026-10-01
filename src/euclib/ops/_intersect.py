@@ -31,6 +31,7 @@ from numpy import (
 from pcollections import lazy
 
 from ..abc import Geometry, UNSET, as_query
+from ..abc._geom import _carried_property
 from ..types import Grid, SegPath, TriMesh
 from ..utils import (segments_intersect, segments_triangles_intersect,
                      triangle_box_polygon)
@@ -321,22 +322,6 @@ def contains(geom, points, /, tolerance=None):
 #: value only has to be small.
 _FLAT_RATIO = 1e-9
 
-
-
-def _carried_property(mesh, name, coords, /):
-    '''One of a mesh's properties, interpolated onto new coordinates.
-
-    Every coordinate of an intersection lies *inside* the mesh it was cut from
-    --- each piece is a part of a tetrahedron --- so a property can be read at
-    them, and the intersected mesh carries the same properties the original did.
-    That is what lets a caller integrate a tetrahedral mesh's property over a
-    voxel: the property has to come along.
-
-    A module-level function and not a closure, because it is called from inside a
-    `pcollections.lazy`, where nothing of the caller is in scope but what the
-    lazy closed over.
-    '''
-    return mesh.prop(name, at=coords)
 
 
 def voxel_intersections(mesh, grid, /, tolerance=None):
