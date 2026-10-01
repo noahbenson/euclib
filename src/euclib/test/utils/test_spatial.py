@@ -369,7 +369,7 @@ class TestVoxelPiecesJoin(TestCase):
                                    [0., 0.5, 0., shift],
                                    [0., 0., 0.5, shift],
                                    [0., 0., 0., 1.]]))
-        (pieces, _, _) = ops.voxel_intersections(mesh, cells)
+        (pieces, _) = ops.voxel_intersections(mesh, cells)
         return (pieces, 0.5 * (side - 1) + shift)
 
     def test_every_face_of_an_inner_plane_is_held_twice(self):

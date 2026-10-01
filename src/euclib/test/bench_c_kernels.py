@@ -211,7 +211,7 @@ def bench_voxel_intersections():
                 continue
             _pycore._vertices_kernel = kernel
             start = perf_counter()
-            (pieces, from_tet, from_voxel) = ops.voxel_intersections(
+            (pieces, from_voxel) = ops.voxel_intersections(
                 mesh, cells)
             elapsed = perf_counter() - start
             print(f"  {label:<34} {elapsed * 1e3:>9.3f} ms"

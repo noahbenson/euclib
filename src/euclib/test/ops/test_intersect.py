@@ -217,17 +217,16 @@ class TestVoxelIntersections(TestCase):
         self.assertTrue(all(contains(unit, array([[0.], [0.], [0.]]))))
 
     def test_a_tetrahedron_inside_one_voxel(self):
-        (pieces, tetrahedra, voxels) = voxel_intersections(_tet(), self._grid())
+        (pieces, voxels) = voxel_intersections(_tet(), self._grid())
         self.assertEqual(pieces.topo.simplex_count[3], 1)
         self.assertAlmostEqual(float(sum(pieces.measures)), 1. / 6.)
-        self.assertEqual(tetrahedra.tolist(), [0])
         self.assertEqual(voxels.ravel().tolist(), [0, 0, 0])
 
     def test_a_tetrahedron_spanning_several_voxels(self):
         big = TetMesh(array([[0., 2., 0., 0.], [0., 0., 2., 0.],
                              [0., 0., 0., 2.]]),
                       TetTopology([[0], [1], [2], [3]]))
-        (pieces, _, voxels) = voxel_intersections(big, self._grid())
+        (pieces, voxels) = voxel_intersections(big, self._grid())
         # Its eightfold volume is cut among the four voxels it reaches.
         self.assertAlmostEqual(float(sum(pieces.measures)), 8. / 6.)
         self.assertEqual(sorted({tuple(v) for v in voxels.T.tolist()}),
@@ -237,12 +236,23 @@ class TestVoxelIntersections(TestCase):
         far = TetMesh(array([[5., 6., 5., 5.], [5., 5., 6., 5.],
                              [5., 5., 5., 6.]]),
                       TetTopology([[0], [1], [2], [3]]))
-        (pieces, tetrahedra, voxels) = voxel_intersections(far, self._grid())
+        (pieces, voxels) = voxel_intersections(far, self._grid())
         # An empty result is an empty mesh, not a mesh holding a placeholder.
         self.assertEqual(pieces.topo.simplex_count[3], 0)
         self.assertEqual(pieces.coord_count, 0)
-        self.assertEqual(tetrahedra.shape, (0,))
         self.assertEqual(voxels.shape, (3, 0))
+
+    def test_the_pieces_share_their_vertices(self):
+        # No coordinate appears twice: a piece's corner is one entry however
+        # many pieces use it. Without welding the count is four per piece.
+        big = TetMesh(array([[0., 2., 0., 0.], [0., 0., 2., 0.],
+                             [0., 0., 0., 2.]]),
+                      TetTopology([[0], [1], [2], [3]]))
+        (pieces, _) = voxel_intersections(big, self._grid())
+        count = pieces.topo.simplex_count[3]
+        self.assertGreater(count, 4, "the case is only interesting if it splits")
+        self.assertLess(pieces.coord_count, 4 * count,
+                        "every piece has its own copy of every corner")
 
     def test_the_cutting_happens_in_index_space(self):
         # A finer grid cuts the tetrahedron into more pieces, and their total
@@ -250,7 +260,7 @@ class TestVoxelIntersections(TestCase):
         grid = Grid(array([[0.5, 0., 0., 0.], [0., 0.5, 0., 0.],
                            [0., 0., 0.5, 0.], [0., 0., 0., 1.]]),
                     GridTopology((6, 6, 6)))
-        (pieces, _, _) = voxel_intersections(_tet(), grid)
+        (pieces, _) = voxel_intersections(_tet(), grid)
         self.assertAlmostEqual(float(sum(pieces.measures)), 1. / 6.)
 
     def test_it_checks_its_arguments(self):

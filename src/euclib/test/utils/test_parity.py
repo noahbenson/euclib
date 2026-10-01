@@ -305,10 +305,13 @@ class TestVerticesParityOnRandomCases(TestCase):
             for (label, kernel) in (('python', dispatching.native),
                                     ('C', dispatching.accelerated)):
                 _pycore._vertices_kernel = kernel
-                (pieces, from_tet, from_voxel) = ops.voxel_intersections(
+                (pieces, from_voxel) = ops.voxel_intersections(
                     mesh, cells)
+                # The coordinate count as well as the piece count: the pieces
+                # are welded, so it is a signature of the geometry and not just
+                # of how many pieces there are.
                 answers[label] = (pieces.topo.simplex_count[3],
-                                  from_tet.tolist(), from_voxel.tolist())
+                                  pieces.coord_count, from_voxel.tolist())
         finally:
             _pycore._vertices_kernel = dispatching
         self.assertGreater(answers['python'][0], 100)
