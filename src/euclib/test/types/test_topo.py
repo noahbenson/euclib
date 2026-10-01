@@ -13,6 +13,7 @@ from numpy import array
 
 from euclib.abc import is_loc, is_simplex_topology
 from euclib.types import (
+    TetMesh, TetTopology, TriMesh, TriTopology,
     VertexTopology, SegTopology, TriTopology, TetTopology,
     VertexLoc, SegLoc, TriLoc, TetLoc)
 
@@ -100,3 +101,50 @@ class TestConcreteLocs(TestCase):
                          [0, 2])
         with self.assertRaises(ValueError):
             topo.check_loc(VertexLoc(array([[0, 2]])))
+
+
+class TestTheLowerOrderSimplices(TestCase):
+    '''The vertices, edges and triangles a topology implies.
+
+    A topology stores its primary simplices and derives the lower-order ones on
+    demand: a tetrahedral mesh's edges and faces, a triangle mesh's edges and
+    vertices. They are what a caller reads a property through to get a different
+    answer --- a vertex set has no interior, so its interpolation is forced to
+    the nearest coordinate, where the mesh reports the heaviest corner of the
+    containing simplex.
+    '''
+
+    def _tet(self, /):
+        return TetMesh(array([[0., 1., 0., 0.], [0., 0., 1., 0.],
+                              [0., 0., 0., 1.]]),
+                       TetTopology([[0], [1], [2], [3]]))
+
+    def _triangle(self, /):
+        return TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                       TriTopology([[0], [1], [2]]))
+
+    def test_a_tetrahedron_has_four_faces_and_six_edges(self):
+        topo = self._tet().topo
+        # Four faces, all of them: the interior ones are shared and are still
+        # one face each, not two.
+        self.assertEqual(topo.triangles.indices.shape, (3, 4))
+        self.assertEqual(sorted(topo.triangles.indices.T.tolist()),
+                         sorted([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]))
+        # Six edges, deduplicated: each is named once though two faces carry it.
+        self.assertEqual(topo.edges.indices.shape, (2, 6))
+        self.assertEqual(sorted(topo.edges.indices.T.tolist()),
+                         sorted([[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]]))
+        self.assertEqual(topo.vertices.indices.shape, (1, 4))
+
+    def test_a_triangle_mesh_gives_its_own_triangles(self):
+        topo = self._triangle().topo
+        self.assertEqual(topo.triangles.indices.shape, (3, 1))
+        self.assertEqual(topo.edges.indices.shape, (2, 3))
+        self.assertEqual(topo.vertices.indices.shape, (1, 3))
+
+    def test_the_lower_simplices_share_the_coordinates(self):
+        # A sub-object's coordinates are the mesh's own, which is why a property
+        # carries to it verbatim rather than needing interpolation.
+        topo = self._tet().topo
+        for one in (topo.vertices, topo.edges, topo.triangles):
+            self.assertEqual(one.coord_count, topo.coord_count)

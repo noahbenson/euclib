@@ -452,6 +452,45 @@ class SimplexTopology(Topology):
         return VertexTopology(arange(int(coord_count))[None, :],
                               coord_count=int(coord_count), backend=backend)
 
+    @calc('edges')
+    def proc_edges(simplices, coord_count, backend):
+        '''The topology of this geometry\'s edges, as segments.
+
+        The edges of a mesh are the second of the lower-order simplices its
+        corners imply, already derived and already deduplicated: an interior
+        edge belongs to two triangles and is one edge. A topology of order 0 has
+        none, and asking raises rather than inventing an empty one.
+
+        Returns
+        -------
+        edges : SegTopology
+            The topology whose coordinates are this one\'s own and whose
+            simplices are its edges.
+        '''
+        from ..types._topo import SegTopology
+        return SegTopology(simplices[1], coord_count=int(coord_count),
+                           backend=backend)
+
+    @calc('triangles')
+    def proc_triangles(simplices, coord_count, backend):
+        '''The topology of this geometry\'s triangles, as triangles.
+
+        The third of the lower-order simplices its corners imply. For a triangle
+        mesh those are the mesh\'s own triangles; for a tetrahedral mesh, all
+        four faces of every tetrahedron, interior ones included --- a caller
+        analyzing a volume mesh may want the faces it shares, not only the
+        surface, which is a separate thing to ask for.
+
+        Returns
+        -------
+        triangles : TriTopology
+            The topology whose coordinates are this one\'s own and whose
+            simplices are its triangles.
+        '''
+        from ..types._topo import TriTopology
+        return TriTopology(simplices[2], coord_count=int(coord_count),
+                           backend=backend)
+
     @calc('order', 'dim', 'local_dim', lazy=False)
     def proc_order(indices):
         '''The primary simplex order and the topology's dimensions.
