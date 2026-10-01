@@ -34,7 +34,7 @@ from abc import abstractmethod
 
 from numpy import asarray, concatenate, integer
 from immlib import math as imath, to_array, to_tensor
-from pcollections import ldict, llist, lazy
+from pcollections import ldict, lazy, llist, lazy
 
 from .. import _init
 from ._core import MetaObject, calc, normalize_backend, plantypeABC
@@ -87,6 +87,16 @@ def normalize_properties(properties, spatial_shape, /):
                 f" but must have {tuple(spatial_shape)}")
         res[name] = prop
     return ldict(res)
+
+
+
+def _value_of(prop, /):
+    '''A property's values, for a `pcollections.lazy` to call.
+
+    Module-level and not a closure, because it is called from inside a lazy,
+    where nothing of the caller is in scope but what the lazy closed over.
+    '''
+    return prop.value
 
 
 def supported_interp(topo, /):
@@ -1139,6 +1149,43 @@ class SimplexGeometry(Geometry):
             return None
         (centers, radii) = simplex_boxes(coords, topo.indices)
         return SpatialTree(centers, radii)
+
+    @calc('vertices')
+    def proc_vertices(coords, topo, properties, backend):
+        '''This geometry\'s coordinates as a point cloud.
+
+        A `VertexSet` over the same coordinates, with the same properties. It is
+        what a caller reads a property through to get a *nearest* answer rather
+        than the geometry\'s own rule: a point cloud has no interior, so its
+        interpolation is forced to report the value at the nearest coordinate,
+        where the geometry reports the value at the heaviest corner of the
+        containing simplex. The same property read through the two gives both.
+
+        The properties carry *verbatim* --- the values are the same array ---
+        because the coordinates are the same coordinates. They are wrapped in a
+        `lazy` so that a property whose own values are computed is not computed
+        here merely to be handed on.
+
+        A point cloud contains only its own points, so a position that is not
+        one of them is *outside* it, and a read there reports the null unless
+        extrapolation is asked for. That is deliberate rather than an oversight:
+        ``extrap=0`` means the value at the nearest position of the object,
+        which for a point cloud is the value already computed, so
+        ``geom.vertices.prop(p, at=x, extrap=0)`` is how one asks for a *nearest*
+        answer. The default stays the geometry\'s own rule --- the heaviest
+        corner of the containing simplex --- and a caller who wants something
+        else says so.
+
+        Returns
+        -------
+        VertexSet
+            The same coordinates, as a point cloud.
+        '''
+        from ..types import VertexSet
+        built = VertexSet(coords, topo.vertices, backend=backend)
+        for (name, prop) in properties.items():
+            built = built.withprop(name, lazy(_value_of, prop))
+        return built
 
     @calc('bbox')
     def proc_bbox(coords, vertex_mask):

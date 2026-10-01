@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from numpy import asarray, isnan
+
 from unittest import TestCase
 
 from numpy import allclose, array, zeros
@@ -376,3 +378,48 @@ class TestTorchBackend(TestCase):
         # now carries a graph, so it is detached to be read.
         self.assertTrue(allclose(loc.weight.detach().tolist(), [[0.5]]))
         self.assertTrue(loc.weight.requires_grad)
+
+
+class TestTheVerticesOfAGeometry(TestCase):
+    '''A geometry\'s coordinates, as a point cloud.
+
+    What a caller reads a property through to get a *nearest* answer. A point
+    cloud has no interior, so its interpolation is forced to the nearest
+    coordinate, where the geometry reports the heaviest corner of the containing
+    simplex --- the same values, read through two geometries, giving both rules.
+    '''
+
+    def _mesh(self, /):
+        mesh = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                       TriTopology([[0], [1], [2]]))
+        return mesh.withprop('f', array([[1.0, 2.0, 3.0]]))
+
+    def test_it_is_a_point_cloud_over_the_same_coordinates(self):
+        vertices = self._mesh().vertices
+        self.assertEqual(vertices.order, 0)
+        self.assertEqual(vertices.coord_count, 3)
+        self.assertTrue(allclose(vertices.coords, self._mesh().coords))
+
+    def test_the_properties_come_along_verbatim(self):
+        # The values are the same array: a point cloud\'s coordinates are the
+        # mesh\'s own, so nothing has to be interpolated to carry them.
+        mesh = self._mesh()
+        self.assertEqual(sorted(mesh.vertices.properties), ['f'])
+        self.assertTrue(allclose(asarray(mesh.vertices['f']),
+                                 asarray(mesh['f'])))
+
+    def test_the_two_geometries_give_different_rules(self):
+        mesh = self._mesh()
+        # (0.9, 0.05, 0) has barycentric weights .05/.9/.05 on the corners
+        # (0,0,0), (1,0,0), (0,1,0), so the heaviest is the second.
+        at = array([[0.9], [0.05], [0.0]])
+        self.assertAlmostEqual(
+            float(asarray(mesh.prop('f', at=at)).ravel()[0]), 2.0)
+        # A point cloud contains only its own points, so a position that is not
+        # one is outside it and reports the null unless extrapolation is asked
+        # for --- which is how one asks for the nearest answer.
+        self.assertTrue(isnan(float(asarray(
+            mesh.vertices.prop('f', at=at)).ravel()[0])))
+        self.assertAlmostEqual(
+            float(asarray(mesh.vertices.prop('f', at=at,
+                                             extrap=0)).ravel()[0]), 2.0)
