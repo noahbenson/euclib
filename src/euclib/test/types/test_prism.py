@@ -741,3 +741,31 @@ class TestContainmentAndDistance(TestCase):
         except ImportError:
             self.skipTest("torch is not installed")
         return torch
+
+
+class TestTheTetmeshCarriesTheProperties(TestCase):
+    '''A constructed geometry takes its parent\'s properties along.
+
+    The properties are carried *lazily*, which is what makes this worth testing
+    by *reading* one rather than by checking that it is listed: the carrying is
+    deferred to a `lazy`, so a body that is broken looks exactly like one that
+    works until something asks for the value. That is how a `self` inside a
+    `calc` --- which has none --- got past the whole suite once.
+    '''
+
+    def _prism(self, /):
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        mesh = PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                         PrismTopology([[0], [1], [2]]))
+        return mesh.withprop('f', array([[10.0, 20.0, 30.0]]))
+
+    def test_the_tetmesh_lists_it(self):
+        self.assertEqual(sorted(self._prism().tetmesh.properties), ['f'])
+
+    def test_and_reading_it_gives_the_prism_s_values(self):
+        # The tetrahedra's coordinates are the prism's two surfaces, so a
+        # coordinate property of the prism follows both: coordinate i of the
+        # first surface and N + i of the second carry the same value.
+        got = asarray(self._prism().tetmesh['f']).ravel().tolist()
+        self.assertEqual(got, [10.0, 20.0, 30.0, 10.0, 20.0, 30.0])
+

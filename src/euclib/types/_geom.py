@@ -35,6 +35,7 @@ from numpy import (arange, asarray, concatenate, eye, meshgrid, ones, stack,
 from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, lazy, llist
 
+from ..abc._geom import _value_of
 from ..abc import (
     Geometry, Property, SimplexGeometry, UNSET, as_coords, as_query, calc,
     check_coordinfo, split_property_name)
@@ -558,6 +559,27 @@ def prism_layer_values(values, indices, coord_count, /):
     return im.mag(im.reshape(joined, values.shape[:-2] + (count,)))
 
 
+
+def _prism_property(coords0, coords1, topo, prop, name, coords, backend, /):
+    '''A prism property, interpolated at new coordinates.
+
+    A helper rather than a method, because it is called from inside a
+    `pcollections.lazy` that a *calc* built: a calc is a function in a class
+    body, so it has no `self` to reach the mesh through. What it takes is the
+    fields the interpolation needs rather than the mesh itself, so the mesh may
+    be collected once the new one exists.
+
+    It rebuilds the prism it interpolates from. That is a little work per read,
+    but reads are rare and the alternative --- holding the mesh --- is not.
+
+    A module-level function, so that a name it uses is resolved when it is
+    called and not when it is defined; `PrismMesh` is below it.
+    '''
+    mesh = PrismMesh(stack([coords0, coords1]), topo, backend=backend)
+    mesh = mesh.withprop(name, lazy(_value_of, prop))
+    return mesh.prop(name, at=coords)
+
+
 class PrismMesh(SimplexGeometry):
     '''A prism mesh: a pair of triangle sheets joined corner to corner.
 
@@ -879,7 +901,7 @@ class PrismMesh(SimplexGeometry):
                        backend=self.backend)
 
     @calc('tetmesh')
-    def proc_tetmesh(coords0, coords1, topo, backend):
+    def proc_tetmesh(coords0, coords1, topo, backend, properties):
         '''The tetrahedral mesh that decomposes this prism mesh.
 
         The geometry's own two surfaces, laid end to end --- coordinate ``i``
@@ -899,8 +921,23 @@ class PrismMesh(SimplexGeometry):
             A tetrahedral mesh whose tetrahedra are the three-per-prism
             decomposition of this mesh's prisms.
         '''
-        return TetMesh(concatenate([coords0, coords1], axis=1), topo.tettopo,
-                       backend=backend)
+        built = TetMesh(concatenate([coords0, coords1], axis=1), topo.tettopo,
+                        backend=backend)
+        # The mesh's properties come along, interpolated onto the tetrahedra's
+        # coordinates --- which are the prism's two surfaces, so every one of
+        # them lies inside the prism and each property can be read at them.
+        # Lazily, since a mesh's properties are usually not read at all.
+        for (name, prop) in properties.items():
+            try:
+                interp = prop.interp
+            except AttributeError:
+                interp = UNSET
+            built = built.withprop(
+                name,
+                lazy(_prism_property, coords0, coords1, topo, prop, name,
+                     built.coords, backend),
+                **({} if interp is UNSET else {'interp': interp}))
+        return built
 
     @calc('_tetlayer_cache')
     def proc_tetlayer_cache(properties, elevations, topo, coords0, coords1,
