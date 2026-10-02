@@ -1110,6 +1110,14 @@ class SimplexGeometry(Geometry):
         # built on this one, so this module cannot import it at module scope.
         from ..types._interp import _gradient_operator, _neighbours
         from ..types._ct import edge_mean, edge_operator
+        if topo.order == 0:
+            # A point cloud has no simplices to fit anything through, so it has
+            # no interpolation data. Answering with none rather than failing: it
+            # has no *edges* either, and asking for the second of the simplices
+            # its corners imply raises. Nothing reached this before because
+            # nothing read `interp_data` on a point cloud --- the order-0
+            # methods need no fit, and only a higher-order one asks.
+            return ldict()
         count = coords.shape[1]
         edges = asarray(topo.simplices[1])
         entries = {

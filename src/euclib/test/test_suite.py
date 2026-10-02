@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import ast
 import pathlib
+
+from numpy import array, eye, stack, zeros
 import unittest
 from unittest import TestCase, TestLoader
 
@@ -131,3 +133,78 @@ class TestTheShapeOfACalc(TestCase):
                     break
         self.assertEqual(offenders, [],
                          f"these calcs reach for `self`, which a calc has not")
+
+
+class TestEveryFieldOfAGeometry(TestCase):
+    '''That touching every field of every geometry works.
+
+    The library is lazy everywhere, so a body that runs only on *use* is never
+    exercised by a test that only constructs. A calc that reaches for `self`, or
+    names something it did not import, looks exactly like a working one until
+    something asks --- and three bugs of that shape got through the suite before
+    this.
+
+    So this touches everything: every non-callable name on a small instance of
+    each geometry type, each carrying a property so that the property paths run
+    too. It is not a thorough test of any one field; it is a test that every
+    field can be *reached*, which is the thing that was missing.
+
+    A few fields raise on purpose --- a point cloud has no edges --- and those are
+    listed with the reason, so that a new one has to be added deliberately rather
+    than by widening a catch.
+    '''
+
+    #: Fields that raise, and why. (type name, field): the reason.
+    EXPECTED = {
+        ('VertexSet', 'edges'): 'a point cloud has no edges',
+        ('VertexSet', 'triangles'): 'a point cloud has no triangles',
+        ('SegPath', 'triangles'): 'a path has no triangles',
+        # A prism's coordinates are its *two surfaces* --- a (2, D, N) pair ---
+        # so its edges are not one path and its faces are not one mesh. Both are
+        # things a caller may want; neither has been decided.
+        ('PrismMesh', 'vertices'): 'a prism has two surfaces, not one set of points',
+        ('PrismMesh', 'edges'): 'a prism has two surfaces, not one set of edges',
+        ('PrismMesh', 'triangles'): 'a prism has two surfaces, not one set of faces',
+    }
+
+    def _geometries(self, /):
+        '''A small instance of each type, each with a property.'''
+        from euclib.types import (Grid, GridTopology, PrismMesh, PrismTopology,
+                                  SegPath, SegTopology, TetMesh, TetTopology,
+                                  TriMesh, TriTopology, VertexSet,
+                                  VertexTopology)
+        cloud = VertexSet(array([[0., 1.], [0., 0.]]), VertexTopology([[0, 1]]))
+        path = SegPath(array([[0., 1.], [0., 0.]]), SegTopology([[0], [1]]))
+        tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                      TriTopology([[0], [1], [2]]))
+        tet = TetMesh(array([[0., 1., 0., 0.], [0., 0., 1., 0.],
+                             [0., 0., 0., 1.]]),
+                      TetTopology([[0], [1], [2], [3]]))
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        cells = Grid(eye(3), GridTopology((2, 2)))
+        return [cloud, path, tri, tet, prism, cells]
+
+    def _with_property(self, geom, /):
+        '''The geometry with a property over its coordinates.
+
+        `property_shape` rather than `coord_count`: a mesh's is one value per
+        coordinate, but a grid's is one per cell along each axis.
+        '''
+        return geom.withprop('f', zeros((1,) + tuple(geom.property_shape)))
+
+    def test_every_field_can_be_touched(self):
+        for geom in self._geometries():
+            carried = self._with_property(geom)
+            kind = type(carried).__name__
+            for name in sorted(dir(carried)):
+                if name.startswith('_'):
+                    continue
+                try:
+                    getattr(carried, name)
+                except Exception as e:
+                    reason = self.EXPECTED.get((kind, name))
+                    if reason is None:
+                        self.fail(f"{kind}.{name} raised {type(e).__name__}:"
+                                  f" {str(e)[:80]}")
