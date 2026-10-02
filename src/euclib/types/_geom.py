@@ -35,7 +35,7 @@ from numpy import (arange, asarray, concatenate, eye, meshgrid, ones, stack,
 from immlib import math as imath, to_array, to_tensor
 from pcollections import ldict, lazy, llist
 
-from ..abc._geom import _carried_property, _value_of
+from ..abc._geom import _carried_property
 from ..abc import (
     Geometry, Property, SimplexGeometry, UNSET, as_coords, as_query, calc,
     check_coordinfo, split_property_name)
@@ -575,8 +575,8 @@ def _prism_property(coords0, coords1, topo, prop, name, coords, backend, /):
     A module-level function, so that a name it uses is resolved when it is
     called and not when it is defined; `PrismMesh` is below it.
     '''
-    mesh = PrismMesh(stack([coords0, coords1]), topo, backend=backend)
-    mesh = mesh.withprop(name, lazy(_value_of, prop))
+    mesh = PrismMesh(stack([coords0, coords1]), topo, backend=backend,
+                     properties=ldict({name: prop}))
     return mesh.prop(name, at=coords)
 
 

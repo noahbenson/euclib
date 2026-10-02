@@ -90,16 +90,6 @@ def normalize_properties(properties, spatial_shape, /):
 
 
 
-def _value_of(prop, /):
-    '''A property's values, for a `pcollections.lazy` to call.
-
-    Module-level and not a closure, because it is called from inside a lazy,
-    where nothing of the caller is in scope but what the lazy closed over.
-    '''
-    return prop.value
-
-
-
 def _carried_property(mesh, name, coords, /):
     '''One of a mesh's properties, interpolated onto new coordinates.
 
@@ -1206,10 +1196,12 @@ class SimplexGeometry(Geometry):
             The same coordinates, as a point cloud.
         '''
         from ..types import VertexSet
-        built = VertexSet(coords, topo.vertices, backend=backend)
-        for (name, prop) in properties.items():
-            built = built.withprop(name, lazy(_value_of, prop))
-        return built
+        # The properties are handed straight over: the coordinates are the
+        # same array, so the values are too, and a `Property` is immutable
+        # --- rebuilding each one around its own value would copy nothing and
+        # cost a wrapper apiece.
+        return VertexSet(coords, topo.vertices, backend=backend,
+                      properties=properties)
 
     @calc('edges')
     def proc_edges(coords, topo, properties, backend):
@@ -1233,10 +1225,12 @@ class SimplexGeometry(Geometry):
             The same coordinates, with the edges as its segments.
         '''
         from ..types import SegPath
-        built = SegPath(coords, topo.edges, backend=backend)
-        for (name, prop) in properties.items():
-            built = built.withprop(name, lazy(_value_of, prop))
-        return built
+        # The properties are handed straight over: the coordinates are the
+        # same array, so the values are too, and a `Property` is immutable
+        # --- rebuilding each one around its own value would copy nothing and
+        # cost a wrapper apiece.
+        return SegPath(coords, topo.edges, backend=backend,
+                      properties=properties)
 
     @calc('triangles')
     def proc_triangles(coords, topo, properties, backend):
@@ -1257,10 +1251,12 @@ class SimplexGeometry(Geometry):
             The same coordinates, with the triangles as its simplices.
         '''
         from ..types import TriMesh
-        built = TriMesh(coords, topo.triangles, backend=backend)
-        for (name, prop) in properties.items():
-            built = built.withprop(name, lazy(_value_of, prop))
-        return built
+        # The properties are handed straight over: the coordinates are the
+        # same array, so the values are too, and a `Property` is immutable
+        # --- rebuilding each one around its own value would copy nothing and
+        # cost a wrapper apiece.
+        return TriMesh(coords, topo.triangles, backend=backend,
+                      properties=properties)
 
     @calc('bbox')
     def proc_bbox(coords, vertex_mask):
