@@ -423,3 +423,49 @@ class TestTheVerticesOfAGeometry(TestCase):
         self.assertAlmostEqual(
             float(asarray(mesh.vertices.prop('f', at=at,
                                              extrap=0)).ravel()[0]), 2.0)
+
+
+class TestTheEdgesAndTrianglesOfAGeometry(TestCase):
+    '''The sub-geometries a geometry offers, and what they carry.
+
+    Each reads a property through a different rule: the geometry gives the
+    heaviest corner of its own simplex, `vertices` the nearest coordinate,
+    `edges` the heaviest corner of the containing segment, and `triangles` the
+    heaviest corner of the containing triangle. The values are the same array in
+    every case --- a sub-geometry\'s coordinates are the mesh\'s own --- which is
+    why they carry verbatim rather than needing interpolation.
+    '''
+
+    def _tet(self, /):
+        mesh = TetMesh(array([[0., 1., 0., 0.], [0., 0., 1., 0.],
+                              [0., 0., 0., 1.]]),
+                       TetTopology([[0], [1], [2], [3]]))
+        return mesh.withprop('f', array([[1.0, 2.0, 3.0, 4.0]]))
+
+    def test_a_tetrahedron_offers_six_edges_and_four_triangles(self):
+        mesh = self._tet()
+        self.assertEqual(mesh.edges.topo.indices.shape, (2, 6))
+        self.assertEqual(mesh.triangles.topo.indices.shape, (3, 4))
+
+    def test_they_are_over_the_same_coordinates(self):
+        mesh = self._tet()
+        for one in (mesh.vertices, mesh.edges, mesh.triangles):
+            self.assertEqual(one.coord_count, mesh.coord_count)
+
+    def test_and_they_read_the_properties_they_carry(self):
+        # Read rather than listed: the carrying is lazy, so a broken body looks
+        # like a working one until something asks for the value.
+        mesh = self._tet()
+        for one in (mesh.edges, mesh.triangles):
+            self.assertEqual(sorted(one.properties), ['f'])
+            self.assertEqual(asarray(one['f']).ravel().tolist(),
+                             [1.0, 2.0, 3.0, 4.0])
+
+    def test_a_point_cloud_has_no_edges(self):
+        # A geometry of order 0 has none, and asking says so rather than
+        # inventing an empty path. The error comes back wrapped by the plan
+        # machinery, so it is the *message* that says which field failed.
+        cloud = self._tet().vertices
+        with self.assertRaises(Exception) as caught:
+            cloud.edges
+        self.assertIn('edges', str(caught.exception))

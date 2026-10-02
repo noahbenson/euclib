@@ -1203,6 +1203,57 @@ class SimplexGeometry(Geometry):
             built = built.withprop(name, lazy(_value_of, prop))
         return built
 
+    @calc('edges')
+    def proc_edges(coords, topo, properties, backend):
+        '''This geometry\'s edges, as a path.
+
+        A `SegPath` over the same coordinates, with the same properties. Its
+        simplices are the topology\'s edges --- already derived and already
+        deduplicated, an interior edge belonging to two triangles being one
+        edge. A geometry of order 0 has none, and asking raises.
+
+        Reading a property through it gives a third rule: the heaviest corner of
+        the containing *segment*, where the geometry gives the heaviest corner of
+        its own simplex and `vertices` gives the nearest coordinate.
+
+        The properties carry verbatim, as they do for `vertices`: the
+        coordinates are the same coordinates.
+
+        Returns
+        -------
+        SegPath
+            The same coordinates, with the edges as its segments.
+        '''
+        from ..types import SegPath
+        built = SegPath(coords, topo.edges, backend=backend)
+        for (name, prop) in properties.items():
+            built = built.withprop(name, lazy(_value_of, prop))
+        return built
+
+    @calc('triangles')
+    def proc_triangles(coords, topo, properties, backend):
+        '''This geometry\'s triangles, as a mesh.
+
+        A `TriMesh` over the same coordinates, with the same properties. Its
+        simplices are the topology\'s triangles --- for a triangle mesh, its own;
+        for a tetrahedral mesh, all four faces of every tetrahedron, interior
+        ones included.
+
+        Reading a property through it gives the heaviest corner of the
+        containing *triangle*, which is a different rule from the geometry\'s own
+        and from `vertices` and `edges`.
+
+        Returns
+        -------
+        TriMesh
+            The same coordinates, with the triangles as its simplices.
+        '''
+        from ..types import TriMesh
+        built = TriMesh(coords, topo.triangles, backend=backend)
+        for (name, prop) in properties.items():
+            built = built.withprop(name, lazy(_value_of, prop))
+        return built
+
     @calc('bbox')
     def proc_bbox(coords, vertex_mask):
         '''The bounding box of the coordinates the topology uses.
