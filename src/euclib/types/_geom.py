@@ -580,6 +580,24 @@ def _prism_property(coords0, coords1, topo, prop, name, coords, backend, /):
     return mesh.prop(name, at=coords)
 
 
+
+def _prism_has_no_subobjects(name, /):
+    '''Refuses a sub-geometry a prism mesh has not got.
+
+    `Geometry` offers `vertices`, `edges` and `triangles` over a geometry\'s
+    coordinates, which for every other type is one ``(D, N)`` matrix. A prism
+    mesh\'s is a ``(2, D, N)`` *pair of surfaces*, so there is no one set of any
+    of them to build --- and a caller who asks wants one of two things, each of
+    which the mesh already offers.
+
+    A helper rather than three messages, so the three say the same thing.
+    '''
+    raise ValueError(
+        f"a prism mesh's coordinates are its two surfaces, so it has no one set"
+        f" of {name}; use `tetmesh` for the tetrahedra that fill it, or"
+        f" `elevation(e)` for the surface at an elevation")
+
+
 class PrismMesh(SimplexGeometry):
     '''A prism mesh: a pair of triangle sheets joined corner to corner.
 
@@ -911,6 +929,21 @@ class PrismMesh(SimplexGeometry):
                 name, lazy(_carried_property, self, name, built.coords),
                 **({} if interp is UNSET else {'interp': interp}))
         return built
+
+    # Overridden by *name*, which is how a subclass replaces a calc: a calc of
+    # another name producing the same output is a second calc, not a
+    # replacement, and the plan refuses it.
+    @calc('vertices')
+    def proc_vertices(coords0, coords1):
+        _prism_has_no_subobjects('vertices')
+
+    @calc('edges')
+    def proc_edges(coords0, coords1):
+        _prism_has_no_subobjects('edges')
+
+    @calc('triangles')
+    def proc_triangles(coords0, coords1):
+        _prism_has_no_subobjects('triangles')
 
     @calc('tetmesh')
     def proc_tetmesh(coords0, coords1, topo, backend, properties):
