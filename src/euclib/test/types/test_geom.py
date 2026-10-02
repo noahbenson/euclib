@@ -469,3 +469,42 @@ class TestTheEdgesAndTrianglesOfAGeometry(TestCase):
         with self.assertRaises(Exception) as caught:
             cloud.edges
         self.assertIn('edges', str(caught.exception))
+
+
+class TestThePropertiesAreSharedNotCopied(TestCase):
+    '''That a sub-geometry shares its parent\'s properties rather than copying.
+
+    A `Property` is an immutable planobject, so two geometries can hold the same
+    one --- and should. Its values are not copied, and neither is anything it has
+    cached: a `lazy` computed through one geometry is computed for the other, so
+    reading a property through a sub-object warms the parent\'s copy too.
+
+    The *dictionary* is not shared; the constructor builds a new one around the
+    same properties, validating each against the spatial shape as it goes. That
+    is a handful of names, and it is what would catch a carry that did not fit.
+    '''
+
+    def _mesh(self, /):
+        mesh = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                       TriTopology([[0], [1], [2]]))
+        return mesh.withprop('f', array([[10.0, 20.0, 30.0]]))
+
+    def test_a_sub_geometry_holds_the_same_property_object(self):
+        mesh = self._mesh()
+        for one in (mesh.vertices, mesh.edges, mesh.triangles):
+            self.assertIs(one.properties['f'], mesh.properties['f'],
+                          "the property was rebuilt rather than shared")
+
+    def test_and_so_does_everything_the_property_holds(self):
+        # Which is where the caches live: sharing the property shares whatever
+        # it has already computed.
+        mesh = self._mesh()
+        mine = mesh.properties['f']
+        theirs = mesh.vertices.properties['f']
+        self.assertIs(theirs.value, mine.value)
+        self.assertIs(theirs.interp, mine.interp)
+
+    def test_reading_through_the_child_reads_the_parent_s_values(self):
+        mesh = self._mesh()
+        self.assertEqual(asarray(mesh.vertices['f']).ravel().tolist(),
+                         asarray(mesh['f']).ravel().tolist())
