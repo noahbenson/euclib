@@ -953,6 +953,28 @@ class Property(planobject):
                 f" {tuple(spatial_shape)}")
         return (sh[:len(sh) - n], sh)
 
+    @calc('valid')
+    def proc_valid(backend, dtype, value, gradient, hessian, vartype, interp,
+                   extrap, border, mask, null, unit, shape):
+        '''Whether every check this property makes has passed.
+
+        Its parameters *are* the checks: each of those fields is produced by a
+        calc that validates it, so calling this runs them all, and whatever any
+        of them raises is raised here. Otherwise it is always ``True``.
+
+        It exists so that a caller who needs a property *ready* --- a geometry
+        whose filter must know whether a property is usable, say --- can say so
+        in one place rather than reading a list of fields and hoping the list is
+        complete. Deferred, like the fields it reads, so that a property nobody
+        has asked about costs nothing.
+
+        Returns
+        -------
+        valid : bool
+            ``True``, or an exception from whichever check failed.
+        '''
+        return True
+
     @calc('is_quantitative')
     def proc_is_quantitative(vartype):
         '''Whether the property's values may be interpolated.
