@@ -21,6 +21,7 @@ a silent omission.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import unittest
 from unittest import TestCase, TestLoader
@@ -80,3 +81,53 @@ class TestTheTestSuite(TestCase):
             with self.subTest(case=name):
                 self.assertIn(name, names,
                               f"{name} is not collected by euclib.test")
+
+
+class TestTheShapeOfACalc(TestCase):
+    '''A calc is a function in a class body, and may not reach for `self`.
+
+    A `@calc` is not a method: it is called with the plan\'s fields, and there is
+    no instance for `self` to be. Reaching for one raises `NameError` --- but
+    only when the field is *evaluated*, and most fields are lazy, so a calc that
+    is broken this way looks exactly like one that works until something reads
+    it. That is how one got past the whole suite: `proc_tetmesh` referenced
+    `self` inside a `lazy`, every test passed, and `PrismMesh.tetmesh` was
+    broken.
+
+    Read from the source rather than from the runtime objects, so that it holds
+    for every calc however `immlib` wraps it.
+    '''
+
+    def _calcs(self, /):
+        '''Every calc function in the library, as (path, node) pairs.'''
+        import euclib
+        root = pathlib.Path(euclib.__file__).parent
+        for path in sorted(root.rglob('*.py')):
+            if pathlib.Path('test') in path.relative_to(root).parents:
+                continue
+            try:
+                tree = ast.parse(path.read_text())
+            except SyntaxError:                     # pragma: no cover
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if any((isinstance(d, ast.Call)
+                        and getattr(d.func, 'id', None) == 'calc')
+                       or getattr(d, 'id', None) == 'calc'
+                       for d in node.decorator_list):
+                    yield (path.relative_to(root), node)
+
+    def test_no_calc_reaches_for_self(self):
+        found = list(self._calcs())
+        self.assertGreater(len(found), 50,
+                           "the walk found almost no calcs, so it is not looking"
+                           " where they are")
+        offenders = []
+        for (path, node) in found:
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Name) and inner.id == 'self':
+                    offenders.append(f"{path}:{inner.lineno} in {node.name}")
+                    break
+        self.assertEqual(offenders, [],
+                         f"these calcs reach for `self`, which a calc has not")
