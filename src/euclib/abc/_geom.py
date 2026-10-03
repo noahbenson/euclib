@@ -50,6 +50,7 @@ from ._topo import Topology, SimplexTopology
 
 # Normalization ##############################################################
 
+
 def normalize_properties(properties, spatial_shape, /):
     '''Validates a mapping of names to ``Property`` objects.
 
@@ -473,21 +474,57 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         '''Normalizes the object's coordinate properties.
 
         Computed properties are merged in first, so that a property the user
-        supplied under the same name takes precedence. Each property's
-        interpolation is checked against what this geometry can honour, so that
-        a property this object cannot read fails here rather than when it is
-        first read.
+        supplied under the same name takes precedence.
+
+        What is stored depends on what was given. A `pcollections.lazy` is
+        *wrapped*, not read, so that a value which is expensive to compute is
+        not computed merely by being attached. A `Property` whose spatial shape
+        is this geometry\'s is kept: it was checked when it was built. Anything
+        else is built and its `valid` read, so that a mistake in it is raised
+        here rather than at some later read.
+
+        So a value in this mapping is *either* a `Property` or a `lazy` that
+        resolves to one, and a reader wanting the property itself resolves it
+        with `pcollections.holdlazy`.
 
         Returns
         -------
         properties : pcollections.ldict
-            The coordinate properties.
+            The coordinate properties, some of them deferred.
         '''
-        merged = dict(_auto_properties)
-        merged.update(normalize_properties(properties, property_shape))
-        for prop in merged.values():
-            check_property_interp(prop, topo)
-        return ldict(merged)
+        # The updates are *persistent*: `ldict.set` returns a new dictionary
+        # that shares every entry it did not change, so a caller who altered one
+        # property keeps the others identical rather than having them all
+        # rebuilt --- and `withprop` alters one at a time.
+        #
+        # A property that is already a `Property` of the right shape is kept as
+        # it is: it was checked when it was built, and replacing it with an
+        # identical copy would break the sharing for no gain. Anything else is
+        # built, and the constructor decides what that means --- a lazy value
+        # stays lazy, an array is checked.
+        out = ldict()
+        for (name, prop) in _auto_properties.items():
+            out = out.set(name, Property(prop, property_shape))
+        for (name, prop) in (properties or {}).items():
+            if isinstance(prop, Property) and tuple(prop.spatial_shape) == tuple(
+                    property_shape):
+                # Kept, but still checked against what this geometry can honour:
+                # a property built for a mesh may ask for an interpolation a
+                # point cloud cannot give. It costs nothing, since a property
+                # that is already built has already computed its fields.
+                check_property_interp(prop, topo)
+                out = out.set(name, prop)
+            else:
+                built = Property(prop, property_shape)
+                if not isinstance(prop, lazy):
+                    # Checked now, so that a mistake in a value that is already
+                    # here is raised here. A lazy one is not read: its
+                    # interpolation is checked when its value is, and reading it
+                    # now would defeat the point of deferring it.
+                    built.valid
+                    check_property_interp(built, topo)
+                out = out.set(name, built)
+        return out
 
     @abstractmethod
     def to_local(self, coords, /):
@@ -765,9 +802,17 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         return {'properties': ldict(props)}
 
     def _props_updated(self, order, changes, /):
-        '''Returns the ``copy`` keyword that merges properties into an order.'''
-        props = dict(self._prop_container(order))
-        props.update(changes)
+        '''Returns the ``copy`` keyword that merges properties into an order.
+
+        A *persistent* update: `ldict.set` returns a new dictionary sharing every
+        entry it did not change, so changing one property leaves the others
+        identical rather than rebuilding them. `withprop` changes one at a time,
+        and this is what keeps the rest of a mesh's properties shared with the
+        mesh it was copied from --- along with everything they have cached.
+        '''
+        props = self._prop_container(order)
+        for (name, prop) in changes.items():
+            props = props.set(name, prop)
         return self._install_props(order, props)
 
     def withprop(self, name=UNSET, values=UNSET, gradient=None, hessian=None,
