@@ -55,6 +55,8 @@ from __future__ import annotations
 from numpy import (
     asarray, broadcast_shapes, dtype as npdtype, nan)
 
+from pcollections import lazy
+
 from immlib import to_array, to_tensor, is_quant, quant
 
 from .._init import (
@@ -201,6 +203,24 @@ BORDER_EXTENSIONS = ('constant', 'half-symmetric', 'whole-symmetric')
 
 #: The boundary extension a grid's interpolation uses when none is asked for.
 BORDER_DEFAULT = 'half-symmetric'
+
+
+
+def _inner_field(prop, name, fallback, /):
+    '''A field of the property that a deferred value yields, or a default.
+
+    The other half of `Property.__init__`'s handling of a lazy value: the value
+    is resolved first --- the lazy's own job --- and this reads the field off
+    what it produced. A lazy may yield a `Property`, which has the field, or an
+    array, which does not --- an array is a value and nothing more --- and then
+    the default stands.
+
+    Module-level, because a `pcollections.lazy` closes over it and nothing of the
+    property is in scope.
+    '''
+    if not isinstance(prop, Property):
+        return fallback
+    return getattr(prop, name)
 
 
 def normalize_border(border, /):
@@ -631,6 +651,18 @@ class Property(planobject):
     altered metadata, use ``withmeta``; ``copy`` works as well, and its
     arguments are validated in the same way.
 
+    A ``value`` that is itself a ``Property`` --- or a lazy that will yield one
+    --- supplies the *defaults* for every field not given here, and an argument
+    that is given always wins. So ``Property(p, shape)`` clones ``p`` with the
+    same fields and the same value array, and ``Property(p, shape, interp=0)``
+    clones it with a different interpolation. When ``value`` is neither a
+    property nor a lazy, the defaults documented for each parameter apply.
+
+    The value, gradient and hessian may be lazy and stay so: they are the fields
+    that may be large, on disk, or over a network, and nothing reads them until
+    something asks. The metadata is small and is resolved when the property is
+    built.
+
     Parameters
     ----------
     value : array-like
@@ -708,26 +740,46 @@ class Property(planobject):
         The hessian, if the property carries one.
     '''
 
-    def __init__(self, value, spatial_shape, backend=None, vartype=None,
-                 interp=UNSET, extrap=None, border=None, dtype=None, mask=None,
-                 null=UNSET, unit=None, detach=True, gradient=None,
-                 hessian=None):
+    def __init__(self, value, spatial_shape, **kw):
+        # A field not given here is taken from `value`, when `value` is a
+        # `Property` or a lazy that will yield one; an argument that *is* given
+        # always wins. When `value` is neither, the defaults below apply.
+        #
+        # A lazy that yields a `Property` cannot supply its fields yet --- they
+        # are inside a value nobody has read --- so each is deferred to a lazy
+        # of its own, which reads the property and then the field.
+        source = value if isinstance(value, Property) else None
+        deferred = source is None and isinstance(value, lazy)
+
+        def field(name, fallback, /):
+            if name in kw:
+                return kw[name]
+            if source is not None:
+                return getattr(source, name)
+            if deferred:
+                return lazy(_inner_field, value, name, fallback)
+            return fallback
+
         # Every field is assigned exactly as given; the filters below normalize
         # and validate it, and re-run whenever an input changes.
-        self.value = value
+        #
+        # The *value* is unwrapped when it is a `Property`: a clone holds the
+        # same array, not the property it came from, so that a value is always
+        # a value. A lazy is left alone --- what it yields is what the value is.
+        self.value = value.value if source is not None else value
         self.spatial_shape = tuple(spatial_shape)
-        self.backend = backend
-        self.vartype = vartype
-        self.interp = interp
-        self.extrap = extrap
-        self.border = border
-        self.dtype = dtype
-        self.mask = mask
-        self.null = null
-        self.unit = unit
-        self.detach = detach
-        self.gradient = gradient
-        self.hessian = hessian
+        self.backend = field('backend', None)
+        self.vartype = field('vartype', None)
+        self.interp = field('interp', UNSET)
+        self.extrap = field('extrap', None)
+        self.border = field('border', None)
+        self.dtype = field('dtype', None)
+        self.mask = field('mask', None)
+        self.null = field('null', UNSET)
+        self.unit = field('unit', None)
+        self.detach = field('detach', True)
+        self.gradient = field('gradient', None)
+        self.hessian = field('hessian', None)
 
     @calc('backend', lazy=False)
     def proc_backend(backend):
