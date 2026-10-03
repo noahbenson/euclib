@@ -795,10 +795,11 @@ class Property(planobject):
         # Every field is assigned exactly as given; the filters below normalize
         # and validate it, and re-run whenever an input changes.
         #
-        # The *value* is unwrapped when it is a `Property`: a clone holds the
-        # same array, not the property it came from, so that a value is always
-        # a value. A lazy is left alone --- what it yields is what the value is.
-        self.value = value.value if source is not None else value
+        # The value is stored *as it came*, even when it is a `Property` or a
+        # lazy: dereferencing here would compute a value that may be deferred and
+        # may never be read. `proc_value` unwraps it, and a filter runs when the
+        # value is asked for rather than when the property is built.
+        self.value = value
         self.spatial_shape = tuple(spatial_shape)
         self.backend = field('backend', None)
         self.vartype = field('vartype', None)
