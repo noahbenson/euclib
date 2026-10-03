@@ -208,6 +208,25 @@ BORDER_DEFAULT = 'half-symmetric'
 
 
 
+
+def _derivative(deriv, value, spatial_shape, backend, dtype, detach, order,
+                name, /):
+    '''A derivative normalized against its value, on first read.
+
+    The other half of `Property.proc_gradient` and `proc_hessian`: either the
+    derivative or the value it belongs to may be deferred, and the derivative is
+    normalized against the value's shape, so the work waits until both have
+    arrived. Module-level, because a `lazy` closes over it.
+    '''
+    if isinstance(deriv, lazy):
+        deriv = deriv()
+    if isinstance(value, lazy):
+        value = value()
+    return normalize_derivative(
+        convert_value(deriv, backend, dtype, detach),
+        value, spatial_shape, order, name)
+
+
 def _converted_value(value, backend, dtype, detach, /):
     '''A value converted, unwrapping a property if that is what arrived.
 
@@ -878,7 +897,7 @@ class Property(planobject):
         '''
         return normalize_dtype(dtype)
 
-    @calc('value', lazy=False)
+    @calc('value')
     def proc_value(value, backend, dtype, detach):
         '''Converts the property's value to the requested backend and dtype.
 
@@ -900,7 +919,7 @@ class Property(planobject):
             return lazy(_converted_value, value, backend, dtype, detach)
         return convert_value(value, backend, dtype, detach)
 
-    @calc('gradient', lazy=False)
+    @calc('gradient')
     def proc_gradient(gradient, value, spatial_shape, backend, dtype, detach):
         '''Validates the property's gradient, if it has one.
 
@@ -912,11 +931,16 @@ class Property(planobject):
         '''
         if gradient is None:
             return None
+        if isinstance(gradient, lazy) or isinstance(value, lazy):
+            # Deferred with whatever is deferred: the derivative is normalized
+            # against the value's shape, so neither can be read until both are.
+            return lazy(_derivative, gradient, value, spatial_shape, backend, dtype,
+                        detach, 1, 'gradient')
         return normalize_derivative(
             convert_value(gradient, backend, dtype, detach),
             value, spatial_shape, 1, 'gradient')
 
-    @calc('hessian', lazy=False)
+    @calc('hessian')
     def proc_hessian(hessian, value, spatial_shape, backend, dtype, detach):
         '''Validates the property's hessian, if it has one.
 
@@ -928,11 +952,16 @@ class Property(planobject):
         '''
         if hessian is None:
             return None
+        if isinstance(hessian, lazy) or isinstance(value, lazy):
+            # Deferred with whatever is deferred: the derivative is normalized
+            # against the value's shape, so neither can be read until both are.
+            return lazy(_derivative, hessian, value, spatial_shape, backend, dtype,
+                        detach, 2, 'hessian')
         return normalize_derivative(
             convert_value(hessian, backend, dtype, detach),
             value, spatial_shape, 2, 'hessian')
 
-    @calc('vartype', lazy=False)
+    @calc('vartype')
     def proc_vartype(vartype, value):
         '''Infers the property's value type when it is unspecified.
 
@@ -949,7 +978,7 @@ class Property(planobject):
             return lazy(normalize_vartype, vartype, value)
         return normalize_vartype(vartype, value)
 
-    @calc('interp', 'interp_specified', lazy=False)
+    @calc('interp', 'interp_specified')
     def proc_interp(interp, vartype):
         '''Normalizes the property's interpolation to a method and an order.
 
@@ -1061,7 +1090,7 @@ class Property(planobject):
         '''
         return normalize_mask(mask, spatial_shape)
 
-    @calc('null', lazy=False)
+    @calc('null')
     def proc_null(null, dtype, value):
         '''Selects the property's null value.
 
@@ -1070,6 +1099,9 @@ class Property(planobject):
         null : object
             The value substituted for missing results.
         '''
+        if isinstance(value, lazy):
+            # The null is chosen from the value's dtype, so it waits with it.
+            return lazy(normalize_null, null, dtype, value)
         return normalize_null(null, dtype, value)
 
     @calc('unit', lazy=False)
@@ -1083,7 +1115,7 @@ class Property(planobject):
         '''
         return normalize_unit(unit)
 
-    @calc('channel_shape', 'shape', lazy=False)
+    @calc('channel_shape', 'shape')
     def proc_shape(value, spatial_shape):
         '''The channel shape and the full shape of the value.
 

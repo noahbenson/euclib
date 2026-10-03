@@ -919,8 +919,13 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             new = lazy(Property._build, values, self._prop_spatial_shape(order),
                        self.topo, gradient=gradient, hessian=hessian, **meta)
         else:
-            new = Property(values, self._prop_spatial_shape(order),
-                           gradient=gradient, hessian=hessian, **meta)
+            # A value that is here: built and checked now, so that a mistake in
+            # it is raised where it was made rather than at some later read.
+            # `_build` is what both branches use, the lazy one deferring it and
+            # this one running it --- which is the whole difference between them.
+            new = Property._build(values, self._prop_spatial_shape(order),
+                                  self.topo, gradient=gradient, hessian=hessian,
+                                  **meta)
         return self.copy(**self._props_updated(order, {pname: new}))
 
     def dropprop(self, name=UNSET, error=False):

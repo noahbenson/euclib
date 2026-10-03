@@ -188,22 +188,32 @@ class TestProperty(TestCase):
         self.assertFalse(p.is_quantitative)
         self.assertEqual(p.interp, ('nearest', 0))
 
-    def test_shape_is_validated_eagerly(self):
-        # The shape check is an eager calculation, so immlib reports its
-        # failure while the property is being constructed, wrapping the error
-        # in a PlanError.
+    def test_the_shape_is_checked_when_the_field_is_read(self):
+        # A `Property` never forces itself: building one runs nothing, which is
+        # what lets a caller defer a value it may never read. Reading a field
+        # runs that field's calc, and the shape check is one --- so a value that
+        # does not fit is reported then.
+        #
+        # A caller who wants it reported at the point of the mistake is a
+        # *geometry*, which reads `valid` when it attaches a property. That is
+        # tested where it lives: see `test_geom.TestProperties`.
+        p = Property(zeros((3, 5)), (4,))
         with self.assertRaises(PlanError):
-            Property(zeros((3, 5)), (4,))
+            p.shape
+        q = Property(zeros((3,)), (5,))
         with self.assertRaises(PlanError):
-            Property(zeros((3,)), (5,))
+            q.shape
 
-    def test_metadata_is_normalized_on_construction(self):
+    def test_metadata_is_normalized_when_the_field_is_read(self):
         p = Property(zeros(5), (5,), interp='polynomial', extrap=0)
         self.assertEqual(p.interp, ('polynomial', 1))
         self.assertEqual(p.extrap, 0)
-        # Qualitative data with a non-zero order is an error.
+        # Qualitative data with a non-zero order is an error, reported when the
+        # interpolation is read rather than when the property is built --- a
+        # property never forces itself, which is what lets a value be deferred.
+        q = Property(ones(5, dtype='i4'), (5,), interp=('polynomial', 1))
         with self.assertRaises(PlanError):
-            Property(ones(5, dtype='i4'), (5,), interp=('polynomial', 1))
+            q.interp
 
     def test_dtype_is_applied(self):
         p = Property(zeros(5), (5,), dtype='f4')
@@ -244,13 +254,17 @@ class TestProperty(TestCase):
             p.withmeta(nonsense=1)
 
     def test_copy_revalidates_metadata(self):
-        '''Filters run whenever an input changes, so copy() validates too.'''
+        '''Filters re-run when an input changes, so copy() validates too.
+
+        Lazily, like every other check: the copy is built without forcing, and
+        reading the field it changed is what reports the failure.
+        '''
         p = Property(zeros(5), (5,), interp=1)
         self.assertEqual(p.copy(interp=0).interp, ('nearest', 0))
         with self.assertRaises(PlanError):
-            p.copy(interp=7)
+            p.copy(interp=7).interp
         with self.assertRaises(PlanError):
-            p.copy(extrap=2)
+            p.copy(extrap=2).extrap
 
     def test_subprop(self):
         p = Property(zeros((2, 5)), (5,), interp=1)
@@ -331,6 +345,10 @@ class TestProperty(TestCase):
         # A gradient is (C..., D, N) and a hessian (C..., D, D, N): the value's
         # channel dimensions, one axis per order of derivative, then the value's
         # spatial dimensions.
+        #
+        # The checks run when the field is read rather than when the property is
+        # built: a property never forces itself, which is what lets a caller
+        # defer a value it may never read.
         p = Property(zeros(4), (4,), gradient=zeros((2, 4)),
                      hessian=zeros((2, 2, 4)))
         self.assertEqual(tuple(p.gradient.shape), (2, 4))
@@ -345,15 +363,18 @@ class TestProperty(TestCase):
             with self.subTest(shape=bad.shape):
                 self.assertIsInstance(
                     _innermost(lambda: Property(zeros(4), (4,),
-                                                gradient=bad)), ValueError)
+                                                gradient=bad).gradient),
+                    ValueError)
         # A hessian's two derivative axes must be the same size.
         self.assertIsInstance(
             _innermost(lambda: Property(zeros(4), (4,),
-                                        hessian=zeros((2, 3, 4)))), ValueError)
+                                        hessian=zeros((2, 3, 4))).hessian),
+                        ValueError)
         # ...and a gradient for a channelled value must have its channels.
         self.assertIsInstance(
             _innermost(lambda: Property(zeros((3, 4)), (4,),
-                                        gradient=zeros((2, 2, 4)))), ValueError)
+                                        gradient=zeros((2, 2, 4))).gradient),
+                        ValueError)
 
     def test_withprop_attaches_a_gradient_and_replaces_it(self):
         # A path, because a metadata-only update to ``interp=1`` below is one

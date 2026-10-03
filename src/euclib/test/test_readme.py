@@ -351,7 +351,8 @@ class TestPropertyMetadata(TestCase):
         for bad in (5, 'cubic-spline'):
             with self.subTest(bad=bad):
                 self.assertIsInstance(
-                    _innermost(lambda: Property(np.ones(4), (4,), interp=bad)),
+                    _innermost(lambda: Property(np.ones(4), (4,),
+                                                interp=bad).interp),
                     ValueError)
 
     def test_the_default_interpolation_is_the_one_the_readme_promises(self):
