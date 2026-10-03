@@ -206,6 +206,38 @@ BORDER_DEFAULT = 'half-symmetric'
 
 
 
+
+
+def _converted_value(value, backend, dtype, detach, /):
+    '''A value converted, unwrapping a property if that is what arrived.
+
+    The other half of `Property.proc_value`: a deferred value is converted when
+    it is read, and what it yields may be a `Property` --- one geometry's
+    property being carried onto another, say --- in which case the value is what
+    it holds. Module-level, because a `lazy` closes over it.
+    '''
+    if isinstance(value, Property):
+        value = value.value
+    return convert_value(value, backend, dtype, detach)
+
+
+def _value_shape(value, spatial_shape, /):
+    '''A value's channel shape and full shape, checked against the spatial one.
+
+    The other half of `Property.proc_shape`: a value given as a
+    `pcollections.lazy` has no shape until it is read, so both the shape and the
+    check that it ends with `spatial_shape` happen then. Module-level, because a
+    `lazy` closes over it and nothing of the property is in scope.
+    '''
+    sh = tuple(value.shape)
+    n = len(spatial_shape)
+    if n > len(sh) or sh[len(sh) - n:] != tuple(spatial_shape):
+        raise ValueError(
+            f"value shape {sh} does not end with spatial shape"
+            f" {tuple(spatial_shape)}")
+    return (sh[:len(sh) - n], sh)
+
+
 def _inner_field(prop, name, fallback, /):
     '''A field of the property that a deferred value yields, or a default.
 
@@ -781,6 +813,48 @@ class Property(planobject):
         self.gradient = field('gradient', None)
         self.hessian = field('hessian', None)
 
+    @staticmethod
+    def _build(values, spatial_shape, topo, /, gradient=None, hessian=None,
+               **meta):
+        '''A property built from what a caller supplied, with its checks run.
+
+        This is the deferral a geometry\'s properties filter needs. A `lazy` value
+        cannot be a property\'s *field* --- the plan resolves every field on its
+        way into the calcs that read it, so no constructor can keep one --- and a
+        *container* is not resolved. So the property itself is deferred, stored
+        as a `pcollections.lazy` in the mapping, and this is what builds it when
+        something reads it.
+
+        A static method rather than a module function, so that the one place a
+        property is built from deferred arguments is named by the type it builds.
+
+        Parameters
+        ----------
+        values, spatial_shape : array-like, tuple of int
+            As for the constructor.
+        topo : Topology
+            The topology of the geometry the property is being attached to,
+            which is what its interpolation is checked against.
+        gradient, hessian : array-like or None, optional
+            As for the constructor.
+        **meta
+            The rest of the constructor\'s arguments.
+
+        Returns
+        -------
+        Property
+            The property, ready: every check has run, and any failure is raised
+            here rather than at the point the value was supplied.
+        '''
+        # Imported here rather than at module scope: the geometries are built on
+        # this module, so it cannot import them back.
+        from ._geom import check_property_interp
+        built = Property(values, spatial_shape, gradient=gradient,
+                         hessian=hessian, **meta)
+        built.valid
+        check_property_interp(built, topo)
+        return built
+
     @calc('backend', lazy=False)
     def proc_backend(backend):
         '''Validates the property's backend.
@@ -812,6 +886,17 @@ class Property(planobject):
         value : array-like
             The converted value.
         '''
+        if isinstance(value, Property):
+            # A property may be handed in where a value is wanted --- a caller
+            # carrying one geometry's property onto another, say. What it holds
+            # is the value, so that is what this is.
+            value = value.value
+        if isinstance(value, lazy):
+            # Converted when it is read, not here: a value that is expensive to
+            # produce should not be produced merely to be converted. The lazy may
+            # yield a `Property` as readily as an array, so the unwrapping is
+            # inside what it resolves to rather than before it.
+            return lazy(_converted_value, value, backend, dtype, detach)
         return convert_value(value, backend, dtype, detach)
 
     @calc('gradient', lazy=False)
@@ -850,11 +935,17 @@ class Property(planobject):
     def proc_vartype(vartype, value):
         '''Infers the property's value type when it is unspecified.
 
+        A value given as a `pcollections.lazy` has no dtype yet, so the type is
+        inferred when the value is first read --- the lazy's own job --- rather
+        than here. Reading it now would compute it merely to attach it.
+
         Returns
         -------
         vartype : str
-            ``'quantitative'`` or ``'qualitative'``.
+            ``'quantitative'`` or ``'qualitative'``, or a lazy that infers it.
         '''
+        if isinstance(value, lazy):
+            return lazy(normalize_vartype, vartype, value)
         return normalize_vartype(vartype, value)
 
     @calc('interp', 'interp_specified', lazy=False)
@@ -878,6 +969,11 @@ class Property(planobject):
         interp_specified : bool
             Whether the caller supplied an interpolation.
         '''
+        if isinstance(vartype, lazy):
+            # The type is deferred with the value it comes from, so the
+            # interpolation is normalized when both arrive.
+            return {'interp': lazy(normalize_interp, interp, vartype),
+                    'interp_specified': interp is not UNSET}
         return {'interp': normalize_interp(interp, vartype),
                 'interp_specified': interp is not UNSET}
 
@@ -997,13 +1093,16 @@ class Property(planobject):
         shape : tuple of int
             The full shape of the value.
         '''
-        sh = tuple(value.shape)
-        n = len(spatial_shape)
+        return _value_shape(value, spatial_shape)
         if n > len(sh) or sh[len(sh) - n:] != tuple(spatial_shape):
             raise ValueError(
                 f"value shape {sh} does not end with spatial shape"
                 f" {tuple(spatial_shape)}")
-        return (sh[:len(sh) - n], sh)
+        if isinstance(value, lazy):
+            # A value that has not been produced has no shape to check, so both
+            # the shape and the check wait until it does.
+            return lazy(_value_shape, value, spatial_shape)
+        return _value_shape(value, spatial_shape)
 
     @calc('valid')
     def proc_valid(backend, dtype, value, gradient, hessian, vartype, interp,

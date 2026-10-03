@@ -34,7 +34,7 @@ from abc import abstractmethod
 
 from numpy import asarray, concatenate, integer
 from immlib import math as imath, to_array, to_tensor
-from pcollections import ldict, lazy, llist, lazy
+from pcollections import holdlazy, ldict, lazy, llist
 
 from .. import _init
 from ._core import MetaObject, calc, normalize_backend, plantypeABC
@@ -49,6 +49,7 @@ from ._topo import Topology, SimplexTopology
 
 
 # Normalization ##############################################################
+
 
 
 def normalize_properties(properties, spatial_shape, /):
@@ -175,17 +176,25 @@ def check_property_interp(prop, topo, /):
     ValueError
         If the property asks for an interpolation the geometry cannot honour.
     '''
+    interp = prop.interp
+    if isinstance(interp, lazy):
+        # Deferred, with the value it was inferred from. There is nothing to
+        # check yet, and reading it here would compute a value that may never be
+        # wanted. `interpolate` makes the same test when the property is read,
+        # with the geometry in hand, so the refusal still happens --- on the read
+        # rather than at construction.
+        return
     if not prop.interp_specified:
         return
     supported = supported_interp(topo)
-    if tuple(prop.interp) not in supported:
+    if tuple(interp) not in supported:
         order = getattr(topo, 'order', None)
         why = ("a point cloud has no interior, so it can only report the"
                " nearest point's value" if order == 0
                else f"its topology has order {order}")
         raise ValueError(
             f"this geometry does not support the interpolation"
-            f" {tuple(prop.interp)}; it supports"
+            f" {tuple(interp)}; it supports"
             f" {' and '.join(map(str, supported))} because {why}")
 
 
@@ -505,8 +514,20 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         out = ldict()
         for (name, prop) in _auto_properties.items():
             out = out.set(name, Property(prop, property_shape))
-        for (name, prop) in (properties or {}).items():
-            if isinstance(prop, Property) and tuple(prop.spatial_shape) == tuple(
+        # `holdlazy` rather than `items()`: reading a lazy dictionary
+        # resolves its values, so `items()` would hand back the *built*
+        # property and the deferral below would never be reached.
+        for (name, prop) in holdlazy(properties or ldict()).items():
+            if isinstance(prop, lazy):
+                # Kept *deferred*, in the mapping rather than built: a field is
+                # resolved on its way into every calc --- the plan evaluates its
+                # arguments so that an upstream failure can be told from a local
+                # one --- so a `lazy` cannot survive as a field. A *container* is
+                # not evaluated, so the mapping is where one can live, and the
+                # property is built when something reads it.
+                out = out.set(name, lazy(Property._build, prop,
+                                         property_shape, topo))
+            elif isinstance(prop, Property) and tuple(prop.spatial_shape) == tuple(
                     property_shape):
                 # Kept, but still checked against what this geometry can honour:
                 # a property built for a mesh may ask for an interpolation a
@@ -515,14 +536,11 @@ class Geometry(MetaObject, metaclass=plantypeABC):
                 check_property_interp(prop, topo)
                 out = out.set(name, prop)
             else:
+                # A value that is already here: build it and read `valid`,
+                # which runs every check and raises here rather than later.
                 built = Property(prop, property_shape)
-                if not isinstance(prop, lazy):
-                    # Checked now, so that a mistake in a value that is already
-                    # here is raised here. A lazy one is not read: its
-                    # interpolation is checked when its value is, and reading it
-                    # now would defeat the point of deferring it.
-                    built.valid
-                    check_property_interp(built, topo)
+                built.valid
+                check_property_interp(built, topo)
                 out = out.set(name, built)
         return out
 
@@ -892,6 +910,14 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             # `withmeta` accepts only metadata fields. Both validate what they
             # are given the same way.
             new = existing.copy(**changes) if changes else existing
+        elif isinstance(values, lazy):
+            # Deferred, metadata and all: a `Property` cannot carry a lazy ---
+            # its value is a field, and the plan resolves every field --- so the
+            # property itself is deferred and built when something reads it.
+            # `Property._build` is what does that, with the checks the filter
+            # would otherwise run here.
+            new = lazy(Property._build, values, self._prop_spatial_shape(order),
+                       self.topo, gradient=gradient, hessian=hessian, **meta)
         else:
             new = Property(values, self._prop_spatial_shape(order),
                            gradient=gradient, hessian=hessian, **meta)
