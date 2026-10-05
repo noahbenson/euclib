@@ -254,17 +254,59 @@ class TestProperty(TestCase):
             p.withmeta(nonsense=1)
 
     def test_copy_revalidates_metadata(self):
-        '''Filters re-run when an input changes, so copy() validates too.
+        '''A metadata update is checked, so copy() validates too.
 
-        Lazily, like every other check: the copy is built without forcing, and
-        reading the field it changed is what reports the failure.
+        The two checks arrive differently, and that is the point of where each
+        lives. The *form* of an interpolation needs only the argument, so it is
+        checked as the copy is built and a bad order is a plain `ValueError`.
+        The extrapolation is checked by its filter, inside the plan, so a bad
+        one arrives wrapped.
         '''
         p = Property(zeros(5), (5,), interp=1)
         self.assertEqual(p.copy(interp=0).interp, ('nearest', 0))
+        with self.assertRaises(ValueError):
+            p.copy(interp=7)
         with self.assertRaises(PlanError):
-            p.copy(interp=7).interp
-        with self.assertRaises(PlanError):
-            p.copy(extrap=2).extrap
+            p.copy(extrap=2)
+
+    def test_the_form_of_an_interpolation_is_checked_when_it_is_given(self):
+        '''A bad method or order needs no value, so it is raised on the spot.
+
+        The value may be deferred and the vartype inferred from it, but the
+        *form* of the argument --- a method name, an order, a pair of them, or
+        Ellipsis --- is known the moment it is supplied. So this is the one
+        interpolation check that does not wait for a read.
+
+        It is in the constructor rather than in a filter because a filter is
+        lazy: a filter runs when its field is read, and by then the caller has
+        moved on from the mistake.
+        '''
+        for bad in (5, 'cubic-spline', 'nonsense', ('nearest', 1), ('bogus', 1),
+                    ('polynomial',), object()):
+            with self.subTest(interp=bad):
+                with self.assertRaises(ValueError):
+                    Property(zeros(4), (4,), interp=bad)
+        # ...and the forms that are fine are fine, including the ones that leave
+        # a part to the default.
+        for good in (Ellipsis, None, 0, 2, 'nearest', 'polynomial',
+                     ('polynomial', 1), ('bezier', 2)):
+            with self.subTest(interp=good):
+                Property(zeros(4), (4,), interp=good)
+
+    def test_what_the_value_supports_waits_for_the_value(self):
+        '''That an interpolation suits the data needs the data, so it waits.
+
+        A property may be built before its value is available --- the value may
+        be a lazy that is never read --- so this cannot be the constructor's
+        check. It runs when a field is read, which is what `valid` asks for.
+        '''
+        from pcollections import lazy
+        p = Property(lazy(lambda: zeros(4)), (4,), vartype='qualitative',
+                     interp=('polynomial', 1))
+        # Built, and the value untouched: a category has no meaning between the
+        # values it takes, so this pair is refused, but not yet.
+        self.assertIsInstance(_innermost(lambda: p.valid), ValueError)
+        self.assertIsInstance(_innermost(lambda: p.interp), ValueError)
 
     def test_subprop(self):
         p = Property(zeros((2, 5)), (5,), interp=1)

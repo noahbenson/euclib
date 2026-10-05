@@ -361,6 +361,70 @@ def default_interp(vartype, /):
     return default_quantitative_interp
 
 
+def check_interp_form(interp, /):
+    '''Checks the form of an ``interp`` argument and returns what it names.
+
+    The half of the interpolation check that needs nothing but the argument:
+    that it is a method name, an order, a ``(method, order)`` pair, or
+    ``Ellipsis``, and that the method and order it names are ones ``euclib``
+    defines. Neither the value nor the ``vartype`` is needed, which is why a
+    `Property` runs this when it is built --- a mistake in the argument is the
+    caller's to see at once rather than at some later read.
+
+    The other two questions are not this one. What the *value* supports needs
+    the value, and is asked when a field is read; what a *geometry* honours is
+    not a property's to ask at all, and is asked when it is attached.
+
+    Parameters
+    ----------
+    interp : str, int, tuple of (str, int), Ellipsis, or None
+        The interpolation as the caller supplied it.
+
+    Returns
+    -------
+    tuple of (str or None, int or None)
+        The method and order the argument names, with ``None`` standing for
+        whichever of the two the argument leaves to the default --- both are
+        ``None`` for ``Ellipsis``. `normalize_interp` completes it.
+
+    Raises
+    ------
+    ValueError
+        If the argument is not one of those four forms, or if the method or
+        order it names is not one that ``euclib`` defines.
+    '''
+    if interp is UNSET or interp is None or interp is Ellipsis:
+        return (None, None)
+    if isinstance(interp, str):
+        method = interp
+        # A method name takes its order from the default, except that the only
+        # order 'nearest' has is 0.
+        order = 0 if method == 'nearest' else None
+    elif isinstance(interp, int) and not isinstance(interp, bool):
+        (method, order) = (None, interp)
+    elif isinstance(interp, tuple) and len(interp) == 2:
+        (method, order) = interp
+    else:
+        raise ValueError(
+            f"invalid interp: {interp!r}; expected a method name, an order, a"
+            f" (method, order) pair, or Ellipsis")
+    if method is not None and method not in INTERP_METHODS:
+        raise ValueError(
+            f"unknown interpolation method: {method!r}; expected one of"
+            f" {INTERP_METHODS}")
+    if order is not None:
+        if not isinstance(order, int) or isinstance(order, bool) \
+                or order not in INTERP_ORDERS:
+            raise ValueError(
+                f"invalid interpolation order: {order!r}; expected one of"
+                f" {INTERP_ORDERS}")
+        if method == 'nearest' and order != 0:
+            raise ValueError(
+                f"'nearest' is only meaningful at order 0; found ('nearest',"
+                f" {order})")
+    return (method, order)
+
+
 def normalize_interp(interp, vartype, /):
     '''Normalizes an ``interp`` metadata value to a method and an order.
 
@@ -398,25 +462,16 @@ def normalize_interp(interp, vartype, /):
         If the method and order are recognized but not yet implemented.
     '''
     default = default_interp(vartype)
-    if interp is UNSET or interp is None or interp is Ellipsis:
+    (method, order) = check_interp_form(interp)
+    if method is None and order is None:
         res = default
-    elif isinstance(interp, str):
-        # A method name takes the order from the default, except that the only
-        # order 'nearest' has is 0.
-        res = (interp, 0 if interp == 'nearest' else default[1])
-    elif isinstance(interp, int) and not isinstance(interp, bool):
-        res = (default[0], interp)
-    elif isinstance(interp, tuple) and len(interp) == 2:
-        res = (interp[0], interp[1])
+    elif method is None:
+        res = (default[0], order)
+    elif order is None:
+        res = (method, 0 if method == 'nearest' else default[1])
     else:
-        raise ValueError(
-            f"invalid interp: {interp!r}; expected a method name, an order, a"
-            f" (method, order) pair, or Ellipsis")
+        res = (method, order)
     (method, order) = res
-    if method == 'nearest' and order != 0:
-        raise ValueError(
-            f"'nearest' is only meaningful at order 0; found ('nearest',"
-            f" {order})")
     if order == 0:
         # A fit of degree zero is the value itself, so every method's order 0
         # is nearest-neighbour. Canonicalizing keeps 'nearest' the one spelling
@@ -424,15 +479,6 @@ def normalize_interp(interp, vartype, /):
         # the property's other metadata reads.
         method = 'nearest'
     res = (method, order)
-    if method not in INTERP_METHODS:
-        raise ValueError(
-            f"unknown interpolation method: {method!r}; expected one of"
-            f" {INTERP_METHODS}")
-    if not isinstance(order, int) or isinstance(order, bool) \
-            or order not in INTERP_ORDERS:
-        raise ValueError(
-            f"invalid interpolation order: {order!r}; expected one of"
-            f" {INTERP_ORDERS}")
     if vartype == QUALITATIVE and res != INTERP_QUALITATIVE:
         raise ValueError(
             f"qualitative properties can only use {INTERP_QUALITATIVE}; found"
@@ -833,6 +879,25 @@ class Property(planobject):
         self.gradient = field('gradient', None)
         self.hessian = field('hessian', None)
 
+        # The *form* of the interpolation is checked here, eagerly, because it
+        # is a question about the argument alone: that it is a method name, an
+        # order, a pair of them, or Ellipsis, and that the method and order are
+        # ones euclib defines. It needs neither the value nor the vartype, so
+        # deferring it would only postpone an error the caller can see now ---
+        # and the caller is the one who made the mistake.
+        #
+        # A deferred value is skipped: its interp is a lazy of its own, and
+        # reading it to check it would force the value this exists to defer.
+        # The check runs when the property is built from what it yielded, which
+        # is `_build`'s job.
+        #
+        # The other two questions are elsewhere. What the *value* supports needs
+        # the value, so `proc_valid` asks it when a field is read; what a
+        # *geometry* honours is not a property's to ask, and
+        # `check_property_interp` asks it when the property is attached.
+        if not isinstance(self.interp, lazy):
+            check_interp_form(self.interp)
+
     @staticmethod
     def _build(values, spatial_shape, topo, /, gradient=None, hessian=None,
                **meta):
@@ -1180,6 +1245,35 @@ class Property(planobject):
             ``True`` if the property has a mask.
         '''
         return mask is not None
+
+    def copy(self, **kwargs):
+        '''Returns a copy of the property with the named fields changed.
+
+        The interpolation is checked here as well as in the constructor, because
+        ``copy`` never passes through the constructor: `immlib` builds the copy
+        with ``object.__new__`` and swaps the plan underneath it, so a check the
+        constructor ran would be skipped by every metadata update. It is the same
+        check --- the form of the argument, and whether the method and order are
+        ones ``euclib`` defines --- and needs nothing but the argument, which is
+        why it can run here rather than at the read the update would otherwise
+        wait for.
+
+        A lazy interpolation is skipped: reading it to check it would force the
+        value this exists to defer.
+
+        Parameters
+        ----------
+        **kwargs
+            The fields to change, named as in the constructor.
+
+        Returns
+        -------
+        Property
+            The copy.
+        '''
+        if 'interp' in kwargs and not isinstance(kwargs['interp'], lazy):
+            check_interp_form(kwargs['interp'])
+        return super().copy(**kwargs)
 
     def withmeta(self, **kwargs):
         '''Returns a copy of the property with altered metadata.
