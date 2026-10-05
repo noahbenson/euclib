@@ -44,7 +44,7 @@ from ._property import (
     INTERP_QUALITATIVE, INTERP_SUPPORTED, INTERP_SUPPORTED_GRID,
     INTERP_SUPPORTED_PRISM, INTERP_SUPPORTED_SEGMENT,
     INTERP_SUPPORTED_TETRAHEDRON, INTERP_SUPPORTED_TRIANGLE, Property, UNSET,
-    is_property)
+    _deferred_property, is_property)
 from ._topo import Topology, SimplexTopology
 
 
@@ -525,7 +525,11 @@ class Geometry(MetaObject, metaclass=plantypeABC):
                 # one --- so a `lazy` cannot survive as a field. A *container* is
                 # not evaluated, so the mapping is where one can live, and the
                 # property is built when something reads it.
-                out = out.set(name, lazy(Property._build, prop,
+                # `_deferred_property` rather than `Property._build`: the lazy
+                # yields whatever the caller deferred, and building from what it
+                # *is* --- a property, whose metadata comes along --- needs that
+                # resolved first. `_build` would receive the lazy itself.
+                out = out.set(name, lazy(_deferred_property, prop,
                                          property_shape, topo))
             elif isinstance(prop, Property) and tuple(prop.spatial_shape) == tuple(
                     property_shape):

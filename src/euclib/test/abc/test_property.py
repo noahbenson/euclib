@@ -308,6 +308,40 @@ class TestProperty(TestCase):
         self.assertIsInstance(_innermost(lambda: p.valid), ValueError)
         self.assertIsInstance(_innermost(lambda: p.interp), ValueError)
 
+    def test_metadata_comes_from_a_property_a_lazy_yields(self):
+        '''A lazy yielding a property carries that property's metadata.
+
+        `pcollections.lazy` hands its arguments through as they were given: one
+        handed a lazy gives that lazy to its function rather than resolving it
+        first. `_inner_field` therefore has to resolve what it is handed. When
+        it did not, `isinstance(lazy, Property)` was false and every metadata
+        field quietly took its default --- a deferred qualitative property came
+        back continuous, which is the kind of wrong that does not raise.
+        '''
+        from pcollections import lazy
+        from numpy import stack
+        from euclib.types import PrismMesh, PrismTopology
+        source = Property(zeros(4), (4,), vartype='qualitative', interp=0)
+        copied = Property(source, (4,))
+        self.assertEqual(copied.vartype, 'qualitative')
+        self.assertEqual(copied.interp, ('nearest', 0))
+        # A derivative too, which `_build` used to override with its own `None`
+        # default on the way through.
+        derived = Property(zeros(4), (4,), gradient=zeros((2, 4)))
+        self.assertEqual(tuple(Property._build(derived, (4,), None).gradient.shape),
+                         (2, 4))
+        # A lazy in the constructor cannot inherit: several of a property's
+        # calcs are required, so resolving it there would read the value at
+        # construction. A geometry's properties are deferred whole and built
+        # from what the lazy yielded, which is where the inheritance happens.
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        carried = prism.withprop('f', lazy(lambda: zeros(3)),
+                                 vartype='qualitative', interp=0)
+        self.assertEqual(carried.properties['f'].vartype, 'qualitative')
+        self.assertEqual(carried.properties['f'].interp, ('nearest', 0))
+
     def test_subprop(self):
         p = Property(zeros((2, 5)), (5,), interp=1)
         q = p.subprop((5,))
@@ -447,3 +481,59 @@ class TestProperty(TestCase):
             {'value', 'spatial_shape', 'backend', 'vartype', 'interp', 'extrap',
              'border', 'dtype', 'mask', 'null', 'unit', 'detach', 'gradient',
              'hessian'})
+
+
+class TestDeferredValues(TestCase):
+    '''That a value may be deferred, and is read only when something asks.
+
+    The library is lazy so that a value nobody reads is never computed --- a
+    property may be attached to a large mesh and never looked at. A value
+    supplied as a `pcollections.lazy` therefore has to survive construction, the
+    geometry that takes it, and the fields that do not need it.
+
+    What does read it is anything whose answer depends on it: `valid`, the shape,
+    and the type a default interpolation is inferred from.
+    '''
+
+    @staticmethod
+    def _counting(value, /):
+        '''A lazy yielding ``value``, and the list that records a read.'''
+        from pcollections import lazy
+        read = []
+        return (lazy(lambda: (read.append(True), value)[1]), read)
+
+    def test_a_deferred_value_is_not_read_when_the_property_is_built(self):
+        (value, read) = self._counting(zeros(4))
+        Property(value, (4,), interp=0)
+        self.assertEqual(read, [], "the value was read at construction")
+        # ...and the metadata that does not need it does not read it either.
+        # `interp` and `vartype` are the exception, and have to be: a bare order
+        # takes its method from the type, and the type is inferred from the
+        # value. So reading those reads the value, which is what `valid` does
+        # anyway.
+        (value, read) = self._counting(zeros(4))
+        p = Property(value, (4,), interp=0)
+        self.assertEqual(p.backend, None)
+        self.assertEqual(read, [], "a field that needs no value read one")
+
+    def test_a_deferred_value_is_read_when_a_field_needs_it(self):
+        (value, read) = self._counting(zeros(4))
+        p = Property(value, (4,), interp=0)
+        self.assertEqual(read, [])
+        p.valid
+        self.assertEqual(read, [True], "valid did not read the value")
+
+    def test_a_deferred_value_survives_withprop(self):
+        from numpy import stack
+        from euclib.types import PrismMesh, PrismTopology
+        (value, read) = self._counting(zeros(3))
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        carried = prism.withprop('f', value, interp=0)
+        self.assertEqual(read, [], "withprop read the value")
+        # ...and the property is there, with the metadata it was given, which
+        # survives the deferral.
+        self.assertEqual(carried.properties['f'].interp, ('nearest', 0))
+        carried.prop('f')
+        self.assertEqual(read, [True], "the value was never read")

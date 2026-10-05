@@ -257,14 +257,37 @@ def _value_shape(value, spatial_shape, /):
     return (sh[:len(sh) - n], sh)
 
 
+def _deferred_property(prop, spatial_shape, topo, /):
+    '''Builds a property from a lazy, resolving what it yields first.
+
+    `pcollections.lazy` passes its arguments through as they were given, so a
+    lazy handed a lazy hands that lazy to its function rather than resolving it.
+    `Property._build` wants the *value*, so the resolution belongs here: built
+    from a property, the new one inherits its metadata; built from an array,
+    which is a value and nothing more, it takes the defaults.
+
+    Without this the metadata was silently dropped --- `isinstance(lazy,
+    Property)` is false, so every field took its default and a deferred
+    qualitative property came back continuous.
+    '''
+    return Property._build(prop(), spatial_shape, topo)
+
+
 def _inner_field(prop, name, fallback, /):
     '''A field of the property that a deferred value yields, or a default.
 
-    The other half of `Property.__init__`'s handling of a lazy value: the value
-    is resolved first --- the lazy's own job --- and this reads the field off
-    what it produced. A lazy may yield a `Property`, which has the field, or an
-    array, which does not --- an array is a value and nothing more --- and then
-    the default stands.
+    The other half of `Property.__init__`'s handling of a lazy value: a lazy may
+    yield a `Property`, which has the field, or an array, which does not --- an
+    array is a value and nothing more --- and then the default stands.
+
+    What it is handed is left as it arrived, and is *not* resolved here, because
+    several of a property's calcs are required: a `lazy=False` calc is realized
+    when the plan is built, which resolves its inputs, so resolving here would
+    read the value at construction and defeat the deferral. The consequence is
+    that metadata cannot be inherited through a lazy that yields a property ---
+    it is not known without reading the value. Where that inheritance is wanted,
+    the property is deferred whole and built from what the lazy yielded, which
+    is what `_deferred_property` does for a geometry's properties.
 
     Module-level, because a `pcollections.lazy` closes over it and nothing of the
     property is in scope.
@@ -934,8 +957,15 @@ class Property(planobject):
         # Imported here rather than at module scope: the geometries are built on
         # this module, so it cannot import them back.
         from ._geom import check_property_interp
-        built = Property(values, spatial_shape, gradient=gradient,
-                         hessian=hessian, **meta)
+        # Only what was given: a `None` here means the caller named no
+        # derivative, and passing it on would override one the value brought
+        # with it --- which is what a property built from another property has.
+        derived = {}
+        if gradient is not None:
+            derived['gradient'] = gradient
+        if hessian is not None:
+            derived['hessian'] = hessian
+        built = Property(values, spatial_shape, **derived, **meta)
         built.valid
         check_property_interp(built, topo)
         return built
