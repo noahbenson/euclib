@@ -33,7 +33,7 @@ import immlib.math as im
 from numpy import (arange, asarray, concatenate, eye, meshgrid, ones, stack,
                    where, zeros)
 from immlib import math as imath, to_array, to_tensor
-from pcollections import ldict, lazy, llist
+from pcollections import holdlazy, ldict, lazy, llist
 
 from ..abc._geom import _carried_property
 from ..abc import (
@@ -560,6 +560,20 @@ def prism_layer_values(values, indices, coord_count, /):
 
 
 
+def _prop_interp(prop, /):
+    '''The interpolation a deferred property carries, or ``UNSET``.
+
+    A property carried to another geometry keeps its interpolation, but a
+    deferred property has none to read until it is built --- and building it
+    reads the value. So the interpolation is carried as a lazy that resolves
+    when the new property is asked for one, which is the point at which the
+    value is wanted anyway.
+    '''
+    if isinstance(prop, lazy):
+        prop = prop()
+    return getattr(prop, 'interp', UNSET)
+
+
 def _prism_property(coords0, coords1, topo, prop, name, coords, backend, /):
     '''A prism property, interpolated at new coordinates.
 
@@ -972,11 +986,20 @@ class PrismMesh(SimplexGeometry):
         # coordinates --- which are the prism's two surfaces, so every one of
         # them lies inside the prism and each property can be read at them.
         # Lazily, since a mesh's properties are usually not read at all.
-        for (name, prop) in properties.items():
-            try:
-                interp = prop.interp
-            except AttributeError:
-                interp = UNSET
+        # `holdlazy` rather than `items()`: reading a lazy dictionary resolves
+        # its values, so `items()` would build every property --- reading every
+        # value the deferral exists to avoid. A property is carried over to the
+        # tetrahedra lazily, and this is what keeps it lazy.
+        #
+        # The interpolation is carried as a lazy of its own. It is part of the
+        # property, so reading it here would build the property and read the
+        # value; a property built from what a lazy yields inherits it anyway,
+        # and this is what the new property reads when it is asked for one.
+        for (name, prop) in holdlazy(properties).items():
+            if isinstance(prop, lazy):
+                interp = lazy(_prop_interp, prop)
+            else:
+                interp = getattr(prop, 'interp', UNSET)
             built = built.withprop(
                 name,
                 lazy(_prism_property, coords0, coords1, topo, prop, name,
