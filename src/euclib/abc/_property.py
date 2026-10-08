@@ -257,7 +257,7 @@ def _value_shape(value, spatial_shape, /):
     return (sh[:len(sh) - n], sh)
 
 
-def _deferred_property(prop, spatial_shape, topo, /):
+def _deferred_property(prop, spatial_shape, /):
     '''Builds a property from a lazy, resolving what it yields first.
 
     `pcollections.lazy` passes its arguments through as they were given, so a
@@ -270,7 +270,7 @@ def _deferred_property(prop, spatial_shape, topo, /):
     Property)` is false, so every field took its default and a deferred
     qualitative property came back continuous.
     '''
-    return Property._build(prop(), spatial_shape, topo)
+    return Property._build(prop(), spatial_shape)
 
 
 def _inner_field(prop, name, fallback, /):
@@ -292,6 +292,8 @@ def _inner_field(prop, name, fallback, /):
     Module-level, because a `pcollections.lazy` closes over it and nothing of the
     property is in scope.
     '''
+    if isinstance(prop, lazy):
+        prop = prop()
     if not isinstance(prop, Property):
         return fallback
     return getattr(prop, name)
@@ -922,16 +924,20 @@ class Property(planobject):
             check_interp_form(self.interp)
 
     @staticmethod
-    def _build(values, spatial_shape, topo, /, gradient=None, hessian=None,
-               **meta):
-        '''A property built from what a caller supplied, with its checks run.
+    def _build(values, spatial_shape, /, gradient=None, hessian=None, **meta):
+        '''A property built from what a caller supplied, and nothing more.
 
-        This is the deferral a geometry\'s properties filter needs. A `lazy` value
-        cannot be a property\'s *field* --- the plan resolves every field on its
+        This is the deferral a geometry's properties filter needs. A `lazy` value
+        cannot be a property's *field* --- the plan resolves every field on its
         way into the calcs that read it, so no constructor can keep one --- and a
         *container* is not resolved. So the property itself is deferred, stored
         as a `pcollections.lazy` in the mapping, and this is what builds it when
         something reads it.
+
+        Nothing is checked here. A property is validated lazily, on the read that
+        asks for a field, so a caller who wants the checks sooner asks for them
+        sooner --- `withprop(validate=True)`. Checking here would defeat the
+        deferral, since every check reads the value.
 
         A static method rather than a module function, so that the one place a
         property is built from deferred arguments is named by the type it builds.
@@ -940,23 +946,16 @@ class Property(planobject):
         ----------
         values, spatial_shape : array-like, tuple of int
             As for the constructor.
-        topo : Topology
-            The topology of the geometry the property is being attached to,
-            which is what its interpolation is checked against.
         gradient, hessian : array-like or None, optional
             As for the constructor.
         **meta
-            The rest of the constructor\'s arguments.
+            The rest of the constructor's arguments.
 
         Returns
         -------
         Property
-            The property, ready: every check has run, and any failure is raised
-            here rather than at the point the value was supplied.
+            The property. Its fields are computed when they are read.
         '''
-        # Imported here rather than at module scope: the geometries are built on
-        # this module, so it cannot import them back.
-        from ._geom import check_property_interp
         # Only what was given: a `None` here means the caller named no
         # derivative, and passing it on would override one the value brought
         # with it --- which is what a property built from another property has.
@@ -965,12 +964,9 @@ class Property(planobject):
             derived['gradient'] = gradient
         if hessian is not None:
             derived['hessian'] = hessian
-        built = Property(values, spatial_shape, **derived, **meta)
-        built.valid
-        check_property_interp(built, topo)
-        return built
+        return Property(values, spatial_shape, **derived, **meta)
 
-    @calc('backend', lazy=False)
+    @calc('backend')
     def proc_backend(backend):
         '''Validates the property's backend.
 
@@ -981,7 +977,7 @@ class Property(planobject):
         '''
         return normalize_backend(backend)
 
-    @calc('dtype', lazy=False)
+    @calc('dtype')
     def proc_dtype(dtype):
         '''Validates the property's dtype.
 
@@ -1124,7 +1120,7 @@ class Property(planobject):
         '''
         return interp[1]
 
-    @calc('extrap', lazy=False)
+    @calc('extrap')
     def proc_extrap(extrap):
         '''Validates the property's extrapolation order.
 
@@ -1163,7 +1159,7 @@ class Property(planobject):
                 f" {(method, order)!r}")
         return _grid.prefilter(value, spatial_shape, border, order)
 
-    @calc('border', lazy=False)
+    @calc('border')
     def proc_border(border):
         '''Validates the property's boundary extension.
 
@@ -1174,7 +1170,7 @@ class Property(planobject):
         '''
         return normalize_border(border)
 
-    @calc('mask', lazy=False)
+    @calc('mask')
     def proc_mask(mask, spatial_shape):
         '''Normalizes the property's mask to a boolean array.
 
@@ -1199,7 +1195,7 @@ class Property(planobject):
             return lazy(normalize_null, null, dtype, value)
         return normalize_null(null, dtype, value)
 
-    @calc('unit', lazy=False)
+    @calc('unit')
     def proc_unit(unit):
         '''Records the property's unit.
 

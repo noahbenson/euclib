@@ -376,7 +376,7 @@ class TestPropertyMetadata(TestCase):
         self.assertIsNone(Property(np.ones(4), (4,)).extrap)
         self.assertEqual(Property(np.ones(4), (4,), extrap=0).extrap, 0)
         self.assertIsInstance(
-            _innermost(lambda: Property(np.ones(4), (4,), extrap=1)),
+            _innermost(lambda: Property(np.ones(4), (4,), extrap=1).extrap),
             ValueError)
 
     def test_the_null_value_follows_the_dtype(self):

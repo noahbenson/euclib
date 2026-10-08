@@ -266,8 +266,10 @@ class TestProperty(TestCase):
         self.assertEqual(p.copy(interp=0).interp, ('nearest', 0))
         with self.assertRaises(ValueError):
             p.copy(interp=7)
+        # Every field is lazy, so a bad extrapolation is reported by the read
+        # that asks for it rather than by the copy that carried it.
         with self.assertRaises(PlanError):
-            p.copy(extrap=2)
+            p.copy(extrap=2).extrap
 
     def test_the_form_of_an_interpolation_is_checked_when_it_is_given(self):
         '''A bad method or order needs no value, so it is raised on the spot.
@@ -506,15 +508,15 @@ class TestDeferredValues(TestCase):
         (value, read) = self._counting(zeros(4))
         Property(value, (4,), interp=0)
         self.assertEqual(read, [], "the value was read at construction")
-        # ...and the metadata that does not need it does not read it either.
-        # `interp` and `vartype` are the exception, and have to be: a bare order
-        # takes its method from the type, and the type is inferred from the
-        # value. So reading those reads the value, which is what `valid` does
-        # anyway.
+        # Reading a field reads what that field needs, and for a property with a
+        # deferred value that is the value itself: the metadata a property has
+        # is the metadata of the value it was handed, and it is not known until
+        # the value is. So there is no field whose read leaves the value unread
+        # --- which is what makes `withprop(validate=True)` mean something.
         (value, read) = self._counting(zeros(4))
         p = Property(value, (4,), interp=0)
-        self.assertEqual(p.backend, None)
-        self.assertEqual(read, [], "a field that needs no value read one")
+        p.backend
+        self.assertEqual(read, [True], "a field read did not read the value")
 
     def test_a_deferred_value_is_read_when_a_field_needs_it(self):
         (value, read) = self._counting(zeros(4))
@@ -537,3 +539,31 @@ class TestDeferredValues(TestCase):
         self.assertEqual(carried.properties['f'].interp, ('nearest', 0))
         carried.prop('f')
         self.assertEqual(read, [True], "the value was never read")
+
+    def test_validate_asks_for_the_checks_before_the_property_is_attached(self):
+        '''`withprop(validate=True)` readies the value and checks it now.
+
+        The default is not to. A property is validated lazily, so attaching a
+        deferred value does not ready it; asking for validation is what readies
+        it, and it is what makes an error stop the attachment rather than appear
+        at the first read, by which point the property has long been in use.
+        '''
+        from numpy import stack
+        from euclib.types import PrismMesh, PrismTopology
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        (value, read) = self._counting(zeros(3))
+        prism.withprop('f', value, interp=0, validate=True)
+        self.assertEqual(read, [True], "validate=True did not read the value")
+        # A value that does not fit is refused by the attachment itself...
+        (value, read) = self._counting(zeros(2))
+        with self.assertRaises(Exception):
+            prism.withprop('f', value, interp=0, validate=True)
+        # ...and without it the same value attaches, and the error waits for the
+        # read that asks for the value.
+        (value, read) = self._counting(zeros(2))
+        carried = prism.withprop('f', value, interp=0)
+        self.assertEqual(read, [], "the default readied the value")
+        with self.assertRaises(Exception):
+            carried.prop('f')

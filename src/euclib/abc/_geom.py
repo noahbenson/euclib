@@ -530,18 +530,25 @@ class Geometry(MetaObject, metaclass=plantypeABC):
                 # *is* --- a property, whose metadata comes along --- needs that
                 # resolved first. `_build` would receive the lazy itself.
                 out = out.set(name, lazy(_deferred_property, prop,
-                                         property_shape, topo))
-            elif isinstance(prop, Property) and tuple(prop.spatial_shape) == tuple(
-                    property_shape):
-                # Kept, but still checked against what this geometry can honour:
-                # a property built for a mesh may ask for an interpolation a
-                # point cloud cannot give. It costs nothing, since a property
-                # that is already built has already computed its fields.
-                check_property_interp(prop, topo)
+                                         property_shape))
+            elif isinstance(prop, Property):
+                # Kept as it is, and trusted to have done its own checks --- they
+                # are lazy, so they run on the read that asks for a field, and
+                # repeating them here would ready the value.
+                #
+                # The one thing this geometry must check is that the property
+                # belongs to it. The shape is the caller's and comparing it
+                # readies nothing, so it is checked now.
+                if tuple(prop.spatial_shape) != tuple(property_shape):
+                    raise ValueError(
+                        f"the property {name!r} has spatial shape"
+                        f" {tuple(prop.spatial_shape)}, but this geometry's is"
+                        f" {tuple(property_shape)}")
                 out = out.set(name, prop)
             else:
-                # A value that is already here: build it and read `valid`,
-                # which runs every check and raises here rather than later.
+                # A value that is here: built and checked, since nothing has to
+                # be readied to check it. A *deferred* value is the branch above,
+                # and its checks belong to the read that asks for a field.
                 built = Property(prop, property_shape)
                 built.valid
                 check_property_interp(built, topo)
@@ -671,6 +678,13 @@ class Geometry(MetaObject, metaclass=plantypeABC):
     def _prop_value(self, name, order, rest, /):
         '''Returns a property's values, restricted to ``rest`` if given.'''
         prop = self._prop_for(name, order)
+        # This is the read that validates the property. A property is validated
+        # lazily, so nothing has checked it yet, and the values it holds mean
+        # nothing unless it fits the geometry it was attached to --- a value of
+        # the wrong shape would otherwise be handed back as though it were
+        # right. `valid` is a lazy field, so a property already read pays
+        # nothing here.
+        prop.valid
         val = prop.value
         return val[(Ellipsis,) + tuple(rest)] if rest else val
 
@@ -838,7 +852,7 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         return self._install_props(order, props)
 
     def withprop(self, name=UNSET, values=UNSET, gradient=None, hessian=None,
-                 **meta):
+                 validate=False, **meta):
         '''Returns a copy of the object with a property added or altered.
 
         Given values, the property is created (or replaced) with the supplied
@@ -851,6 +865,10 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         takes --- so a keyword that names a property rather than a piece of
         metadata will be read as metadata, and the metadata keywords are not
         where a value goes.
+
+        A property is validated lazily: its fields are computed when they are
+        read, so a value that is deferred is not readied by attaching it. Pass
+        ``validate=True`` to check it here instead.
 
         A gradient or a hessian is data rather than metadata, and is given as
         its own argument. Either may be supplied with the values or on its own,
@@ -873,6 +891,16 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         hessian : array-like or None, optional
             The hessian of the values, shaped ``(C..., D, D, N)``, on the same
             terms.
+        validate : bool, optional
+            Whether to check the property before it is attached. The default,
+            ``False``, attaches it and leaves the checks to the read that asks
+            for a field --- which is what a property does anyway, and what lets
+            a value be deferred. Given ``True``, the property is built and its
+            ``valid`` field is read here, so a mistake stops the attachment
+            rather than surfacing later; a deferred value is readied by this,
+            which is what asking for the checks means. Either way a value that
+            is already here is checked, and a geometry always checks that the
+            property's spatial shape is its own.
         **meta
             Metadata for the property, named as in ``Property``.
 
@@ -921,15 +949,27 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             # `Property._build` is what does that, with the checks the filter
             # would otherwise run here.
             new = lazy(Property._build, values, self._prop_spatial_shape(order),
-                       self.topo, gradient=gradient, hessian=hessian, **meta)
+                       gradient=gradient, hessian=hessian, **meta)
         else:
-            # A value that is here: built and checked now, so that a mistake in
-            # it is raised where it was made rather than at some later read.
-            # `_build` is what both branches use, the lazy one deferring it and
-            # this one running it --- which is the whole difference between them.
+            # A value that is here, and built; `_build` is what both branches
+            # use, the lazy one deferring it and this one running it --- which is
+            # the whole difference between them.
             new = Property._build(values, self._prop_spatial_shape(order),
-                                  self.topo, gradient=gradient, hessian=hessian,
-                                  **meta)
+                                  gradient=gradient, hessian=hessian, **meta)
+        # The checks run here whenever they can run without readying anything,
+        # which is the rule for a `Property`: a value that is here is ready, so
+        # there is nothing to wait for, and a value that is a `Property` has done
+        # its own checks already. Only a deferred value has anything to wait for,
+        # and then the checks belong to the read that asks for a field.
+        #
+        # `validate=True` asks for them regardless. It readies a deferred value
+        # --- which is what asking means, and why the default is not to.
+        if validate or not isinstance(values, lazy):
+            if isinstance(new, lazy):
+                new = new()
+            if not isinstance(values, Property):
+                new.valid
+            check_property_interp(new, self.topo)
         return self.copy(**self._props_updated(order, {pname: new}))
 
     def dropprop(self, name=UNSET, error=False):
