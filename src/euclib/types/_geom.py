@@ -240,6 +240,21 @@ class SegPath(SimplexGeometry):
         '''
         return _auto_measure_property(measures, topo, order, 'length')
 
+    @calc('length')
+    def proc_length(measures):
+        '''The length of each segment.
+
+        The same vector the ``'length'`` simplex property exposes, reachable as
+        a field. ``measures`` is what a geometry of any order calls it; this is
+        what it is called on a path, where the measure is a length.
+
+        Returns
+        -------
+        length : array-like
+            A length-``M`` vector, one length per segment.
+        '''
+        return measures
+
     def to_local(self, coords, /):
         '''Locates positions along the path.
 
@@ -331,6 +346,21 @@ class TriMesh(SimplexGeometry):
             One dictionary of computed properties per simplex order.
         '''
         return _auto_measure_property(measures, topo, order, 'surface_area')
+
+    @calc('area')
+    def proc_area(measures):
+        '''The area of each triangle.
+
+        The same vector the ``'surface_area'`` simplex property exposes,
+        reachable as a field. ``measures`` is what a geometry of any order calls
+        it; this is what it is called on a triangle mesh.
+
+        Returns
+        -------
+        area : array-like
+            A length-``M`` vector, one area per triangle.
+        '''
+        return measures
 
     def to_local(self, coords, /):
         '''Locates positions within the mesh.
@@ -442,6 +472,21 @@ class TetMesh(SimplexGeometry):
             One dictionary of computed properties per simplex order.
         '''
         return _auto_measure_property(measures, topo, order, 'volume')
+
+    @calc('volume')
+    def proc_volume(measures):
+        '''The volume of each tetrahedron.
+
+        The same vector the ``'volume'`` simplex property exposes, reachable as
+        a field. ``measures`` is what a geometry of any order calls it; this is
+        what it is called on a tetrahedral mesh.
+
+        Returns
+        -------
+        volume : array-like
+            A length-``M`` vector, one volume per tetrahedron.
+        '''
+        return measures
 
     def to_local(self, coords, /):
         '''Locates positions within the mesh.

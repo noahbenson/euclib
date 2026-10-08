@@ -94,6 +94,14 @@ class TestSegPath(TestCase):
         measures = _path().measures
         self.assertTrue(allclose(measures, [1., 1.]))
 
+    def test_length_is_a_field(self):
+        # The same vector `measures` holds, under the name the measure has on
+        # this kind of geometry.
+        path = _path()
+        self.assertTrue(allclose(path.length, path.measures))
+        self.assertGreater(len(asarray(path.length).shape), 0,
+                           "length should be a vector of segment lengths")
+
     def test_length_is_exposed_as_a_simplex_property(self):
         path = _path()
         self.assertIn('length', path.simplex_properties[1])
@@ -144,6 +152,14 @@ class TestTriMesh(TestCase):
     def test_measures_are_triangle_areas(self):
         self.assertTrue(allclose(_mesh().measures, [0.5, 0.5]))
 
+    def test_area_is_a_field(self):
+        # The same vector `measures` holds, under the name the measure has on
+        # this kind of geometry.
+        mesh = _mesh()
+        self.assertTrue(allclose(mesh.area, mesh.measures))
+        self.assertGreater(len(asarray(mesh.area).shape), 0,
+                           "area should be a vector of triangle areas")
+
     def test_surface_area_is_exposed_as_a_simplex_property(self):
         mesh = _mesh()
         self.assertIn('surface_area', mesh.simplex_properties[2])
@@ -188,6 +204,14 @@ class TestTetMesh(TestCase):
 
     def test_measures_are_volumes(self):
         self.assertTrue(allclose(_tetmesh().measures, [1. / 6.]))
+
+    def test_volume_is_a_field(self):
+        # The same vector `measures` holds, under the name the measure has on
+        # this kind of geometry.
+        tet = _tetmesh()
+        self.assertTrue(allclose(tet.volume, tet.measures))
+        self.assertGreater(len(asarray(tet.volume).shape), 0,
+                           "volume should be a vector of volumes")
 
     def test_volume_is_exposed_as_a_simplex_property(self):
         tet = _tetmesh()

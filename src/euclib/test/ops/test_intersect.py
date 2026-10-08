@@ -17,8 +17,8 @@ from euclib.utils import (segments_triangles_intersect,
                           triangles_segments_intersect)
 from euclib.ops import (
     voxel_surface_intersections,
-    contains, mesh_intersections, path_crossings, path_intersections,
-    tolerance_of, voxel_intersections)
+    contains, integrate, mesh_intersections, path_crossings,
+    path_intersections, tolerance_of, voxel_intersections)
 from euclib.types import (
     grid,
     Grid, GridTopology, SegPath, SegTopology, TetMesh, TetTopology, TriMesh,
@@ -555,3 +555,67 @@ class TestVoxelSurfaceIntersections(TestCase):
         got = asarray(pieces['s'])
         want = asarray(pieces.coords).sum(axis=0, keepdims=True)
         self.assertTrue(allclose(got, want))
+
+
+class TestIntegrate(TestCase):
+    '''Integrating a mesh's field over a grid's voxels.'''
+
+    def _grid(self, n=3):
+        return Grid(eye(4), GridTopology((n, n, n)))
+
+    def test_a_constant_integrates_to_the_volume_the_mesh_occupies(self):
+        # The total over the grid is the mesh's volume whatever the grid: the
+        # grid decides how the volume is divided up, not how much of it there
+        # is.
+        tet = _tet()
+        self.assertAlmostEqual(integrate(tet, self._grid(), 1).sum(),
+                               float(tet.volume[0]))
+
+    def test_a_linear_field_integrates_exactly(self):
+        # A linear field's mean over a tetrahedron is its value at the
+        # centroid, which is the mean of the four corners --- so this is exact
+        # rather than approximate. The integral of x over the unit tetrahedron
+        # is V * (0 + 1 + 0 + 0) / 4.
+        tet = _tet()
+        x = tet.withprop('x', asarray(tet.coords)[0])
+        self.assertAlmostEqual(integrate(x, self._grid(), 'x').sum(),
+                               float(tet.volume[0]) / 4)
+
+    def test_channels_integrate_independently(self):
+        # Channels are separate fields with related metadata, so each is
+        # integrated on its own and the result keeps the channel dimensions.
+        tet = _tet()
+        coords = asarray(tet.coords)
+        both = tet.withprop('v', array([coords[0], 2 * coords[0]]))
+        got = integrate(both, self._grid(), 'v')
+        self.assertEqual(got.shape, (2, 3, 3, 3))
+        self.assertAlmostEqual(got[1].sum(), 2 * got[0].sum())
+
+    def test_the_result_is_a_total_rather_than_an_average(self):
+        # Dividing by a volume is one division for the whole result, so it is
+        # left to the caller. A unit grid's cells have volume 1, so the mean
+        # over a voxel is the total over it.
+        tet = _tet()
+        self.assertAlmostEqual(integrate(tet, self._grid(), 1).sum(),
+                               float(tet.volume[0]))
+
+    def test_emptyconst_fills_the_part_of_a_voxel_the_mesh_misses(self):
+        # The default leaves the empty part out, so the totals come to the
+        # mesh's volume; a constant fills it, and then every voxel is accounted
+        # for --- including the ones the mesh never reaches.
+        tet = _tet()
+        grid = self._grid()
+        self.assertAlmostEqual(integrate(tet, grid, 1).sum(),
+                               float(tet.volume[0]))
+        filled = integrate(tet, grid, 1, emptyconst=1)
+        self.assertAlmostEqual(filled.sum(), 27.0)
+        self.assertAlmostEqual(filled[2, 2, 2], 1.0)
+        self.assertAlmostEqual(integrate(tet, grid, 1)[2, 2, 2], 0.0)
+
+    def test_a_grid_that_is_not_three_dimensional_is_refused(self):
+        with self.assertRaises(ValueError):
+            integrate(_tet(), Grid(eye(3), GridTopology((3, 3))), 1)
+
+    def test_a_mesh_that_is_not_tetrahedral_is_refused(self):
+        with self.assertRaises(TypeError):
+            integrate(_square(), self._grid(), 1)

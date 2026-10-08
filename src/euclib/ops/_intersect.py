@@ -25,8 +25,9 @@ from itertools import product
 from immlib import to_array
 
 from numpy import (
-    arange, asarray, ceil, concatenate, cross, cumsum, einsum, floor, full,
-    intp, ones, repeat, sqrt, stack, tile, zeros)
+    arange, asarray, bincount, ceil, concatenate, cross, cumsum, einsum, floor,
+    full, intp, maximum, ones, repeat, sqrt, stack, tile, zeros)
+from numpy.linalg import det
 
 from pcollections import lazy
 
@@ -524,6 +525,96 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
 
 
 
+
+def integrate(mesh, grid, values, /, emptyconst=0):
+    '''Integrates a tetrahedral mesh's field over a grid's voxels.
+
+    Each voxel's total is the integral of the field over the part of the mesh
+    that lies within it: the mesh is cut against the grid by
+    `voxel_intersections`, and each piece contributes its own integral --- its
+    measure times the field's mean over it, which is exact for the linear
+    interpolation the pieces are cut with, since a linear field's mean over a
+    tetrahedron is its value at the tetrahedron's centroid.
+
+    The result is a *total*, not an average. Dividing by a volume is one
+    division for the whole result, so it is left to the caller. The average over
+    a voxel is the total divided by the volume of the grid's cells; the average
+    over the part of a voxel the mesh covers is the total divided by the volume
+    the mesh occupies there, which is ``integrate(mesh, grid, 1)``.
+
+    Parameters
+    ----------
+    mesh : TetMesh
+        The tetrahedral mesh carrying the field.
+    grid : Grid
+        A three-dimensional grid.
+    values : str or float
+        What to integrate: the name of one of the mesh's properties, or a
+        constant. A field that is a value per coordinate and nothing else must
+        be attached with ``withprop`` first, so that it can be interpolated onto
+        the pieces like any other --- which is also what makes it interpolated
+        *correctly*, at the pieces' corners rather than at the mesh's.
+    emptyconst : float, optional
+        What the *empty* part of a voxel contributes. The default, ``0``, leaves
+        it out, so a voxel's total is the integral over the mesh's part of it;
+        any other constant adds that constant times the empty volume. A voxel
+        the mesh misses entirely is empty throughout, so its total is
+        ``emptyconst`` times the volume of a cell.
+
+    Returns
+    -------
+    totals : numpy.ndarray
+        The integral over each voxel, shaped like the grid, with the field's
+        channel dimensions first if it has any.
+
+    Raises
+    ------
+    TypeError
+        If either geometry is not of the expected kind.
+    ValueError
+        If the grid is not three-dimensional.
+    '''
+    from ..types import TetMesh as _TetMesh
+    if not isinstance(mesh, _TetMesh):
+        raise TypeError(f"expected a TetMesh; found {type(mesh)}")
+    if not isinstance(grid, Grid):
+        raise TypeError(f"expected a Grid; found {type(grid)}")
+    shape = tuple(grid.shape)
+    if len(shape) != 3:
+        raise ValueError(
+            f"a voxel grid has three dimensions; this one has {len(shape)}")
+    (pieces, voxels) = voxel_intersections(mesh, grid)
+    measures = asarray(pieces.volume)
+    tets = measures.shape[0]
+    if isinstance(values, str):
+        held = asarray(pieces.prop(values))
+        # The property comes to the pieces at their *corners*, so a piece's
+        # mean is the mean of its corners --- which for a linear fit is exactly
+        # the value at its centroid, and so exactly the integral over it.
+        corners = held[..., pieces.topo.indices]        # (C..., order+1, T)
+        per_piece = corners.mean(axis=-2)
+    else:
+        per_piece = full((tets,), float(values))
+    contrib = per_piece.reshape((-1, tets)) * measures
+    # The voxel each piece came from, flattened, and the voxels flattened, so
+    # that the sum over a voxel is a `bincount` rather than a scatter --- one
+    # call per channel, and no loop over voxels.
+    (nx, ny, nz) = shape
+    flat = (voxels[0] * (ny * nz) + voxels[1] * nz + voxels[2]).astype(intp)
+    cells = nx * ny * nz
+    totals = zeros((contrib.shape[0], cells))
+    for (c, one) in enumerate(contrib):
+        totals[c] = bincount(flat, weights=one, minlength=cells)
+    if emptyconst != 0:
+        # The empty part of a voxel is what the mesh does not fill. Clipped at
+        # zero, because a piece that reaches the boundary can cover a voxel to
+        # within rounding, and a negative empty volume would be a lie about it.
+        covered = bincount(flat, weights=measures, minlength=cells)
+        cell = abs(det(asarray(grid.affine.matrix)[:3, :3]))
+        totals += float(emptyconst) * maximum(cell - covered, 0.0)
+    return totals.reshape(per_piece.shape[:-1] + shape)
+
+
 def voxel_surface_intersections(mesh, grid, /, tolerance=None):
     '''Decomposes the overlap of a triangle mesh and a grid into triangles.
 
@@ -760,4 +851,5 @@ def mesh_intersections(first, second, /, tolerance=None):
 # Exports ####################################################################
 
 __all__ = ('path_crossings', 'path_intersections', 'contains', 'tolerance_of',
-           'voxel_intersections', 'mesh_intersections')
+           'voxel_intersections', 'voxel_surface_intersections', 'integrate',
+           'mesh_intersections')
