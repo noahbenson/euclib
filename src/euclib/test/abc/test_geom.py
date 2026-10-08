@@ -284,9 +284,14 @@ class TestProperties(TestCase):
             'a': Property(zeros(4), (4,))})['a'].tolist())
 
     def test_a_value_of_the_wrong_shape_is_still_refused(self):
+        # A property is validated lazily, so a value of the wrong shape is
+        # reported by the read that asks for it rather than by the attachment.
+        carried = _cloud(properties={'a': zeros(3)})
         with self.assertRaises(Exception):
-            _cloud(properties={'a': zeros(3)})
-        # ...including when the Property is constructed by hand.
+            carried['a']
+        # The geometry's own check is the spatial shape, which it can compare
+        # without reading the value --- so a Property that does not fit the
+        # geometry is refused when it is attached.
         with self.assertRaises(Exception):
             _cloud(properties={'a': Property(zeros(3), (3,))})
 

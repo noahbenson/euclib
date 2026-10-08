@@ -546,13 +546,15 @@ class Geometry(MetaObject, metaclass=plantypeABC):
                         f" {tuple(property_shape)}")
                 out = out.set(name, prop)
             else:
-                # A value that is here: built and checked, since nothing has to
-                # be readied to check it. A *deferred* value is the branch above,
-                # and its checks belong to the read that asks for a field.
-                built = Property(prop, property_shape)
-                built.valid
-                check_property_interp(built, topo)
-                out = out.set(name, built)
+                # Built, and nothing more. What the *value* is checked against
+                # is the property's own business, and a property is validated
+                # lazily --- so the checks belong to the read that asks for a
+                # field, not to the attachment. A caller who wants them sooner
+                # asks sooner: `withprop(validate=True)`.
+                #
+                # The one check this geometry owes is above, on the shape, and it
+                # is the one it can make without reading the value.
+                out = out.set(name, Property(prop, property_shape))
         return out
 
     @abstractmethod
@@ -852,7 +854,7 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         return self._install_props(order, props)
 
     def withprop(self, name=UNSET, values=UNSET, gradient=None, hessian=None,
-                 validate=False, **meta):
+                 validate=None, **meta):
         '''Returns a copy of the object with a property added or altered.
 
         Given values, the property is created (or replaced) with the supplied
@@ -891,16 +893,21 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         hessian : array-like or None, optional
             The hessian of the values, shaped ``(C..., D, D, N)``, on the same
             terms.
-        validate : bool, optional
+        validate : bool or None, optional
             Whether to check the property before it is attached. The default,
-            ``False``, attaches it and leaves the checks to the read that asks
-            for a field --- which is what a property does anyway, and what lets
-            a value be deferred. Given ``True``, the property is built and its
-            ``valid`` field is read here, so a mistake stops the attachment
-            rather than surfacing later; a deferred value is readied by this,
-            which is what asking for the checks means. Either way a value that
-            is already here is checked, and a geometry always checks that the
-            property's spatial shape is its own.
+            ``None``, decides from the values: a `Property` has done its own
+            checks and a `lazy` value is not readied in order to run them, so
+            neither is checked here, while a value that is already here is
+            checked, since nothing has to be readied to check it. ``True``
+            checks before attaching, whatever the values --- reading the
+            property's ``valid`` field, which readies a deferred value, that
+            being what asking for the checks means --- so a mistake stops the
+            attachment rather than surfacing at the first read. ``False`` leaves
+            the checks to that read.
+            
+            A geometry always checks that the property's spatial shape is its
+            own, whatever this is: the shape is supplied rather than read, so
+            the check readies nothing.
         **meta
             Metadata for the property, named as in ``Property``.
 
@@ -956,19 +963,25 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             # the whole difference between them.
             new = Property._build(values, self._prop_spatial_shape(order),
                                   gradient=gradient, hessian=hessian, **meta)
-        # The checks run here whenever they can run without readying anything,
-        # which is the rule for a `Property`: a value that is here is ready, so
-        # there is nothing to wait for, and a value that is a `Property` has done
-        # its own checks already. Only a deferred value has anything to wait for,
-        # and then the checks belong to the read that asks for a field.
+        # Whether the property is checked here, before it is attached.
         #
-        # `validate=True` asks for them regardless. It readies a deferred value
-        # --- which is what asking means, and why the default is not to.
-        if validate or not isinstance(values, lazy):
+        # The default follows the policy, and is the reason it is `None` rather
+        # than a bool: a `Property` has done its own checks, and a deferred value
+        # is not readied in order to run them, so neither is checked here --- but
+        # a value that is already here is, since nothing has to be readied to
+        # check it. A metadata-only update is not a new value, so it is left to
+        # the read that asks.
+        #
+        # `True` and `False` override that and mean what they say: checked before
+        # the attachment, or not checked until a read asks. Checking a deferred
+        # value readies it, which is what asking for the checks means.
+        if validate is None:
+            validate = (values is not UNSET
+                        and not isinstance(values, (Property, lazy)))
+        if validate:
             if isinstance(new, lazy):
                 new = new()
-            if not isinstance(values, Property):
-                new.valid
+            new.valid
             check_property_interp(new, self.topo)
         return self.copy(**self._props_updated(order, {pname: new}))
 

@@ -567,3 +567,30 @@ class TestDeferredValues(TestCase):
         self.assertEqual(read, [], "the default readied the value")
         with self.assertRaises(Exception):
             carried.prop('f')
+
+    def test_validate_decides_whether_the_checks_run_before_attachment(self):
+        '''The three states of ``validate``, and what each asks for.
+
+        ``None`` follows the policy: a `Property` has done its own checks and a
+        deferred value is not readied, so neither is checked here, while a value
+        that is already here is, since nothing has to be readied to check it.
+        ``True`` and ``False`` say what they mean, and override that.
+        '''
+        from numpy import stack
+        from euclib.types import PrismMesh, PrismTopology
+        def prism():
+            lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+            return PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                             PrismTopology([[0], [1], [2]]))
+        bad = zeros(2)                          # the prism's shape is (3,)
+        wrong = Property(zeros(2), (3,))        # ...and so is its value's
+        # A value that is here is checked by default, and a Property is not:
+        # the first has nothing to ready, the second has checked itself.
+        with self.assertRaises(Exception):
+            prism().withprop('f', bad)
+        prism().withprop('f', wrong)
+        # Either may be overridden, and `False` means the checks wait for the
+        # read that asks --- which is where they would have been anyway.
+        prism().withprop('f', bad, validate=False)
+        with self.assertRaises(Exception):
+            prism().withprop('f', wrong, validate=True)
