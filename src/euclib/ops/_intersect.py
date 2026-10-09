@@ -36,6 +36,7 @@ from ..abc._geom import _carried_property
 from ..types import Grid, SegPath, TriMesh
 from ..utils import (segments_intersect, segments_triangles_intersect,
                      triangle_box_polygon)
+from ..utils._quadrature import quadrature
 from ..utils._pycore import polygon_fan
 
 
@@ -583,18 +584,57 @@ def integrate(mesh, grid, values, /, emptyconst=0):
     if len(shape) != 3:
         raise ValueError(
             f"a voxel grid has three dimensions; this one has {len(shape)}")
+    from ..abc import QUALITATIVE
     (pieces, voxels) = voxel_intersections(mesh, grid)
     measures = asarray(pieces.volume)
     tets = measures.shape[0]
     if isinstance(values, str):
-        held = asarray(pieces.prop(values))
-        # The property comes to the pieces at their *corners*, so a piece's
-        # mean is the mean of its corners --- which for a linear fit is exactly
-        # the value at its centroid, and so exactly the integral over it.
-        corners = held[..., pieces.topo.indices]        # (C..., order+1, T)
-        per_piece = corners.mean(axis=-2)
+        prop = mesh.propinfo(values)
+        if prop.vartype == QUALITATIVE:
+            raise ValueError(
+                f"cannot integrate {values!r}: it is a qualitative property,"
+                f" and a category has no meaning between the values it takes")
+        (method, order) = prop.interp
+        if method == 'nearest':
+            # A nearest field is piecewise constant, so no quadrature rule is
+            # exact for it: the value jumps between the regions a vertex is
+            # nearest to. Its integral over an *element* is the element's
+            # measure times the mean of the values at its corners --- the
+            # regions being equal in measure --- and that is what this is, read
+            # at the piece's corners, which is where the field was carried to.
+            held = asarray(pieces.prop(values))
+            per_piece = held[..., pieces.topo.indices].mean(axis=-2)
+            channels = per_piece.shape[:-1]
+        else:
+            # The fit is a polynomial of the method's order in the element's
+            # barycentric coordinates, so a rule exact to that degree integrates
+            # it exactly. The rule's points are carried through the piece's own
+            # corners into global coordinates, and the *source* mesh's field is
+            # read there: it is the source's polynomial being integrated, not a
+            # re-fit on the sub-simplex, which would be a different function.
+            (lam, wts) = quadrature(pieces.order, order)
+            corners = asarray(pieces.coords)[:, pieces.topo.indices]  # (D,K,T)
+            pts = einsum('qk,dkt->dqt', lam, corners)
+            (dim, points, count) = pts.shape
+            held = asarray(
+                mesh.prop(values, at=pts.reshape(dim, points * count)))
+            held = held.reshape(held.shape[:-1] + (points, count))
+            channels = held.shape[:-2]
+            if held.ndim == 2:
+                held = held[None]
+            per_piece = einsum('q,cqt->ct', wts, held)
     else:
-        per_piece = full((tets,), float(values))
+        # A constant integrates to itself times the measure, which is what the
+        # degree-1 rule gives it. There is no property to read, so it never
+        # reaches the quadrature above.
+        per_piece = full((1, tets), float(values))
+        channels = ()
+    # A property with no channels is a vector and not a matrix, so a channel
+    # axis is added for the arithmetic below and taken off by the reshape at the
+    # end: one path for both, rather than two that differ in an axis. `channels`
+    # is what the caller gets back, so it is recorded before the axis goes on.
+    if per_piece.ndim == 1:
+        per_piece = per_piece[None]
     contrib = per_piece.reshape((-1, tets)) * measures
     # The voxel each piece came from, flattened, and the voxels flattened, so
     # that the sum over a voxel is a `bincount` rather than a scatter --- one
@@ -612,7 +652,7 @@ def integrate(mesh, grid, values, /, emptyconst=0):
         covered = bincount(flat, weights=measures, minlength=cells)
         cell = abs(det(asarray(grid.affine.matrix)[:3, :3]))
         totals += float(emptyconst) * maximum(cell - covered, 0.0)
-    return totals.reshape(per_piece.shape[:-1] + shape)
+    return totals.reshape(channels + shape)
 
 
 def voxel_surface_intersections(mesh, grid, /, tolerance=None):

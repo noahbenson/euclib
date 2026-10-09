@@ -11,7 +11,7 @@ from unittest import TestCase
 
 import numpy as np
 
-from numpy import allclose, array, asarray, eye, sort
+from numpy import allclose, array, asarray, diag, eye, sort, zeros
 
 from euclib.utils import (segments_triangles_intersect,
                           triangles_segments_intersect)
@@ -611,6 +611,57 @@ class TestIntegrate(TestCase):
         self.assertAlmostEqual(filled.sum(), 27.0)
         self.assertAlmostEqual(filled[2, 2, 2], 1.0)
         self.assertAlmostEqual(integrate(tet, grid, 1)[2, 2, 2], 0.0)
+
+    def test_a_quadratic_field_integrates_exactly(self):
+        # A quadratic is determined by a tetrahedron's values and gradients, so
+        # the fit reproduces it and the integral is known in closed form: the
+        # integral of x^2 over the unit tetrahedron is V * E[lambda^2], and the
+        # barycentric second moment is 2 / (4 * 5).
+        tet = _tet()
+        gradient = zeros((3, 4))
+        gradient[0] = 2 * asarray(tet.coords)[0]
+        sq = tet.withprop('sq', asarray(tet.coords)[0] ** 2,
+                          gradient=gradient, interp=('polynomial', 2))
+        self.assertAlmostEqual(integrate(sq, self._grid(), 'sq').sum(),
+                               float(tet.volume[0]) / 10, places=14)
+
+    def test_a_cubic_field_integrates_exactly(self):
+        # ...and the same for a cubic: the third moment is 6 / (4 * 5 * 6).
+        tet = _tet()
+        gradient = zeros((3, 4))
+        gradient[0] = 3 * asarray(tet.coords)[0] ** 2
+        cu = tet.withprop('cu', asarray(tet.coords)[0] ** 3,
+                          gradient=gradient, interp=('polynomial', 3))
+        self.assertAlmostEqual(integrate(cu, self._grid(), 'cu').sum(),
+                               float(tet.volume[0]) / 20, places=14)
+
+    def test_a_nearest_property_converges_to_the_mean_of_its_values(self):
+        # A nearest field is piecewise constant, so no quadrature rule is exact
+        # for it, and neither is reading it at a piece's corners. Its integral
+        # over an *element* is the measure times the mean of the values, and the
+        # pieces of a grid approximate that, converging to it as the grid
+        # refines --- which is what this checks, rather than an equality it does
+        # not have.
+        tet = _tet()
+        near = tet.withprop('n', array([0., 3., 0., 0.]), interp=0)
+        self.assertEqual(near.propinfo('n').interp, ('nearest', 0))
+        want = float(tet.volume[0]) * 0.75
+        for n in (24, 48):
+            step = 3.0 / n
+            grid = Grid(diag(array([step, step, step, 1.0])),
+                        GridTopology((n, n, n)))
+            with self.subTest(n=n):
+                self.assertAlmostEqual(
+                    integrate(near, grid, 'n').sum(), want, places=2)
+
+    def test_a_qualitative_property_is_refused(self):
+        # A category has no meaning between the values it takes, so there is
+        # nothing for an integral to be.
+        tet = _tet()
+        kinds = tet.withprop('k', array(['a', 'b', 'c', 'd']),
+                             vartype='qualitative')
+        with self.assertRaises(ValueError):
+            integrate(kinds, self._grid(), 'k')
 
     def test_a_grid_that_is_not_three_dimensional_is_refused(self):
         with self.assertRaises(ValueError):
