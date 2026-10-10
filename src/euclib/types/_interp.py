@@ -715,7 +715,7 @@ def _interp_simplex(geom, prop, loc, method, order, gradient=None, /):
 
 
 def segment_fit(geom, loc, values, corners, gradient, order, /, *,
-                whole=None):
+                whole=None, derivative=False):
     '''Fits a Bezier polynomial of the given order through one segment's data.
 
     A segment's polynomial has more coefficients than its two endpoints have
@@ -787,11 +787,31 @@ def segment_fit(geom, loc, values, corners, gradient, order, /, *,
     (v0, v1) = (values[..., 0, :], values[..., 1, :])
     (a, b) = (slopes[..., 0, :], slopes[..., 1, :])
     if order == 2:
+        if derivative:
+            # The derivative with respect to the parameter, and the parameter
+            # runs the other way: the local coordinate is the weight at corner 1,
+            # so a step along the element is a step against `s`.
+            return im.stack([im.multiply(-1.0, im.add(
+                im.subtract(v1, v0), im.multiply(
+                    im.divide(im.subtract(a, b), 2.0),
+                    im.subtract(1.0, im.multiply(2.0, s)))))])
         return im.mag(im.add(im.add(v0, im.multiply(
             im.subtract(v1, v0), s)), im.multiply(
                 im.divide(im.subtract(a, b), 2.0),
                 im.multiply(s, im.subtract(1.0, s)))))
     (s2, s3) = (im.multiply(s, s), im.multiply(im.multiply(s, s), s))
+    if derivative:
+        # The Hermite basis's derivatives, which are the same expressions
+        # differentiated in the parameter.
+        return im.stack([im.multiply(-1.0, im.add(im.add(
+            im.multiply(im.subtract(im.multiply(6.0, s2),
+                                    im.multiply(6.0, s)), v0),
+            im.multiply(im.add(im.subtract(im.multiply(3.0, s2),
+                                           im.multiply(4.0, s)), 1.0), a)),
+            im.add(im.multiply(im.add(im.multiply(-6.0, s2),
+                                      im.multiply(6.0, s)), v1),
+                    im.multiply(im.subtract(im.multiply(3.0, s2),
+                                            im.multiply(2.0, s)), b))))])
     return im.mag(im.add(im.add(
         im.multiply(im.add(im.subtract(im.multiply(2.0, s3),
                                        im.multiply(3.0, s2)), 1.0), v0),

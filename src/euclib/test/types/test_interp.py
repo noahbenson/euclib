@@ -2393,6 +2393,21 @@ class TestThePropertyGradient(TestCase):
         self.assertTrue(allclose(asarray(p.propgrad('q', at=c)).ravel(),
                                  [2 * c[0, 0], 0, 0], atol=1e-12))
 
+    def test_a_segment_s_quadratic_gradient_is_exact(self):
+        # The Hermite basis differentiated in the parameter, and the parameter
+        # running the other way from the local coordinate.
+        path = SegPath(array([[0., 2.], [0., 0.]]), SegTopology([[0], [1]]))
+        gradient = np.zeros((2, 2))
+        gradient[0] = 2 * path.coords[0]
+        at = array([[0.5], [0.0]])
+        for order in (2, 3):
+            with self.subTest(order=order):
+                p = path.withprop('q', path.coords[0] ** 2, gradient=gradient,
+                                  interp=('bezier', order))
+                self.assertTrue(allclose(
+                    asarray(p.propgrad('q', at=at)).ravel(), [1, 0],
+                    atol=1e-12))
+
     def test_a_nearest_field_has_no_gradient(self):
         # A piecewise-constant field is flat within its regions, so its
         # gradient is zero wherever it is defined at all.
