@@ -78,7 +78,7 @@ _RANK_TOLERANCE = 1e-9
 #: The others are recognized and interpolated, but their fits have no derivative
 #: written yet, so asking one for a gradient says so rather than failing
 #: somewhere deeper.
-DIFFERENTIABLE = ('polynomial',)
+DIFFERENTIABLE = ('polynomial', 'bezier')
 
 #: How many coordinates the gradient estimate advances together in one block.
 #: A block gives a stack of designs of shape ``(B, M, W)``, which is what the
@@ -911,7 +911,7 @@ def simplex_exponents(order, parts=3, /):
 
 
 def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
-                 whole=None):
+                 whole=None, derivative=False):
     '''Fits a Bezier polynomial of the given order through one triangle's data.
 
     A triangle's polynomial is determined by its values and its corners'
@@ -1050,12 +1050,16 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
     basis = (full.T[None, :, :] ** exponents[:, None, :]).prod(axis=-1)
     counts = asarray([factorial(p) for p in exponents.ravel()]
                      ).reshape(exponents.shape).prod(axis=1)
+    if derivative:
+        d = _bernstein_gradient(full, exponents, counts, order,
+                                exponents.shape[1] - 1)
+        return im.einsum('kwq,w...q->k...q', d, control)
     basis = basis * (factorial(order) / counts)[:, None]
     return im.mag(im.einsum('wq,w...q->...q', basis, control))
 
 
 def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
-                    whole=None):
+                    whole=None, derivative=False):
     '''Fits a Bezier polynomial of the given order through one tetrahedron's
     data.
 
@@ -1195,8 +1199,58 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
     basis = (full.T[None, :, :] ** exponents[:, None, :]).prod(axis=-1)
     counts = asarray([factorial(p) for p in exponents.ravel()]
                      ).reshape(exponents.shape).prod(axis=1)
+    if derivative:
+        d = _bernstein_gradient(full, exponents, counts, order,
+                                exponents.shape[1] - 1)
+        return im.einsum('kwq,w...q->k...q', d, control)
     basis = basis * (factorial(order) / counts)[:, None]
     return im.mag(im.einsum('wq,w...q->...q', basis, control))
+
+
+def _bernstein_gradient(full, exponents, counts, order, k, /):
+    '''The derivatives of the Bernstein basis along an element's own axes.
+
+    A local coordinate is the first ``K`` barycentric weights, the last being
+    what they leave of the unit sum, so a derivative along one of them is the
+    difference of two barycentric derivatives: ``d/du_a = d/dL_a - d/dL_K``.
+
+    Parameters
+    ----------
+    full : array-like
+        The ``(K+1, Q)`` barycentric weights, the last being the remainder.
+    exponents : numpy.ndarray
+        The ``(W, K+1)`` exponents of the control points.
+    counts : numpy.ndarray
+        The ``(W,)`` products of the factorials of the exponents.
+    order : int
+        The fit's order, which is the total degree of every control point.
+    k : int
+        The number of the element's own axes.
+
+    Returns
+    -------
+    gradient : numpy.ndarray
+        A ``(K, W, Q)`` array: the derivative of each control point's basis
+        along each of the element's own axes, at each position.
+    '''
+    scale = (factorial(order) / counts)[:, None]
+    out = []
+    for axis in range(k):
+        total = None
+        for (which, sign) in ((axis, 1.0), (k, -1.0)):
+            d = ones((len(exponents), full.shape[1]))
+            for i in range(exponents.shape[1]):
+                e = exponents[:, i]
+                if i == which:
+                    # Clamped before the power so that none is taken negative;
+                    # the multiplication by the exponent below zeroes the terms
+                    # whose exponent was zero anyway.
+                    e = (e - 1).clip(min=0)
+                d = im.multiply(d, im.pow(full[i][None, :], e[:, None]))
+            d = im.multiply(d, exponents[:, which][:, None] * sign)
+            total = d if total is None else im.add(total, d)
+        out.append(im.multiply(total, scale))
+    return im.stack(out)
 
 
 def _monomials(powers, u, /):

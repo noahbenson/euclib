@@ -2336,3 +2336,91 @@ class TestTheEstimateAgainstAField(TestCase):
             want = slope[:, None] * np.ones((1, coords.shape[1]))
             with self.subTest(order=order):
                 self.assertLess(np.abs(got - want).max(), 1e-9)
+
+
+class TestThePropertyGradient(TestCase):
+    '''That `propgrad` reports the field's derivative.'''
+
+    def _tet(self):
+        # Deliberately skewed, so that the element's Jacobian is not
+        # orthogonal: on the standard tetrahedron it is the identity, and a
+        # wrong transpose would pass every check made on one.
+        return TetMesh(array([[0.0, 1.3, 0.2, -0.4],
+                              [0.0, 0.5, 1.1,  0.3],
+                              [0.0, 0.2, 0.4,  1.2]]),
+                       TetTopology([[0], [1], [2], [3]]))
+
+    def test_a_linear_field_has_its_plane_s_gradient_everywhere(self):
+        # f = 2x - 3y + z, so the gradient is (2, -3, 1) at every position.
+        tet = self._tet()
+        f = 2 * tet.coords[0] - 3 * tet.coords[1] + tet.coords[2]
+        lin = tet.withprop('f', f, interp=('polynomial', 1))
+        c = asarray(tet.coords).mean(axis=1).reshape(3, 1)
+        self.assertTrue(allclose(asarray(lin.propgrad('f', at=c)).ravel(),
+                                 [2, -3, 1]))
+
+    def test_a_quadratic_field_has_the_gradient_of_that_quadratic(self):
+        # f = x^2, whose gradient is 2x. A quadratic is determined by a
+        # tetrahedron's values and gradients, so the fit reproduces it and the
+        # gradient is exact --- for both of the fits that are differentiated.
+        tet = self._tet()
+        gradient = np.zeros((3, 4))
+        gradient[0] = 2 * tet.coords[0]
+        c = asarray(tet.coords).mean(axis=1).reshape(3, 1)
+        # `('polynomial', 3)` is the least-norm cubic rather than the data's
+        # own --- twenty coefficients against sixteen conditions --- so it does
+        # not reproduce a quadratic, and is not asked to. The Bezier fit's
+        # construction settles the cubic's freedom in a way that does.
+        for (method, order) in (('polynomial', 2), ('bezier', 2),
+                                ('bezier', 3)):
+            with self.subTest(method=method, order=order):
+                if True:
+                    p = tet.withprop('q', tet.coords[0] ** 2,
+                                     gradient=gradient,
+                                     interp=(method, order))
+                    got = asarray(p.propgrad('q', at=c)).ravel()
+                    self.assertTrue(allclose(got, [2 * c[0, 0], 0, 0],
+                                             atol=1e-12))
+
+    def test_a_triangle_s_quadratic_gradient_is_exact(self):
+        tri = TriMesh(array([[0., 1.3, 0.2], [0., 0.5, 1.1], [0., 0., 0.]]),
+                      TriTopology([[0], [1], [2]]))
+        gradient = np.zeros((3, 3))
+        gradient[0] = 2 * tri.coords[0]
+        p = tri.withprop('q', tri.coords[0] ** 2, gradient=gradient,
+                         interp=('bezier', 2))
+        c = asarray(tri.coords).mean(axis=1).reshape(3, 1)
+        self.assertTrue(allclose(asarray(p.propgrad('q', at=c)).ravel(),
+                                 [2 * c[0, 0], 0, 0], atol=1e-12))
+
+    def test_a_nearest_field_has_no_gradient(self):
+        # A piecewise-constant field is flat within its regions, so its
+        # gradient is zero wherever it is defined at all.
+        tet = self._tet()
+        near = tet.withprop('n', tet.coords[0], interp=0)
+        c = asarray(tet.coords).mean(axis=1).reshape(3, 1)
+        self.assertTrue(allclose(asarray(near.propgrad('n', at=c)), 0.0))
+
+    def test_the_gradient_has_a_channel_axis_and_one_per_position(self):
+        tet = self._tet()
+        both = tet.withprop('v', array([tet.coords[0], tet.coords[1]]),
+                            interp=('polynomial', 1))
+        got = asarray(both.propgrad('v', at=tet.coords))
+        self.assertEqual(got.shape, (2, 3, 4))
+
+    def test_the_fits_without_a_derivative_say_so(self):
+        # `clough-tocher` is a triangle's scheme, and its patch is built piece by
+        # piece rather than as one polynomial, so its derivative is its own work.
+        tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                      TriTopology([[0], [1], [2]]))
+        p = tri.withprop('c', tri.coords[0], interp=('clough-tocher', 3))
+        with self.assertRaises(NotImplementedError):
+            p.propgrad('c')
+
+    def test_a_grid_has_no_element_wise_derivative(self):
+        from euclib.types import Grid, GridTopology
+        g = Grid(eye(4), GridTopology((3, 3, 3)))
+        g = g.withprop('v', np.zeros(g.property_shape))
+        with self.assertRaises(NotImplementedError):
+            g.propgrad('v')
+
