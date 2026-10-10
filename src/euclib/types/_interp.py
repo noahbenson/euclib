@@ -74,6 +74,12 @@ GRID_TOLERANCE = 1e-9
 #: fit can rely on.
 _RANK_TOLERANCE = 1e-9
 
+#: The interpolation methods whose derivative `interpolate_gradient` reports.
+#: The others are recognized and interpolated, but their fits have no derivative
+#: written yet, so asking one for a gradient says so rather than failing
+#: somewhere deeper.
+DIFFERENTIABLE = ('polynomial',)
+
 #: How many coordinates the gradient estimate advances together in one block.
 #: A block gives a stack of designs of shape ``(B, M, W)``, which is what the
 #: estimate's memory is spent on: at three thousand coordinates, a dozen nodes
@@ -518,6 +524,10 @@ def _gradient_simplex(geom, prop, loc, method, order, gradient, name, /):
     ends = asarray(geom.coords)[:, corners]         # (D, K+1, Q)
     jac = ends[:, :k, :] - ends[:, k:k + 1, :]      # (D, K, Q)
     if order >= 2:
+        if method not in DIFFERENTIABLE:
+            raise NotImplementedError(
+                f"the gradient of a {method!r} fit is not implemented yet;"
+                f" {' and '.join(map(repr, DIFFERENTIABLE))} is")
         fit = _element_fit(geom, method)
         fitted = _fitted_gradient(geom, prop, order, gradient, name)
         du = fit(geom, loc, values, corners, fitted, order,
