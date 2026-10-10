@@ -275,6 +275,60 @@ def _stack_coord_count(stack, elevations, /):
     return total // int(asarray(elevations).size)
 
 
+def _fitted_gradient(geom, prop, order, gradient, name, /):
+    '''The gradient a fit above linear should use, or ``None`` for none.
+
+    The fits above linear need derivative data: an element's values alone do not
+    determine a quadratic or a cubic. A caller's gradient overrides the
+    property's, and a property that carries none has one estimated from the
+    values around the geometry.
+
+    Parameters
+    ----------
+    geom : Geometry
+        The geometry the property belongs to.
+    prop : Property
+        The property being read.
+    order : int
+        The order of the interpolation being asked for.
+    gradient : array-like, None, or Ellipsis
+        A caller's gradient. ``Ellipsis``, the default, means none was given.
+    name : hashable or None
+        The property's name, which is what tells whether a prism's property is
+        read through its stack of tetrahedra.
+
+    Returns
+    -------
+    gradient : array-like or None
+        The gradient to fit through, handed back rather than converted --- like
+        the values, it may be a tensor, and the fits are written to take one.
+    '''
+    # A grid has no `order` and needs no gradient: every method it supports is a
+    # generalised *value*, so the estimate is not merely unused but meaningless
+    # there.
+    if order < 2 or getattr(geom, 'order', None) not in (1, 2, 3):
+        return None
+    if _reads_through_a_stack(geom, name):
+        # The stack of tetrahedra is what answers, and it estimates its own
+        # gradient from the values on its own vertices. One estimated on the
+        # prism's surfaces would be the derivative of a different function, and
+        # one the property carries is shaped for the prism's coordinates rather
+        # than the stack's --- so neither is used, and a caller who supplied one
+        # is told rather than quietly overruled.
+        if gradient is not UNSET and gradient is not None:
+            raise ValueError(
+                f"the gradient of {name!r} was supplied, but this prism's"
+                f" properties are read through the stack of their elevations,"
+                f" which estimates a gradient of its own; the supplied one is"
+                f" shaped for the prism's coordinates and cannot be used")
+        return None
+    if gradient is not UNSET and gradient is not None:
+        return gradient
+    if prop.gradient is not None:
+        return prop.gradient
+    return estimate_gradient(geom, prop, order)
+
+
 def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
                 mask=UNSET, border=UNSET, gradient=UNSET, hessian=UNSET,
                 name=None):
@@ -357,35 +411,7 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     # not determine a quadratic or a cubic. A caller's gradient overrides the
     # property's, and a property that carries none has one estimated from the
     # values around the geometry.
-    fitted = None
-    # A grid has no `order` and needs no gradient: every method it supports is
-    # a generalised *value*, so the estimate is not merely unused but
-    # meaningless there.
-    if order >= 2 and getattr(geom, 'order', None) in (1, 2, 3):
-        # Handed back rather than converted, like the values: a caller's
-        # gradient, or a property's own, may be a tensor, and the fits are
-        # written to take one.
-        if _reads_through_a_stack(geom, name):
-            # The stack of tetrahedra is what answers, and it estimates its own
-            # gradient from the values on its own vertices. One estimated on the
-            # prism's surfaces would be the derivative of a different function,
-            # and one the property carries is shaped for the prism's coordinates
-            # rather than the stack's --- so neither is used, and a caller who
-            # supplied one is told rather than quietly overruled.
-            if gradient is not UNSET and gradient is not None:
-                raise ValueError(
-                    f"the gradient of {name!r} was supplied, but this prism's"
-                    f" properties are read through the stack of their"
-                    f" elevations, which estimates a gradient of its own; the"
-                    f" supplied one is shaped for the prism's coordinates and"
-                    f" cannot be used")
-            fitted = None
-        elif gradient is not UNSET and gradient is not None:
-            fitted = gradient
-        elif prop.gradient is not None:
-            fitted = prop.gradient
-        else:
-            fitted = estimate_gradient(geom, prop, order)
+    fitted = _fitted_gradient(geom, prop, order, gradient, name)
     (loc, outside) = to_loc(geom, at)
     if isinstance(geom, Grid):
         (res, drawn) = _interp_grid(geom, prop, loc, method, order, border)
@@ -410,6 +436,103 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
     if missed is not None and missed.any():
         res = _substitute_null(res, missed, null)
     return res
+
+
+def interpolate_gradient(geom, prop, at, /, interp=UNSET, gradient=UNSET,
+                         name=None):
+    '''Reads the gradient of a property's interpolated field at positions.
+
+    The gradient is of the same field `interpolate` returns: the derivative of
+    whatever fit the property's interpolation asks for, in the geometry's own
+    coordinates. Below the linear order the field is piecewise constant --- a
+    point cloud's, or one read with ``'nearest'`` --- so its gradient is zero
+    between the regions where it steps.
+
+    Only a simplex geometry is answered. A grid's interpolation is a separable
+    kernel rather than a fit on an element, and a prism's property is read
+    through its stack of tetrahedra, so neither has the element-wise derivative
+    this reports.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry the property belongs to.
+    prop : Property
+        The property to read.
+    at : object
+        Local coordinates, or a ``(D, Q)`` matrix of global positions.
+    interp : str, int, tuple, None, or Ellipsis, optional
+        The interpolation, overriding the property's own.
+    gradient : array-like, None, or Ellipsis, optional
+        The gradient the fit should use, overriding any the property carries.
+    name : hashable or None, optional
+        The property's name, which only a prism has any use for.
+
+    Returns
+    -------
+    gradient : numpy.ndarray
+        The gradient, shaped ``(C..., D, Q)``: the property's channel
+        dimensions, the dimension of the space, and one gradient per position.
+
+    Raises
+    ------
+    NotImplementedError
+        If the geometry has no element-wise derivative, or if the interpolation
+        is recognized but not yet implemented.
+    '''
+    if not isinstance(geom, SimplexGeometry):
+        raise NotImplementedError(
+            f"a {type(geom).__name__} has no element-wise derivative: its"
+            f" interpolation is not a fit on an element, so there is no"
+            f" polynomial to differentiate")
+    (method, order) = prop.interp if interp is UNSET else normalize_interp(
+        interp, prop.vartype)
+    if geom.order == 0:
+        (method, order) = ('nearest', 0)
+    supported = supported_interp(geom.topo)
+    if (method, order) not in supported:
+        raise NotImplementedError(
+            f"the interpolation ({method!r}, {order}) is not implemented for"
+            f" this geometry; it supports {' and '.join(map(str, supported))}")
+    (loc, _outside) = to_loc(geom, at)
+    return _gradient_simplex(geom, prop, loc, method, order, gradient, name)
+
+
+def _gradient_simplex(geom, prop, loc, method, order, gradient, name, /):
+    '''The gradient of a simplex geometry's interpolated field.
+
+    Returns
+    -------
+    gradient : numpy.ndarray
+        Shaped ``(C..., D, Q)``.
+    '''
+    index = asarray(loc.index)
+    corners = geom.topo.indices[:, index]           # (K+1, Q)
+    values = prop.value[(Ellipsis, corners)]        # (C..., K+1, Q)
+    q = index.shape[0]
+    k = corners.shape[0] - 1
+    if order == 0:
+        # A piecewise-constant field steps between its regions and is flat
+        # within them, so its gradient is zero wherever it is defined at all.
+        return zeros(values.shape[:-2] + (geom.dim, q))
+    ends = asarray(geom.coords)[:, corners]         # (D, K+1, Q)
+    jac = ends[:, :k, :] - ends[:, k:k + 1, :]      # (D, K, Q)
+    if order >= 2:
+        fit = _element_fit(geom, method)
+        fitted = _fitted_gradient(geom, prop, order, gradient, name)
+        du = fit(geom, loc, values, corners, fitted, order,
+                 whole=prop.value, derivative=True)     # (K, C..., Q)
+        # grad_x = J^+T grad_u, the pseudo-inverse per position: an element may
+        # span fewer directions than the space it sits in, and a gradient across
+        # that space has no component the field could have meant.
+        jp = linalg.pinv(jac.transpose(2, 0, 1))        # (Q, K, D)
+        return im.einsum('qkd,k...q->...dq', jp, du)
+    # A linear field is its corners' values at their barycentric weights, so its
+    # local gradient is the corner differences --- and the weights are affine in
+    # the position, so one pseudo-inverse carries that into the global axes.
+    du = values[..., :k, :] - values[..., k:k + 1, :]   # (C..., K, Q)
+    jp = linalg.pinv(jac.transpose(2, 0, 1))            # (Q, K, D)
+    return im.einsum('qkd,...kq->...dq', jp, du)
 
 
 def _reads_through_a_stack(geom, name, /):
@@ -1132,7 +1255,7 @@ def _local_design(powers, count, /):
 
 
 def polynomial_fit(geom, loc, values, corners, gradient, order, /, *,
-                   whole=None):
+                   whole=None, derivative=False):
     '''Fits a polynomial of the given order through elements' data by least
     squares, in the monomial basis.
 
@@ -1265,6 +1388,24 @@ def polynomial_fit(geom, loc, values, corners, gradient, order, /, *,
     for axis in range(k):
         basis = im.multiply(basis, im.pow(
             weight[axis][None, :], exponents[:, axis][:, None]))
+    if derivative:
+        # The derivative of each monomial in the element's own coordinates: the
+        # same product with one exponent lowered, and zero along an axis the
+        # monomial does not use. The lowered exponent is clamped at zero so that
+        # no power is ever taken negative --- the multiplication by the exponent
+        # that follows zeroes those terms anyway.
+        out = []
+        for axis in range(k):
+            dbasis = ones((len(powers), weight.shape[1]))
+            for i in range(k):
+                e = exponents[:, i]
+                if i == axis:
+                    e = (e - 1).clip(min=0)
+                dbasis = im.multiply(dbasis, im.pow(
+                    weight[i][None, :], e[:, None]))
+            dbasis = im.multiply(dbasis, exponents[:, axis][:, None])
+            out.append(im.einsum('wq,wcq->cq', dbasis, chosen))
+        return im.stack(out)
     res = im.einsum('wq,wcq->cq', basis, chosen)
     return im.mag(im.reshape(res, channels + (weight.shape[1],)))
 

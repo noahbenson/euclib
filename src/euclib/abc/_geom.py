@@ -809,6 +809,46 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         return interpolate(self, self._prop_for(pname, None), at,
                            name=pname, **kw)
 
+    def propgrad(self, property, /, at=UNSET, **kw):
+        '''Extracts the gradient of a property's interpolated field.
+
+        The gradient is of the same field ``prop`` returns: the derivative of
+        whatever fit the property's interpolation asks for, in the geometry's
+        own coordinates. Below the linear order the field is piecewise constant
+        --- a point cloud's, or one read with ``'nearest'`` --- so its gradient
+        is zero between the regions where it steps.
+
+        Only coordinate properties are interpolated, as for ``prop``, and only a
+        simplex geometry has an element-wise derivative to report: a grid's
+        interpolation is a separable kernel and a prism's property is read
+        through its stack of tetrahedra, so neither has one.
+
+        Parameters
+        ----------
+        property : hashable
+            The property's name.
+        at : Ellipsis, array-like, or None, optional
+            Where to read the gradient. The default, ``Ellipsis``, reads it at
+            the geometry's own coordinates; a matrix of global positions, or
+            local coordinates supplied as a ``Loc`` or a mapping, reads it
+            there.
+        **kw
+            Passed to the interpolation, as for ``prop``.
+
+        Returns
+        -------
+        numpy.ndarray
+            The gradient, shaped ``(C..., D, Q)``: the property's channel
+            dimensions, the dimension of the space, and one gradient per
+            position.
+        '''
+        from ..types._interp import interpolate_gradient
+        (order, pname) = split_property_name(property)
+        prop = self._prop_for(pname, order)
+        if at is UNSET or at is None:
+            at = self.coords
+        return interpolate_gradient(self, prop, at, name=pname, **kw)
+
     # Updating ##############################################################
 
     def _prop_container(self, order, /):
