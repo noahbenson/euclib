@@ -545,6 +545,94 @@ def _gradient_simplex(geom, prop, loc, method, order, gradient, name, /):
     return im.einsum('qkd,...kq->...dq', jp, du)
 
 
+def interpolate_hessian(geom, prop, at, /, interp=UNSET, gradient=UNSET,
+                        name=None):
+    '''Reads the hessian of a property's interpolated field at positions.
+
+    The hessian is of the same field `interpolate` returns, and is zero below
+    the quadratic order: a linear field's second derivative vanishes and a
+    piecewise-constant one has none at all. Only a simplex geometry is answered,
+    for the reason `interpolate_gradient` gives.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry the property belongs to.
+    prop : Property
+        The property to read.
+    at : object
+        Local coordinates, or a ``(D, Q)`` matrix of global positions.
+    interp : str, int, tuple, None, or Ellipsis, optional
+        The interpolation, overriding the property's own.
+    gradient : array-like, None, or Ellipsis, optional
+        The gradient the fit should use, overriding any the property carries.
+    name : hashable or None, optional
+        The property's name, which only a prism has any use for.
+
+    Returns
+    -------
+    hessian : numpy.ndarray
+        Shaped ``(C..., D, D, Q)``: the property's channel dimensions, the two
+        derivative axes, and one hessian per position.
+    '''
+    if not isinstance(geom, SimplexGeometry):
+        raise NotImplementedError(
+            f"a {type(geom).__name__} has no element-wise derivative: its"
+            f" interpolation is not a fit on an element, so there is no"
+            f" polynomial to differentiate")
+    (method, order) = prop.interp if interp is UNSET else normalize_interp(
+        interp, prop.vartype)
+    if geom.order == 0:
+        (method, order) = ('nearest', 0)
+    supported = supported_interp(geom.topo)
+    if (method, order) not in supported:
+        raise NotImplementedError(
+            f"the interpolation ({method!r}, {order}) is not implemented for"
+            f" this geometry; it supports {' and '.join(map(str, supported))}")
+    (loc, _outside) = to_loc(geom, at)
+    return _hessian_simplex(geom, prop, loc, method, order, gradient, name)
+
+
+def _hessian_simplex(geom, prop, loc, method, order, gradient, name, /):
+    '''The hessian of a simplex geometry's interpolated field.'''
+    index = asarray(loc.index)
+    corners = geom.topo.indices[:, index]           # (K+1, Q)
+    values = prop.value[(Ellipsis, corners)]        # (C..., K+1, Q)
+    q = index.shape[0]
+    k = corners.shape[0] - 1
+    dim = geom.dim
+    if order < 2:
+        # A linear field has no second derivative and a piecewise-constant one
+        # has no derivative at all.
+        return zeros(values.shape[:-2] + (dim, dim, q))
+    if method not in DIFFERENTIABLE:
+        raise NotImplementedError(
+            f"the hessian of a {method!r} fit is not implemented yet;"
+            f" {' and '.join(map(repr, DIFFERENTIABLE))} is")
+    fit = _element_fit(geom, method)
+    fitted = _fitted_gradient(geom, prop, order, gradient, name)
+    hu = fit(geom, loc, values, corners, fitted, order,
+             whole=prop.value, derivative=2)            # (K, K, C..., Q)
+    ends = asarray(geom.coords)[:, corners]             # (D, K+1, Q)
+    jac = ends[:, :k, :] - ends[:, k:k + 1, :]          # (D, K, Q)
+    jp = linalg.pinv(jac.transpose(2, 0, 1))            # (Q, K, D)
+    # H_x = J^+T H_u J^+, with no second-derivative term of its own because the
+    # map from a position to a local coordinate is affine. The channels are
+    # flattened so that the contraction is written with explicit labels --- an
+    # einsum takes the ellipsis in one place, and this needs three operands.
+    # The channels come from the property's values rather than from the fit,
+    # because the two kinds of fit disagree about whether a channel axis is
+    # present at all when there is only one: the monomial fit keeps it and the
+    # Bezier fits drop it. The values are the authority.
+    channels = values.shape[:-2]
+    flat = im.reshape(hu, (k, k, -1, q))            # (K, K, C, Q)
+    # Two contractions rather than one, so that the channel dimensions lead the
+    # result as they lead a value or a gradient.
+    step = im.einsum('qai,abnq->nibq', jp, flat)
+    out = im.einsum('nibq,qbj->nijq', step, jp)
+    return im.reshape(out, channels + (dim, dim, q))
+
+
 def _reads_through_a_stack(geom, name, /):
     '''Whether a property of this geometry is read through a layer stack.
 
@@ -787,6 +875,11 @@ def segment_fit(geom, loc, values, corners, gradient, order, /, *,
     (v0, v1) = (values[..., 0, :], values[..., 1, :])
     (a, b) = (slopes[..., 0, :], slopes[..., 1, :])
     if order == 2:
+        if derivative == 2:
+            # The second derivative with respect to the parameter; the
+            # parameter's reversal contributes (-1)^2, which is 1.
+            return im.stack([im.stack([im.multiply(
+                -1.0, im.subtract(a, b))])])
         if derivative:
             # The derivative with respect to the parameter, and the parameter
             # runs the other way: the local coordinate is the weight at corner 1,
@@ -800,6 +893,15 @@ def segment_fit(geom, loc, values, corners, gradient, order, /, *,
                 im.divide(im.subtract(a, b), 2.0),
                 im.multiply(s, im.subtract(1.0, s)))))
     (s2, s3) = (im.multiply(s, s), im.multiply(im.multiply(s, s), s))
+    if derivative == 2:
+        # The Hermite basis twice differentiated: 12s - 6, 6s - 4, -12s + 6,
+        # and 6s - 2.
+        return im.stack([im.stack([im.add(im.add(
+            im.multiply(im.subtract(im.multiply(12.0, s), 6.0), v0),
+            im.multiply(im.subtract(im.multiply(6.0, s), 4.0), a)),
+            im.add(im.multiply(im.add(im.multiply(-12.0, s), 6.0), v1),
+                   im.multiply(im.subtract(im.multiply(6.0, s), 2.0),
+                               b)))])])
     if derivative:
         # The Hermite basis's derivatives, which are the same expressions
         # differentiated in the parameter.
@@ -1072,8 +1174,13 @@ def triangle_fit(geom, loc, values, corners, gradient, order, /, *,
                      ).reshape(exponents.shape).prod(axis=1)
     if derivative:
         d = _bernstein_gradient(full, exponents, counts, order,
-                                exponents.shape[1] - 1)
-        return im.einsum('kwq,w...q->k...q', d, control)
+                                exponents.shape[1] - 1, derivative)
+        if derivative == 1:
+            return im.einsum('kwq,w...q->k...q', d, control)
+        # One leading axis at a time: the channel dimensions go where the
+        # ellipsis is, and an einsum takes only one label before it.
+        return im.stack([im.einsum('kwq,w...q->k...q', one, control)
+                         for one in d])
     basis = basis * (factorial(order) / counts)[:, None]
     return im.mag(im.einsum('wq,w...q->...q', basis, control))
 
@@ -1221,18 +1328,25 @@ def tetrahedron_fit(geom, loc, values, corners, gradient, order, /, *,
                      ).reshape(exponents.shape).prod(axis=1)
     if derivative:
         d = _bernstein_gradient(full, exponents, counts, order,
-                                exponents.shape[1] - 1)
-        return im.einsum('kwq,w...q->k...q', d, control)
+                                exponents.shape[1] - 1, derivative)
+        if derivative == 1:
+            return im.einsum('kwq,w...q->k...q', d, control)
+        # One leading axis at a time: the channel dimensions go where the
+        # ellipsis is, and an einsum takes only one label before it.
+        return im.stack([im.einsum('kwq,w...q->k...q', one, control)
+                         for one in d])
     basis = basis * (factorial(order) / counts)[:, None]
     return im.mag(im.einsum('wq,w...q->...q', basis, control))
 
 
-def _bernstein_gradient(full, exponents, counts, order, k, /):
+def _bernstein_gradient(full, exponents, counts, order, k, count=1, /):
     '''The derivatives of the Bernstein basis along an element's own axes.
 
     A local coordinate is the first ``K`` barycentric weights, the last being
     what they leave of the unit sum, so a derivative along one of them is the
-    difference of two barycentric derivatives: ``d/du_a = d/dL_a - d/dL_K``.
+    difference of two barycentric derivatives, ``d/du_a = d/dL_a - d/dL_K`` ---
+    and a second derivative is that difference applied twice, which is four
+    barycentric derivatives with alternating signs.
 
     Parameters
     ----------
@@ -1246,30 +1360,54 @@ def _bernstein_gradient(full, exponents, counts, order, k, /):
         The fit's order, which is the total degree of every control point.
     k : int
         The number of the element's own axes.
+    count : int, optional
+        ``1`` for the gradient, ``2`` for the hessian.
 
     Returns
     -------
     gradient : numpy.ndarray
-        A ``(K, W, Q)`` array: the derivative of each control point's basis
-        along each of the element's own axes, at each position.
+        A ``(K, W, Q)`` array for the gradient --- the derivative of each
+        control point's basis along each of the element's own axes, at each
+        position --- or a ``(K, K, W, Q)`` array for the hessian.
     '''
     scale = (factorial(order) / counts)[:, None]
-    out = []
-    for axis in range(k):
-        total = None
-        for (which, sign) in ((axis, 1.0), (k, -1.0)):
-            d = ones((len(exponents), full.shape[1]))
-            for i in range(exponents.shape[1]):
-                e = exponents[:, i]
-                if i == which:
+
+    def bary(axes, /):
+        '''The basis differentiated along a multiset of barycentric axes.'''
+        d = ones((len(exponents), full.shape[1]))
+        for i in range(exponents.shape[1]):
+            e = exponents[:, i]
+            for axis in axes:
+                if i == axis:
                     # Clamped before the power so that none is taken negative;
                     # the multiplication by the exponent below zeroes the terms
-                    # whose exponent was zero anyway.
+                    # whose exponent was too small anyway.
                     e = (e - 1).clip(min=0)
-                d = im.multiply(d, im.pow(full[i][None, :], e[:, None]))
-            d = im.multiply(d, exponents[:, which][:, None] * sign)
-            total = d if total is None else im.add(total, d)
-        out.append(im.multiply(total, scale))
+            d = im.multiply(d, im.pow(full[i][None, :], e[:, None]))
+        # The exponent's own factor, once per axis named: e, and e - 1 more
+        # when it is named twice, which is what makes the diagonal the second
+        # derivative rather than the square of the first.
+        for axis in sorted(set(axes)):
+            e = exponents[:, axis]
+            d = im.multiply(d, e[:, None])
+            if axes.count(axis) == 2:
+                d = im.multiply(d, (e - 1).clip(min=0)[:, None])
+        return im.multiply(d, scale)
+
+    if count == 1:
+        return im.stack([im.add(bary((axis,)),
+                                im.multiply(bary((k,)), -1.0))
+                         for axis in range(k)])
+    out = []
+    for a in range(k):
+        row = []
+        for b in range(k):
+            t = bary((a, b))
+            t = im.add(t, im.multiply(bary((a, k)), -1.0))
+            t = im.add(t, im.multiply(bary((k, b)), -1.0))
+            t = im.add(t, bary((k, k)))
+            row.append(t)
+        out.append(im.stack(row))
     return im.stack(out)
 
 
@@ -1478,18 +1616,35 @@ def polynomial_fit(geom, loc, values, corners, gradient, order, /, *,
         # monomial does not use. The lowered exponent is clamped at zero so that
         # no power is ever taken negative --- the multiplication by the exponent
         # that follows zeroes those terms anyway.
-        out = []
-        for axis in range(k):
+        def once(axes):
             dbasis = ones((len(powers), weight.shape[1]))
             for i in range(k):
                 e = exponents[:, i]
-                if i == axis:
-                    e = (e - 1).clip(min=0)
+                for axis in axes:
+                    if i == axis:
+                        e = (e - 1).clip(min=0)
                 dbasis = im.multiply(dbasis, im.pow(
                     weight[i][None, :], e[:, None]))
-            dbasis = im.multiply(dbasis, exponents[:, axis][:, None])
-            out.append(im.einsum('wq,wcq->cq', dbasis, chosen))
-        return im.stack(out)
+            # The exponent's own factor, once per axis *named* rather than once
+            # per occurrence: `e` for a first derivative, and `e - 1` more when
+            # the axis is named twice, which is what makes the diagonal the
+            # second derivative rather than the square of the first.
+            for axis in sorted(set(axes)):
+                e = exponents[:, axis]
+                dbasis = im.multiply(dbasis, e[:, None])
+                if axes.count(axis) == 2:
+                    # ...and one factor of e - 1 more, which is the difference
+                    # between the second derivative and the square of the
+                    # first.
+                    dbasis = im.multiply(
+                        dbasis, (e - 1).clip(min=0)[:, None])
+            return im.einsum('wq,wcq->cq', dbasis, chosen)
+        if derivative == 1:
+            return im.stack([once((axis,)) for axis in range(k)])
+        # The hessian, one (K, K) block per position: the same product with two
+        # exponents lowered, the two being the same axis on the diagonal.
+        return im.stack([im.stack([once((a, b)) for b in range(k)])
+                         for a in range(k)])
     res = im.einsum('wq,wcq->cq', basis, chosen)
     return im.mag(im.reshape(res, channels + (weight.shape[1],)))
 

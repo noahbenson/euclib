@@ -2439,3 +2439,43 @@ class TestThePropertyGradient(TestCase):
         with self.assertRaises(NotImplementedError):
             g.propgrad('v')
 
+    def test_a_quadratic_field_has_the_hessian_of_that_quadratic(self):
+        # f = x^2, whose hessian is diag(2, 0, 0) everywhere.
+        tet = self._tet()
+        gradient = np.zeros((3, 4))
+        gradient[0] = 2 * tet.coords[0]
+        c = asarray(tet.coords).mean(axis=1).reshape(3, 1)
+        want = np.diag([2.0, 0.0, 0.0])
+        for (method, order) in (('polynomial', 2), ('bezier', 2),
+                                ('bezier', 3)):
+            with self.subTest(method=method, order=order):
+                p = tet.withprop('q', tet.coords[0] ** 2,
+                                 gradient=gradient, interp=(method, order))
+                got = asarray(p.prophess('q', at=c))
+                self.assertEqual(got.shape, (3, 3, 1))
+                self.assertTrue(allclose(got[..., 0], want, atol=1e-12))
+
+    def test_a_segment_s_quadratic_hessian_is_exact(self):
+        path = SegPath(array([[0., 2.], [0., 0.]]), SegTopology([[0], [1]]))
+        gradient = np.zeros((2, 2))
+        gradient[0] = 2 * path.coords[0]
+        at = array([[0.5], [0.0]])
+        for order in (2, 3):
+            with self.subTest(order=order):
+                p = path.withprop('q', path.coords[0] ** 2,
+                                  gradient=gradient,
+                                  interp=('bezier', order))
+                self.assertTrue(allclose(
+                    asarray(p.prophess('q', at=at)).ravel(), [2, 0, 0, 0],
+                    atol=1e-12))
+
+    def test_a_field_below_the_quadratic_order_has_no_hessian(self):
+        # A linear field's second derivative vanishes and a piecewise-constant
+        # one has no derivative at all, so both report zero.
+        tet = self._tet()
+        c = asarray(tet.coords).mean(axis=1).reshape(3, 1)
+        for interp in (('polynomial', 1), ('nearest', 0)):
+            with self.subTest(interp=interp):
+                p = tet.withprop('f', tet.coords[0], interp=interp)
+                self.assertTrue(allclose(asarray(p.prophess('f', at=c)), 0.0))
+

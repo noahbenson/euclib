@@ -849,6 +849,36 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             at = self.coords
         return interpolate_gradient(self, prop, at, name=pname, **kw)
 
+    def prophess(self, property, /, at=UNSET, **kw):
+        '''Extracts the hessian of a property's interpolated field.
+
+        The hessian is of the same field ``prop`` returns, and is zero below the
+        quadratic order: a linear field's second derivative vanishes and a
+        piecewise-constant one has no derivative at all. It is the derivative of
+        ``propgrad``, on the same terms.
+
+        Parameters
+        ----------
+        property : hashable
+            The property's name.
+        at : Ellipsis, array-like, or None, optional
+            Where to read it, as for ``propgrad``.
+        **kw
+            Passed to the interpolation, as for ``prop``.
+
+        Returns
+        -------
+        numpy.ndarray
+            The hessian, shaped ``(C..., D, D, Q)``: the property's channel
+            dimensions, the two derivative axes, and one hessian per position.
+        '''
+        from ..types._interp import interpolate_hessian
+        (order, pname) = split_property_name(property)
+        prop = self._prop_for(pname, order)
+        if at is UNSET or at is None:
+            at = self.coords
+        return interpolate_hessian(self, prop, at, name=pname, **kw)
+
     # Updating ##############################################################
 
     def _prop_container(self, order, /):
