@@ -46,6 +46,47 @@ from ..utils._pycore import polygon_fan
 DEFAULT_TOLERANCE = 1e-9
 
 
+def _carried_derivative(mesh, name, coords, order, which, /):
+    '''A carried property's gradient or hessian at the pieces' coordinates.
+
+    A piece carries its corners' *values* and no derivative data, so a fit of
+    order 2 or 3 built on the piece alone would be a different function from the
+    source's --- and integrating it would not be integrating the property's
+    interpolation. Carrying the derivative too makes each piece self-contained:
+    the fit it builds is the source's own polynomial, restricted.
+
+    Nothing is computed for an order that has no use for it. A fit below the
+    quadratic order needs no gradient and one below the cubic no hessian, so
+    those answer ``None`` and the property carries nothing --- which is what
+    keeps the common linear case from carrying seven times its value data.
+
+    Parameters
+    ----------
+    mesh : SimplexGeometry
+        The mesh the property belongs to.
+    name : hashable
+        The property's name.
+    coords : array-like
+        The coordinates to read it at, which are the pieces'.
+    order : int
+        The interpolation order that would need it: 2 for the gradient, 3 for
+        the hessian.
+    which : int
+        ``1`` for the gradient, ``2`` for the hessian.
+
+    Returns
+    -------
+    derivative : numpy.ndarray or None
+        The derivative, or ``None`` if this property's interpolation has no use
+        for one.
+    '''
+    prop = mesh.propinfo(name)
+    if prop.interp[1] < order:
+        return None
+    read = mesh.propgrad if which == 1 else mesh.prophess
+    return read(name, at=coords)
+
+
 def tolerance_of(geom, /):
     '''Returns a tolerance suited to a geometry's size.
 
@@ -521,6 +562,8 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
             interp = UNSET
         built = built.withprop(
             name, lazy(_carried_property, mesh, name, built.coords),
+            gradient=lazy(_carried_derivative, mesh, name, built.coords, 2, 1),
+            hessian=lazy(_carried_derivative, mesh, name, built.coords, 3, 2),
             **({} if interp is UNSET else {'interp': interp}))
     return (built, concatenate(voxel_of_piece, axis=1))
 
@@ -609,13 +652,26 @@ def integrate(mesh, grid, values, /, emptyconst=0):
             # The fit is a polynomial of the method's order in the element's
             # barycentric coordinates, so a rule exact to that degree integrates
             # it exactly. The rule's points are carried through the piece's own
-            # corners into global coordinates, and the *source* mesh's field is
-            # read there: it is the source's polynomial being integrated, not a
-            # re-fit on the sub-simplex, which would be a different function.
+            # corners into global coordinates and the *piece's* field is read
+            # there --- which is the source's polynomial, because
+            # `voxel_intersections` carries the values and, above the linear
+            # order, the derivatives a fit of that order needs. Reading the
+            # source instead would give the same answer and cost a second
+            # spatial query; reading a piece that carried only values would give
+            # a different one, a re-fit on the sub-simplex.
             (lam, wts) = quadrature(pieces.order, order)
             corners = asarray(pieces.coords)[:, pieces.topo.indices]  # (D,K,T)
             pts = einsum('qk,dkt->dqt', lam, corners)
             (dim, points, count) = pts.shape
+            # The *source* mesh's field, not the piece's. Above the linear
+            # order a fit on the piece alone is a different function from the
+            # source's: a piece carries its corners' values and --- since
+            # `voxel_intersections` began carrying them --- their derivatives,
+            # but a cubic is still under-determined by those sixteen conditions
+            # against its twenty coefficients, and the hessian that would pin it
+            # is not yet something a fit reads. Measured: reading the pieces
+            # integrates x^3 over the unit tetrahedron to 0.00720 where the
+            # answer is 0.00833.
             held = asarray(
                 mesh.prop(values, at=pts.reshape(dim, points * count)))
             held = held.reshape(held.shape[:-1] + (points, count))
@@ -805,6 +861,8 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
             interp = UNSET
         built = built.withprop(
             name, lazy(_carried_property, mesh, name, built.coords),
+            gradient=lazy(_carried_derivative, mesh, name, built.coords, 2, 1),
+            hessian=lazy(_carried_derivative, mesh, name, built.coords, 3, 2),
             **({} if interp is UNSET else {'interp': interp}))
     return (built, concatenate(voxel_of_piece, axis=1))
 

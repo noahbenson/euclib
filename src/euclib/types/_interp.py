@@ -523,6 +523,11 @@ def _gradient_simplex(geom, prop, loc, method, order, gradient, name, /):
         return zeros(values.shape[:-2] + (geom.dim, q))
     ends = asarray(geom.coords)[:, corners]         # (D, K+1, Q)
     jac = ends[:, :k, :] - ends[:, k:k + 1, :]      # (D, K, Q)
+    # The channels come from the property's values rather than from the fit,
+    # because the two kinds of fit disagree about whether a channel axis is
+    # present at all when there is only one: the monomial fit keeps it and the
+    # Bezier fits drop it. The values are the authority.
+    channels = values.shape[:-2]
     if order >= 2:
         if method not in DIFFERENTIABLE:
             raise NotImplementedError(
@@ -530,8 +535,10 @@ def _gradient_simplex(geom, prop, loc, method, order, gradient, name, /):
                 f" {' and '.join(map(repr, DIFFERENTIABLE))} is")
         fit = _element_fit(geom, method)
         fitted = _fitted_gradient(geom, prop, order, gradient, name)
-        du = fit(geom, loc, values, corners, fitted, order,
-                 whole=prop.value, derivative=True)     # (K, C..., Q)
+        du = im.reshape(
+            fit(geom, loc, values, corners, fitted, order,
+                whole=prop.value, derivative=True),
+            (k,) + channels + (q,))                    # (K, C..., Q)
         # grad_x = J^+T grad_u, the pseudo-inverse per position: an element may
         # span fewer directions than the space it sits in, and a gradient across
         # that space has no component the field could have meant.
@@ -542,7 +549,8 @@ def _gradient_simplex(geom, prop, loc, method, order, gradient, name, /):
     # the position, so one pseudo-inverse carries that into the global axes.
     du = values[..., :k, :] - values[..., k:k + 1, :]   # (C..., K, Q)
     jp = linalg.pinv(jac.transpose(2, 0, 1))            # (Q, K, D)
-    return im.einsum('qkd,...kq->...dq', jp, du)
+    return im.reshape(im.einsum('qkd,...kq->...dq', jp, du),
+                      channels + (geom.dim, q))
 
 
 def interpolate_hessian(geom, prop, at, /, interp=UNSET, gradient=UNSET,
