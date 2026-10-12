@@ -16,7 +16,7 @@ from numpy import allclose, array, asarray, diag, eye, sort, zeros
 from euclib.utils import (segments_triangles_intersect,
                           triangles_segments_intersect)
 from euclib.ops import (
-    voxel_surface_intersections,
+    voxel_segment_intersections, voxel_surface_intersections,
     contains, integrate, mesh_intersections, path_crossings,
     path_intersections, tolerance_of, voxel_intersections)
 from euclib.types import (
@@ -700,9 +700,40 @@ class TestIntegrate(TestCase):
         self.assertTrue(allclose(integrate(prism, grid, 1),
                                  integrate(prism.tetmesh, grid, 1)))
 
-    def test_a_mesh_that_is_neither_is_refused(self):
+    def test_a_path_s_pieces_are_its_own_length(self):
+        # Clipping a segment against the voxels it crosses divides it and does
+        # not change how long it is. The pieces overlap by the tolerance the
+        # clipping allows, so the total is a shade over rather than exactly
+        # equal --- which is true of the tetrahedral and triangle versions too.
+        for coords in (array([[0.0, 2.0], [0.0, 2.0], [0.0, 2.0]]),
+                       array([[0.0, 2.0], [0.0, 2.0], [0.5, 0.5]]),
+                       array([[0.0, 2.5], [0.0, 0.0], [0.0, 0.0]])):
+            with self.subTest(coords=coords.ravel().tolist()):
+                path = SegPath(coords, SegTopology([[0], [1]]))
+                (pieces, voxels) = voxel_segment_intersections(
+                    path, self._grid())
+                self.assertEqual(voxels.shape[1],
+                                 pieces.topo.simplex_count[1])
+                self.assertAlmostEqual(float(pieces.length.sum()),
+                                       float(path.length.sum()), places=6)
+
+    def test_a_path_integrates_along_its_length(self):
+        path = SegPath(array([[0.0, 2.3], [0.4, 1.7], [0.9, 0.2]]),
+                       SegTopology([[0], [1]]))
+        self.assertAlmostEqual(integrate(path, self._grid(), 1).sum(),
+                               float(path.length.sum()), places=6)
+        # ...and a linear field to the length times the mean along it.
+        z = path.withprop('z', path.coords[2], interp=('polynomial', 1))
+        want = float(path.length.sum()) * float(path.coords[2].mean())
+        self.assertAlmostEqual(integrate(z, self._grid(), 'z').sum(), want,
+                               places=6)
+
+    def test_a_geometry_that_is_none_of_the_three_is_refused(self):
+        # A point cloud has no extent to integrate over: its pieces would be
+        # points, and a point's measure is zero.
+        cloud = VertexSet(array([[0., 1.], [0., 0.]]), VertexTopology([[0, 1]]))
         with self.assertRaises(TypeError):
-            integrate(_path([0.0, 0.0], [1.0, 1.0]), self._grid(), 1)
+            integrate(cloud, self._grid(), 1)
 
     def test_a_grid_that_is_not_three_dimensional_is_refused(self):
         with self.assertRaises(ValueError):

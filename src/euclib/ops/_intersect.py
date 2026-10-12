@@ -617,15 +617,16 @@ def integrate(mesh, grid, values, /, emptyconst=0):
         If the grid is not three-dimensional.
     '''
     from ..types import PrismMesh as _PrismMesh
+    from ..types import SegPath as _SegPath
     from ..types import TetMesh as _TetMesh
     from ..types import TriMesh as _TriMesh
     if isinstance(mesh, _PrismMesh):
         # A prism's properties are read through its stack of tetrahedra --- the
         # prism has no simplex to fit --- so the stack is what is integrated.
         mesh = mesh.tetmesh
-    if not isinstance(mesh, (_TetMesh, _TriMesh)):
+    if not isinstance(mesh, (_TetMesh, _TriMesh, _SegPath)):
         raise TypeError(
-            f"expected a TetMesh, a TriMesh, or a PrismMesh; found"
+            f"expected a TetMesh, a TriMesh, a SegPath, or a PrismMesh; found"
             f" {type(mesh)}")
     if not isinstance(grid, Grid):
         raise TypeError(f"expected a Grid; found {type(grid)}")
@@ -640,17 +641,20 @@ def integrate(mesh, grid, values, /, emptyconst=0):
     if isinstance(mesh, _TetMesh):
         (pieces, voxels) = voxel_intersections(mesh, grid)
         measures = asarray(pieces.volume)
-    else:
+    elif isinstance(mesh, _TriMesh):
         (pieces, voxels) = voxel_surface_intersections(mesh, grid)
         measures = asarray(pieces.area)
+    else:
+        (pieces, voxels) = voxel_segment_intersections(mesh, grid)
+        measures = asarray(pieces.length)
     if emptyconst != 0 and not isinstance(mesh, _TetMesh):
         # The empty part of a voxel is a *volume*, and a surface has none to
         # leave empty: its pieces measure area, so filling the rest of a voxel
         # with a constant would be adding an area to a volume.
         raise ValueError(
-            f"emptyconst needs a mesh whose pieces fill the space they are in;"
-            f" a {type(mesh).__name__}'s measure is an area, so there is no"
-            f" empty part of a voxel for it to fill")
+            f"emptyconst needs a geometry whose pieces fill the space they are"
+            f" in; a {type(mesh).__name__}'s measure is a lower-dimensional"
+            f" extent, so there is no empty part of a voxel for it to fill")
     tets = measures.shape[0]
     if isinstance(values, str):
         prop = mesh.propinfo(values)
@@ -887,6 +891,152 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
     return (built, concatenate(voxel_of_piece, axis=1))
 
 
+def _segment_box_interval(a, d, voxel, tol, /):
+    '''The parameter interval over which a segment lies in a voxel's box.
+
+    The slab method: a box is three pairs of parallel planes, each cuts the
+    segment's parameter interval in two, and the three intervals meet where the
+    segment is in the box. A segment parallel to a slab is either in it for all
+    of the interval or for none of it, which the degenerate case says.
+
+    Parameters
+    ----------
+    a, d : numpy.ndarray
+        The segment's start, and the vector to its end, in the grid's index
+        space.
+    voxel : sequence of int
+        The voxel's index.
+    tol : float
+        How far outside the box a point may lie and still count.
+
+    Returns
+    -------
+    interval : tuple of float
+        ``(t0, t1)``, empty --- with ``t1 < t0`` --- when the segment misses.
+    '''
+    (t0, t1) = (0.0, 1.0)
+    for axis in range(3):
+        lo = voxel[axis] - 0.5 - tol
+        hi = voxel[axis] + 0.5 + tol
+        if d[axis] == 0.0:
+            if a[axis] < lo or a[axis] > hi:
+                return (1.0, 0.0)
+            continue
+        (u0, u1) = ((lo - a[axis]) / d[axis], (hi - a[axis]) / d[axis])
+        if u0 > u1:
+            (u0, u1) = (u1, u0)
+        t0 = max(t0, u0)
+        t1 = min(t1, u1)
+    return (t0, t1)
+
+
+def voxel_segment_intersections(path, grid, /, tolerance=None):
+    '''Decomposes a path into the pieces of it that lie within each voxel.
+
+    A path has no area and no volume, so this is not the same question the
+    tetrahedral and triangle versions ask: it clips each segment against each
+    voxel the segment reaches, and the pieces are the parts of the path inside
+    each. A property integrated over them is integrated along the path's length.
+
+    A voxel is the unit box of the grid's index space, as it is for the other
+    two, so a path is carried into that space, clipped there, and the pieces
+    carried back.
+
+    Parameters
+    ----------
+    path : SegPath
+        The path.
+    grid : Grid
+        A three-dimensional grid.
+    tolerance : float or None, optional
+        How far outside a voxel a point may lie and still count. The default,
+        ``None``, uses a small fraction of the path's size.
+
+    Returns
+    -------
+    pieces : SegPath
+        A path of the pieces, in no particular order. Every segment of it lies
+        entirely within one voxel.
+    voxels : numpy.ndarray
+        A ``(3, T)`` matrix of the grid cell indices each piece came from, one
+        column per segment of ``pieces``.
+
+    Raises
+    ------
+    TypeError
+        If either argument is not of the expected kind.
+    ValueError
+        If the grid is not three-dimensional.
+    '''
+    from ..types import SegPath as _SegPath
+    from ..types import SegTopology as _SegTopology
+    if not isinstance(path, SegPath):
+        raise TypeError(f"expected a SegPath; found {type(path)}")
+    if not isinstance(grid, Grid):
+        raise TypeError(f"expected a Grid; found {type(grid)}")
+    if len(grid.shape) != 3:
+        raise ValueError(
+            f"a voxel grid has three dimensions; this one has"
+            f" {len(grid.shape)}")
+    tol = tolerance_of(path) if tolerance is None else float(tolerance)
+    shape = tuple(grid.shape)
+    to_index = grid.affine_inverse
+    to_global = grid.affine
+    corners = path.coords[:, path.topo.indices]           # (3, 2, M)
+    (dim, per_seg, segments) = corners.shape
+    flat = to_index.apply(corners.reshape(dim, per_seg * segments))
+    index_space = flat.reshape(dim, per_seg, segments).transpose(2, 0, 1).copy()
+    # A voxel `v` owns `[v - 0.5, v + 0.5)`, as it does for a triangle --- a
+    # segment may lie exactly in a shared face, and a closed extent would count
+    # it in both voxels and so count its length twice.
+    reach_lo = (floor(index_space.min(axis=2) - 0.5) + 1).astype(int).clip(
+        0, None)
+    reach_hi = floor(index_space.max(axis=2) + 0.5).astype(int).clip(
+        None, [s - 1 for s in shape])
+    (starts, ends, cells) = ([], [], [])
+    for seg in range(segments):
+        (lo, hi) = (reach_lo[seg, :], reach_hi[seg, :])
+        if (hi < lo).any():
+            continue
+        a = index_space[seg, :, 0]
+        d = index_space[seg, :, 1] - a
+        for vx in range(lo[0], hi[0] + 1):
+            for vy in range(lo[1], hi[1] + 1):
+                for vz in range(lo[2], hi[2] + 1):
+                    (t0, t1) = _segment_box_interval(a, d, (vx, vy, vz), tol)
+                    if t1 - t0 <= 0.0:
+                        continue
+                    starts.append(a + t0 * d)
+                    ends.append(a + t1 * d)
+                    cells.append((vx, vy, vz))
+    if not starts:
+        empty = _SegPath(zeros((3, 0)),
+                         _SegTopology(zeros((2, 0), dtype=int), coord_count=0))
+        return (empty, zeros((3, 0), dtype=int))
+    # Each piece carries its own two coordinates: the pieces of one segment meet
+    # end to end, and sharing those coordinates would be the tidier mesh, but a
+    # path's pieces are not the mesh a caller goes on to read --- they are the
+    # pieces of one integral --- and the indexing to share them is the whole of
+    # the difference.
+    local = asarray(stack([starts, ends], axis=1))        # (T, 2, 3)
+    coords = to_global.apply(local.reshape(2 * len(starts), dim).T)
+    topo = _SegTopology(
+        asarray([[2 * i for i in range(len(starts))],
+                 [2 * i + 1 for i in range(len(starts))]]),
+        coord_count=2 * len(starts))
+    built = _SegPath(coords, topo)
+    for (name, prop) in path.properties.items():
+        try:
+            interp = prop.interp
+        except AttributeError:
+            interp = UNSET
+        built = built.withprop(
+            name, lazy(_carried_property, path, name, built.coords),
+            gradient=lazy(_carried_gradient, path, name, built.coords, 2),
+            **({} if interp is UNSET else {'interp': interp}))
+    return (built, asarray(cells, dtype=intp).T)
+
+
 def mesh_intersections(first, second, /, tolerance=None):
     '''Finds the segments along which two triangle meshes meet.
 
@@ -969,5 +1119,5 @@ def mesh_intersections(first, second, /, tolerance=None):
 # Exports ####################################################################
 
 __all__ = ('path_crossings', 'path_intersections', 'contains', 'tolerance_of',
-           'voxel_intersections', 'voxel_surface_intersections', 'integrate',
-           'mesh_intersections')
+           'voxel_intersections', 'voxel_surface_intersections',
+           'voxel_segment_intersections', 'integrate', 'mesh_intersections')
