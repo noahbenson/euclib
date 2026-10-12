@@ -616,9 +616,17 @@ def integrate(mesh, grid, values, /, emptyconst=0):
     ValueError
         If the grid is not three-dimensional.
     '''
+    from ..types import PrismMesh as _PrismMesh
     from ..types import TetMesh as _TetMesh
-    if not isinstance(mesh, _TetMesh):
-        raise TypeError(f"expected a TetMesh; found {type(mesh)}")
+    from ..types import TriMesh as _TriMesh
+    if isinstance(mesh, _PrismMesh):
+        # A prism's properties are read through its stack of tetrahedra --- the
+        # prism has no simplex to fit --- so the stack is what is integrated.
+        mesh = mesh.tetmesh
+    if not isinstance(mesh, (_TetMesh, _TriMesh)):
+        raise TypeError(
+            f"expected a TetMesh, a TriMesh, or a PrismMesh; found"
+            f" {type(mesh)}")
     if not isinstance(grid, Grid):
         raise TypeError(f"expected a Grid; found {type(grid)}")
     shape = tuple(grid.shape)
@@ -626,8 +634,23 @@ def integrate(mesh, grid, values, /, emptyconst=0):
         raise ValueError(
             f"a voxel grid has three dimensions; this one has {len(shape)}")
     from ..abc import QUALITATIVE
-    (pieces, voxels) = voxel_intersections(mesh, grid)
-    measures = asarray(pieces.volume)
+    # The measure of a piece is the extent the source has: a tetrahedron's
+    # volume, a triangle's area. Each is integrated over the voxels it falls in,
+    # so a surface's total is its area and not a volume.
+    if isinstance(mesh, _TetMesh):
+        (pieces, voxels) = voxel_intersections(mesh, grid)
+        measures = asarray(pieces.volume)
+    else:
+        (pieces, voxels) = voxel_surface_intersections(mesh, grid)
+        measures = asarray(pieces.area)
+    if emptyconst != 0 and not isinstance(mesh, _TetMesh):
+        # The empty part of a voxel is a *volume*, and a surface has none to
+        # leave empty: its pieces measure area, so filling the rest of a voxel
+        # with a constant would be adding an area to a volume.
+        raise ValueError(
+            f"emptyconst needs a mesh whose pieces fill the space they are in;"
+            f" a {type(mesh).__name__}'s measure is an area, so there is no"
+            f" empty part of a voxel for it to fill")
     tets = measures.shape[0]
     if isinstance(values, str):
         prop = mesh.propinfo(values)

@@ -21,8 +21,9 @@ from euclib.ops import (
     path_intersections, tolerance_of, voxel_intersections)
 from euclib.types import (
     grid,
-    Grid, GridTopology, SegPath, SegTopology, TetMesh, TetTopology, TriMesh,
-    TriTopology, VertexSet, VertexTopology, affine_translation)
+    Grid, GridTopology, PrismMesh, PrismTopology, SegPath, SegTopology, TetMesh,
+    TetTopology, TriMesh, TriTopology, VertexSet, VertexTopology,
+    affine_translation)
 
 
 # Fixtures ###################################################################
@@ -662,6 +663,46 @@ class TestIntegrate(TestCase):
                              vartype='qualitative')
         with self.assertRaises(ValueError):
             integrate(kinds, self._grid(), 'k')
+
+    def test_a_triangle_mesh_integrates_to_its_area(self):
+        # A surface's pieces measure area rather than volume, so the total of a
+        # constant is the surface's own area and not a volume.
+        square = _square()
+        self.assertAlmostEqual(integrate(square, self._grid(), 1).sum(),
+                               float(square.area.sum()))
+
+    def test_a_triangle_mesh_s_linear_field_integrates_exactly(self):
+        # The integral of x over a surface is its area times x's mean, and for a
+        # linear field the mean is the mean of the corners.
+        square = _square()
+        x = square.withprop('x', asarray(square.coords)[0],
+                            interp=('polynomial', 1))
+        want = float(square.area.sum()) * asarray(square.coords)[0].mean()
+        self.assertAlmostEqual(integrate(x, self._grid(), 'x').sum(), want,
+                               places=14)
+
+    def test_emptyconst_needs_a_mesh_that_fills_the_space(self):
+        # The empty part of a voxel is a volume, and a surface has none to leave
+        # empty: filling it with a constant would add an area to a volume.
+        with self.assertRaises(ValueError):
+            integrate(_square(), self._grid(), 1, emptyconst=1)
+
+    def test_a_prism_integrates_through_its_tetmesh(self):
+        # A prism has no simplex to fit --- its properties are read through the
+        # stack of tetrahedra between its surfaces --- so the stack is what is
+        # integrated, and the totals agree.
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(np.stack([lower, lower + array([[0.], [0.], [1.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        grid = self._grid()
+        self.assertAlmostEqual(integrate(prism, grid, 1).sum(),
+                               float(prism.tetmesh.volume.sum()))
+        self.assertTrue(allclose(integrate(prism, grid, 1),
+                                 integrate(prism.tetmesh, grid, 1)))
+
+    def test_a_mesh_that_is_neither_is_refused(self):
+        with self.assertRaises(TypeError):
+            integrate(_path([0.0, 0.0], [1.0, 1.0]), self._grid(), 1)
 
     def test_a_grid_that_is_not_three_dimensional_is_refused(self):
         with self.assertRaises(ValueError):
