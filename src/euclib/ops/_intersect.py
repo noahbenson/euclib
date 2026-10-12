@@ -46,19 +46,24 @@ from ..utils._pycore import polygon_fan
 DEFAULT_TOLERANCE = 1e-9
 
 
-def _carried_derivative(mesh, name, coords, order, which, /):
-    '''A carried property's gradient or hessian at the pieces' coordinates.
+def _carried_gradient(mesh, name, coords, order, /):
+    '''A carried property's gradient at the pieces' coordinates.
 
     A piece carries its corners' *values* and no derivative data, so a fit of
-    order 2 or 3 built on the piece alone would be a different function from the
-    source's --- and integrating it would not be integrating the property's
-    interpolation. Carrying the derivative too makes each piece self-contained:
-    the fit it builds is the source's own polynomial, restricted.
+    order 2 or more built on the piece alone would be a different function from
+    the source's: a quadratic is ten coefficients and four corners' values are
+    four conditions. Carrying the gradient too makes a piece's own fit the
+    source's polynomial, restricted --- measured, it agrees with the source to
+    2e-14 where it would not otherwise.
 
-    Nothing is computed for an order that has no use for it. A fit below the
-    quadratic order needs no gradient and one below the cubic no hessian, so
-    those answer ``None`` and the property carries nothing --- which is what
-    keeps the common linear case from carrying seven times its value data.
+    Nothing is computed for an order that has no use for it: a fit below the
+    quadratic order reads no gradient, so those answer ``None`` and the property
+    carries nothing, which keeps the common linear case from carrying three times
+    its value data for a derivative no fit will read.
+
+    The *hessian* is not carried, because nothing reads one. No fit consults a
+    property's hessian --- the Bezier cubic settles its freedom by face rules and
+    the polynomial cubic is least-norm --- so a piece would carry it for no one.
 
     Parameters
     ----------
@@ -69,22 +74,16 @@ def _carried_derivative(mesh, name, coords, order, which, /):
     coords : array-like
         The coordinates to read it at, which are the pieces'.
     order : int
-        The interpolation order that would need it: 2 for the gradient, 3 for
-        the hessian.
-    which : int
-        ``1`` for the gradient, ``2`` for the hessian.
-
+        The interpolation order that would need it.
     Returns
     -------
-    derivative : numpy.ndarray or None
-        The derivative, or ``None`` if this property's interpolation has no use
-        for one.
+    gradient : numpy.ndarray or None
+        The gradient, or ``None`` if this property's interpolation reads none.
     '''
     prop = mesh.propinfo(name)
     if prop.interp[1] < order:
         return None
-    read = mesh.propgrad if which == 1 else mesh.prophess
-    return read(name, at=coords)
+    return mesh.propgrad(name, at=coords)
 
 
 def tolerance_of(geom, /):
@@ -562,8 +561,7 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
             interp = UNSET
         built = built.withprop(
             name, lazy(_carried_property, mesh, name, built.coords),
-            gradient=lazy(_carried_derivative, mesh, name, built.coords, 2, 1),
-            hessian=lazy(_carried_derivative, mesh, name, built.coords, 3, 2),
+            gradient=lazy(_carried_gradient, mesh, name, built.coords, 2),
             **({} if interp is UNSET else {'interp': interp}))
     return (built, concatenate(voxel_of_piece, axis=1))
 
@@ -861,8 +859,7 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
             interp = UNSET
         built = built.withprop(
             name, lazy(_carried_property, mesh, name, built.coords),
-            gradient=lazy(_carried_derivative, mesh, name, built.coords, 2, 1),
-            hessian=lazy(_carried_derivative, mesh, name, built.coords, 3, 2),
+            gradient=lazy(_carried_gradient, mesh, name, built.coords, 2),
             **({} if interp is UNSET else {'interp': interp}))
     return (built, concatenate(voxel_of_piece, axis=1))
 

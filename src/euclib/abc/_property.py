@@ -1229,13 +1229,19 @@ class Property(planobject):
         return _value_shape(value, spatial_shape)
 
     @calc('valid')
-    def proc_valid(backend, dtype, value, gradient, hessian, vartype, interp,
+    def proc_valid(backend, dtype, value, vartype, interp,
                    extrap, border, mask, null, unit, shape):
         '''Whether every check this property makes has passed.
 
         Its parameters *are* the checks: each of those fields is produced by a
         calc that validates it, so calling this runs them all, and whatever any
         of them raises is raised here. Otherwise it is always ``True``.
+
+        The gradient and the hessian are deliberately not among them. They are
+        derivative data rather than the property's own values, they may be
+        expensive to ready, and in most cases they are computed from the values
+        rather than supplied --- so a property that carries one is not checked
+        against it here, and `valid` says nothing about either.
 
         It exists so that a caller who needs a property *ready* --- a geometry
         whose filter must know whether a property is usable, say --- can say so

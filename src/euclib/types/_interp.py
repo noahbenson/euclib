@@ -371,8 +371,11 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         own is not used and one is estimated from the values. Only the fits that
         need derivative data consult it.
     hessian : array-like or None, optional
-        The hessian, on the same terms. No method uses one yet --- the cubic
-        fit of a tetrahedron will --- so this is accepted and ignored.
+        Accepted and ignored. No fit consults a hessian: the cubic fit of a
+        tetrahedron settles its freedom by its faces' own rule rather than from
+        second derivatives, and the monomial fit above the quadratic order is
+        least-norm. It is taken so that a caller may pass one uniformly, and so
+        that a fit which comes to need one has somewhere to be given it.
 
     name : str, optional
         The property's *name*. A `Property` does not carry one --- only the
