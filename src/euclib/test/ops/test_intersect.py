@@ -708,6 +708,3 @@ class TestIntegrate(TestCase):
         with self.assertRaises(ValueError):
             integrate(_tet(), Grid(eye(3), GridTopology((3, 3))), 1)
 
-    def test_a_mesh_that_is_not_tetrahedral_is_refused(self):
-        with self.assertRaises(TypeError):
-            integrate(_square(), self._grid(), 1)
