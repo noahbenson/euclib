@@ -20,6 +20,7 @@ within it counts as meeting.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from itertools import product
 
 from immlib import to_array
@@ -568,6 +569,59 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
 
 
 
+#: How many intersected meshes to keep. The pieces of an intersection are large
+#: --- a mesh cut against a grid has at least as many simplices as the grid has
+#: cells it reaches --- so this is deliberately small: it is enough for the case
+#: it exists for, which is integrating several properties of one mesh over one
+#: grid, and no more. Whether a cache of this size earns its memory in practice
+#: is an open question, and this is where to revisit it.
+CACHE_SIZE = 4
+
+
+@lru_cache(maxsize=CACHE_SIZE)
+def _intersections(mesh, grid, /):
+    '''The pieces of an intersection, kept for a repeat of the same question.
+
+    Integrating a mesh over a grid cuts it against the grid once and then reads
+    the field at points within the pieces. Asking about a *second* property of
+    the same mesh over the same grid cuts the same mesh the same way and gets
+    the same pieces, so they are kept: a geometry is immutable and hashes by its
+    content, so the same two arguments are the same question.
+
+    A geometry hashes by its *plan* rather than by its computed fields, so a
+    property whose value is deferred hashes without being readied --- which
+    matters here, since the whole point of a deferred value is that nobody has
+    read it.
+
+    Parameters
+    ----------
+    mesh : SimplexGeometry
+        The geometry being cut.
+    grid : Grid
+        The grid to cut it against.
+
+    Returns
+    -------
+    pieces : SimplexGeometry
+        The pieces, of the source's own kind.
+    voxels : numpy.ndarray
+        The grid cell each piece came from.
+    measures : numpy.ndarray
+        The extent of each piece: a tetrahedron's volume, a triangle's area, a
+        segment's length.
+    '''
+    from ..types import TetMesh as _TetMesh
+    from ..types import TriMesh as _TriMesh
+    if isinstance(mesh, _TetMesh):
+        (pieces, voxels) = voxel_intersections(mesh, grid)
+        return (pieces, voxels, asarray(pieces.volume))
+    if isinstance(mesh, _TriMesh):
+        (pieces, voxels) = voxel_surface_intersections(mesh, grid)
+        return (pieces, voxels, asarray(pieces.area))
+    (pieces, voxels) = voxel_segment_intersections(mesh, grid)
+    return (pieces, voxels, asarray(pieces.length))
+
+
 def integrate(mesh, grid, values, /, emptyconst=0):
     '''Integrates a tetrahedral mesh's field over a grid's voxels.
 
@@ -638,15 +692,10 @@ def integrate(mesh, grid, values, /, emptyconst=0):
     # The measure of a piece is the extent the source has: a tetrahedron's
     # volume, a triangle's area. Each is integrated over the voxels it falls in,
     # so a surface's total is its area and not a volume.
-    if isinstance(mesh, _TetMesh):
-        (pieces, voxels) = voxel_intersections(mesh, grid)
-        measures = asarray(pieces.volume)
-    elif isinstance(mesh, _TriMesh):
-        (pieces, voxels) = voxel_surface_intersections(mesh, grid)
-        measures = asarray(pieces.area)
-    else:
-        (pieces, voxels) = voxel_segment_intersections(mesh, grid)
-        measures = asarray(pieces.length)
+    # The pieces, the cell each came from, and each one's extent --- kept
+    # between calls, since a second property of the same mesh over the same grid
+    # is cut the same way.
+    (pieces, voxels, measures) = _intersections(mesh, grid)
     if emptyconst != 0 and not isinstance(mesh, _TetMesh):
         # The empty part of a voxel is a *volume*, and a surface has none to
         # leave empty: its pieces measure area, so filling the rest of a voxel

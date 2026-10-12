@@ -728,6 +728,27 @@ class TestIntegrate(TestCase):
         self.assertAlmostEqual(integrate(z, self._grid(), 'z').sum(), want,
                                places=6)
 
+    def test_a_second_property_reuses_the_first_one_s_intersection(self):
+        # The pieces are kept between calls, so integrating two properties of
+        # one mesh over one grid cuts it once. What matters is that the answers
+        # do not depend on the order they are asked in, or on having been asked
+        # at all --- which is what a cache getting its key wrong would break.
+        tet = _tet()
+        coords = asarray(tet.coords)
+        both = tet.withprop('a', coords[0], interp=('polynomial', 1))
+        both = both.withprop('b', coords[1], interp=('polynomial', 1))
+        grid = self._grid()
+        alone = integrate(tet.withprop('b', coords[1],
+                                       interp=('polynomial', 1)), grid, 'b')
+        self.assertTrue(allclose(integrate(both, grid, 'b'), alone))
+        self.assertTrue(allclose(integrate(both, grid, 'a'),
+                                 integrate(both, grid, 'a')))
+        # A mesh that has grown a property is a different mesh, so it is not
+        # answered from the one before it.
+        grown = both.withprop('c', coords[2], interp=('polynomial', 1))
+        self.assertTrue(allclose(integrate(grown, grid, 'c'),
+                                 integrate(grown, grid, 'c')))
+
     def test_a_geometry_that_is_none_of_the_three_is_refused(self):
         # A point cloud has no extent to integrate over: its pieces would be
         # points, and a point's measure is zero.
