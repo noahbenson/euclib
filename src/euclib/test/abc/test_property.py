@@ -417,42 +417,33 @@ class TestProperty(TestCase):
         # estimate it from the values when it is absent.
         p = Property(zeros(4), (4,))
         self.assertIsNone(p.gradient)
-        self.assertIsNone(p.hessian)
 
     def test_derivative_shapes_are_checked_against_the_value(self):
-        # A gradient is (C..., D, N) and a hessian (C..., D, D, N): the value's
-        # channel dimensions, one axis per order of derivative, then the value's
-        # spatial dimensions.
+        # A gradient is (C..., D, N): the value's channel dimensions, one axis
+        # for the dimension of the space, then the value's spatial dimensions.
         #
         # The checks run when the field is read rather than when the property is
         # built: a property never forces itself, which is what lets a caller
         # defer a value it may never read.
-        p = Property(zeros(4), (4,), gradient=zeros((2, 4)),
-                     hessian=zeros((2, 2, 4)))
+        p = Property(zeros(4), (4,), gradient=zeros((2, 4)))
         self.assertEqual(tuple(p.gradient.shape), (2, 4))
-        self.assertEqual(tuple(p.hessian.shape), (2, 2, 4))
         # Channel dimensions have to agree with the value's.
         channelled = Property(zeros((3, 4)), (4,), gradient=zeros((3, 2, 4)))
         self.assertEqual(tuple(channelled.gradient.shape), (3, 2, 4))
         for bad in (zeros((4, 4)),         # a dimension of 4 is neither 2 nor 3
                     zeros((2, 3)),         # the spatial shape is (4,), not (3,)
-                    zeros((2,)),           # a gradient has an axis per order
+                    zeros((2,)),           # a gradient has an axis per dimension
                     zeros((2, 2, 3, 4))):  # one too many
             with self.subTest(shape=bad.shape):
                 self.assertIsInstance(
                     _innermost(lambda: Property(zeros(4), (4,),
                                                 gradient=bad).gradient),
                     ValueError)
-        # A hessian's two derivative axes must be the same size.
-        self.assertIsInstance(
-            _innermost(lambda: Property(zeros(4), (4,),
-                                        hessian=zeros((2, 3, 4))).hessian),
-                        ValueError)
         # ...and a gradient for a channelled value must have its channels.
         self.assertIsInstance(
             _innermost(lambda: Property(zeros((3, 4)), (4,),
                                         gradient=zeros((2, 2, 4))).gradient),
-                        ValueError)
+            ValueError)
 
     def test_withprop_attaches_a_gradient_and_replaces_it(self):
         # A path, because a metadata-only update to ``interp=1`` below is one
@@ -481,8 +472,7 @@ class TestProperty(TestCase):
         self.assertEqual(
             set(Property.plan.inputs),
             {'value', 'spatial_shape', 'backend', 'vartype', 'interp', 'extrap',
-             'border', 'dtype', 'mask', 'null', 'unit', 'detach', 'gradient',
-             'hessian'})
+             'border', 'dtype', 'mask', 'null', 'unit', 'detach', 'gradient'})
 
 
 class TestDeferredValues(TestCase):

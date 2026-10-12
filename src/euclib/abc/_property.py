@@ -209,22 +209,21 @@ BORDER_DEFAULT = 'half-symmetric'
 
 
 
-def _derivative(deriv, value, spatial_shape, backend, dtype, detach, order,
-                name, /):
-    '''A derivative normalized against its value, on first read.
+def _gradient(deriv, value, spatial_shape, backend, dtype, detach, name, /):
+    '''A gradient normalized against its value, on first read.
 
-    The other half of `Property.proc_gradient` and `proc_hessian`: either the
-    derivative or the value it belongs to may be deferred, and the derivative is
-    normalized against the value's shape, so the work waits until both have
-    arrived. Module-level, because a `lazy` closes over it.
+    The other half of `Property.proc_gradient`: either the gradient or the value
+    it belongs to may be deferred, and the gradient is normalized against the
+    value's shape, so the work waits until both have arrived. Module-level,
+    because a `lazy` closes over it.
     '''
     if isinstance(deriv, lazy):
         deriv = deriv()
     if isinstance(value, lazy):
         value = value()
-    return normalize_derivative(
+    return normalize_gradient(
         convert_value(deriv, backend, dtype, detach),
-        value, spatial_shape, order, name)
+        value, spatial_shape, name)
 
 
 def _converted_value(value, backend, dtype, detach, /):
@@ -564,75 +563,69 @@ def normalize_mask(mask, spatial_shape, /):
     return marr
 
 
-#: The numbers of dimensions a gradient or a hessian may be taken in. A
-#: derivative is taken with respect to a position in the space the geometry
-#: occupies, so it has as many axes as that space has dimensions. A property
-#: cannot know which of the two its geometry lives in --- the same property may
-#: be attached to a 2-D and a 3-D geometry --- so both are accepted here, and the
-#: geometry checks that the derivative is the size of its own dimension.
+#: The numbers of dimensions a gradient may be taken in. A gradient is taken
+#: with respect to a position in the space the geometry occupies, so its axis
+#: has as many entries as that space has dimensions. A property cannot know
+#: which of the two its geometry lives in --- the same property may be attached
+#: to a 2-D and a 3-D geometry --- so both are accepted here, and the geometry
+#: checks that the gradient is the size of its own dimension.
 DERIVATIVE_DIMS = (2, 3)
 
 
-def normalize_derivative(deriv, value, spatial_shape, order, name, /):
-    '''Normalizes a property's gradient or hessian.
+def normalize_gradient(deriv, value, spatial_shape, name, /):
+    '''Normalizes a property's gradient.
 
-    A derivative is data rather than metadata: it says how a value changes away
+    A gradient is data rather than metadata: it says how a value changes away
     from the component it belongs to, which is what a higher-order
     interpolation fits through when the values alone do not determine the
     polynomial.
 
-    Its shape is the value's channel dimensions, then one axis per order of
-    derivative, then the value's spatial shape --- ``(C..., D, N)`` for a
-    gradient and ``(C..., D, D, N)`` for a hessian. The derivative axes go at
-    the end of the channel block so that the spatial dimensions stay last, as
-    the ``(C..., X...)`` ordering requires, and the same value may be described
-    at every order because the channel dimensions do not move.
+    Its shape is the value's channel dimensions, then one axis per dimension of
+    the space, then the value's spatial shape --- ``(C..., D, N)``. The
+    derivative axis goes at the end of the channel block so that the spatial
+    dimensions stay last, as the ``(C..., X...)`` ordering requires.
 
     Parameters
     ----------
     deriv : array-like or None
-        The derivative to normalize. ``None`` means the property carries none.
+        The gradient to normalize. ``None`` means the property carries none.
     value : array-like
-        The value the derivative belongs to; its shape says what channel
-        dimensions the derivative must have and where its spatial dimensions
+        The value the gradient belongs to; its shape says what channel
+        dimensions the gradient must have and where its spatial dimensions
         begin.
     spatial_shape : tuple of int
         The property's spatial shape.
-    order : int
-        ``1`` for a gradient and ``2`` for a hessian.
     name : str
         The name of the field, for the error message.
 
     Returns
     -------
     array-like or None
-        The derivative, or ``None`` when none was given.
+        The gradient, or ``None`` when none was given.
 
     Raises
     ------
     ValueError
-        If the derivative is not the shape of a derivative of that order for
-        this value.
+        If the gradient is not the shape of a gradient for this value.
     '''
     if deriv is None:
         return None
     n = len(spatial_shape)
     channel = tuple(value.shape)[:len(value.shape) - n]
     sh = tuple(deriv.shape)
-    axes = 'axis' if order == 1 else 'axes'
 
     def wrong():
         return ValueError(
-            f"{name} must be the shape of a derivative of order {order} for a"
-            f" value of shape {tuple(value.shape)}: the value's channel"
-            f" dimensions {channel}, then {order} {axes} of size 2 or 3, then"
-            f" its spatial shape {tuple(spatial_shape)}; found {sh}")
+            f"{name} must be the shape of a gradient for a value of shape"
+            f" {tuple(value.shape)}: the value's channel dimensions"
+            f" {channel}, then one axis of size 2 or 3, then its spatial shape"
+            f" {tuple(spatial_shape)}; found {sh}")
 
-    if len(sh) != len(channel) + order + n:
+    if len(sh) != len(channel) + 1 + n:
         raise wrong()
-    dims = sh[len(channel):len(channel) + order]
+    dims = sh[len(channel):len(channel) + 1]
     if (sh[:len(channel)] != channel
-            or sh[len(channel) + order:] != tuple(spatial_shape)
+            or sh[len(channel) + 1:] != tuple(spatial_shape)
             or len(set(dims)) != 1
             or dims[0] not in DERIVATIVE_DIMS):
         raise wrong()
@@ -780,7 +773,7 @@ class Property(planobject):
     clones it with a different interpolation. When ``value`` is neither a
     property nor a lazy, the defaults documented for each parameter apply.
 
-    The value, gradient and hessian may be lazy and stay so: they are the fields
+    The value and the gradient may be lazy and stay so: they are the fields
     that may be large, on disk, or over a network, and nothing reads them until
     something asks. The metadata is small and is resolved when the property is
     built.
@@ -842,9 +835,6 @@ class Property(planobject):
         3, and the value's spatial dimensions. The default, ``None``, means the
         property does not carry one, and a geometry that needs one estimates it
         from the values.
-    hessian : array-like or None, optional
-        The second derivative, shaped ``(C..., D, D, N)`` in the same way. The
-        default, ``None``, means the property does not carry one.
 
     Attributes
     ----------
@@ -858,8 +848,6 @@ class Property(planobject):
         Whether the property has a mask.
     gradient : array-like or None
         The gradient, if the property carries one.
-    hessian : array-like or None
-        The hessian, if the property carries one.
     '''
 
     def __init__(self, value, spatial_shape, **kw):
@@ -902,7 +890,6 @@ class Property(planobject):
         self.unit = field('unit', None)
         self.detach = field('detach', True)
         self.gradient = field('gradient', None)
-        self.hessian = field('hessian', None)
 
         # The *form* of the interpolation is checked here, eagerly, because it
         # is a question about the argument alone: that it is a method name, an
@@ -924,7 +911,7 @@ class Property(planobject):
             check_interp_form(self.interp)
 
     @staticmethod
-    def _build(values, spatial_shape, /, gradient=None, hessian=None, **meta):
+    def _build(values, spatial_shape, /, gradient=None, **meta):
         '''A property built from what a caller supplied, and nothing more.
 
         This is the deferral a geometry's properties filter needs. A `lazy` value
@@ -946,7 +933,7 @@ class Property(planobject):
         ----------
         values, spatial_shape : array-like, tuple of int
             As for the constructor.
-        gradient, hessian : array-like or None, optional
+        gradient : array-like or None, optional
             As for the constructor.
         **meta
             The rest of the constructor's arguments.
@@ -962,8 +949,6 @@ class Property(planobject):
         derived = {}
         if gradient is not None:
             derived['gradient'] = gradient
-        if hessian is not None:
-            derived['hessian'] = hessian
         return Property(values, spatial_shape, **derived, **meta)
 
     @calc('backend')
@@ -1023,34 +1008,13 @@ class Property(planobject):
         if gradient is None:
             return None
         if isinstance(gradient, lazy) or isinstance(value, lazy):
-            # Deferred with whatever is deferred: the derivative is normalized
+            # Deferred with whatever is deferred: the gradient is normalized
             # against the value's shape, so neither can be read until both are.
-            return lazy(_derivative, gradient, value, spatial_shape, backend, dtype,
-                        detach, 1, 'gradient')
-        return normalize_derivative(
+            return lazy(_gradient, gradient, value, spatial_shape, backend, dtype,
+                        detach, 'gradient')
+        return normalize_gradient(
             convert_value(gradient, backend, dtype, detach),
-            value, spatial_shape, 1, 'gradient')
-
-    @calc('hessian')
-    def proc_hessian(hessian, value, spatial_shape, backend, dtype, detach):
-        '''Validates the property's hessian, if it has one.
-
-        Returns
-        -------
-        hessian : array-like or None
-            The hessian, converted to the property's backend and dtype, or
-            ``None`` when the property carries none.
-        '''
-        if hessian is None:
-            return None
-        if isinstance(hessian, lazy) or isinstance(value, lazy):
-            # Deferred with whatever is deferred: the derivative is normalized
-            # against the value's shape, so neither can be read until both are.
-            return lazy(_derivative, hessian, value, spatial_shape, backend, dtype,
-                        detach, 2, 'hessian')
-        return normalize_derivative(
-            convert_value(hessian, backend, dtype, detach),
-            value, spatial_shape, 2, 'hessian')
+            value, spatial_shape, 'gradient')
 
     @calc('vartype')
     def proc_vartype(vartype, value):
@@ -1237,11 +1201,11 @@ class Property(planobject):
         calc that validates it, so calling this runs them all, and whatever any
         of them raises is raised here. Otherwise it is always ``True``.
 
-        The gradient and the hessian are deliberately not among them. They are
-        derivative data rather than the property's own values, they may be
-        expensive to ready, and in most cases they are computed from the values
-        rather than supplied --- so a property that carries one is not checked
-        against it here, and `valid` says nothing about either.
+        The gradient is deliberately not among them. It is derivative data
+        rather than the property's own values, it may be expensive to ready, and
+        in most cases it is computed from the values rather than supplied --- so
+        a property that carries one is not checked against it here, and `valid`
+        says nothing about it.
 
         It exists so that a caller who needs a property *ready* --- a geometry
         whose filter must know whether a property is usable, say --- can say so

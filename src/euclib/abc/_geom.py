@@ -923,7 +923,7 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             props = props.set(name, prop)
         return self._install_props(order, props)
 
-    def withprop(self, name=UNSET, values=UNSET, gradient=None, hessian=None,
+    def withprop(self, name=UNSET, values=UNSET, gradient=None,
                  validate=None, **meta):
         '''Returns a copy of the object with a property added or altered.
 
@@ -942,8 +942,8 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         read, so a value that is deferred is not readied by attaching it. Pass
         ``validate=True`` to check it here instead.
 
-        A gradient or a hessian is data rather than metadata, and is given as
-        its own argument. Either may be supplied with the values or on its own,
+        A gradient is data rather than metadata, and is given as its own
+        argument. Either may be supplied with the values or on its own,
         which is what attaches derivative data to a property that already has
         values: the interpolation methods above linear need it, and estimate it
         from the values when it is absent.
@@ -960,9 +960,6 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             ``None``, attaches none: a property's derivative data describes its
             values, so replacing the values replaces the derivatives with them,
             and a fit that needs one and is given none estimates it.
-        hessian : array-like or None, optional
-            The hessian of the values, shaped ``(C..., D, D, N)``, on the same
-            terms.
         validate : bool or None, optional
             Whether to check the property before it is attached. The default,
             ``None``, decides from the values: a `Property` has done its own
@@ -1013,8 +1010,6 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             changes = dict(meta)
             if gradient is not None:
                 changes['gradient'] = gradient
-            if hessian is not None:
-                changes['hessian'] = hessian
             # `copy` rather than `withmeta`, because a gradient is data and
             # `withmeta` accepts only metadata fields. Both validate what they
             # are given the same way.
@@ -1026,13 +1021,13 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             # `Property._build` is what does that, with the checks the filter
             # would otherwise run here.
             new = lazy(Property._build, values, self._prop_spatial_shape(order),
-                       gradient=gradient, hessian=hessian, **meta)
+                       gradient=gradient, **meta)
         else:
             # A value that is here, and built; `_build` is what both branches
             # use, the lazy one deferring it and this one running it --- which is
             # the whole difference between them.
             new = Property._build(values, self._prop_spatial_shape(order),
-                                  gradient=gradient, hessian=hessian, **meta)
+                                  gradient=gradient, **meta)
         # Whether the property is checked here, before it is attached.
         #
         # The default follows the policy, and is the reason it is `None` rather

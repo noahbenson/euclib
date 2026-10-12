@@ -336,8 +336,7 @@ def _fitted_gradient(geom, prop, order, gradient, name, /):
 
 
 def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
-                mask=UNSET, border=UNSET, gradient=UNSET, hessian=UNSET,
-                name=None):
+                mask=UNSET, border=UNSET, gradient=UNSET, name=None):
     '''Reads a property at a set of positions.
 
     Parameters
@@ -370,12 +369,6 @@ def interpolate(geom, prop, at, /, interp=UNSET, extrap=UNSET, null=UNSET,
         An explicit ``None``, like leaving the argument out, means the property's
         own is not used and one is estimated from the values. Only the fits that
         need derivative data consult it.
-    hessian : array-like or None, optional
-        Accepted and ignored. No fit consults a hessian: the cubic fit of a
-        tetrahedron settles its freedom by its faces' own rule rather than from
-        second derivatives, and the monomial fit above the quadratic order is
-        least-norm. It is taken so that a caller may pass one uniformly, and so
-        that a fit which comes to need one has somewhere to be given it.
 
     name : str, optional
         The property's *name*. A `Property` does not carry one --- only the
