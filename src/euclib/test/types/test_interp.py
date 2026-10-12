@@ -2479,3 +2479,34 @@ class TestThePropertyGradient(TestCase):
                 p = tet.withprop('f', tet.coords[0], interp=interp)
                 self.assertTrue(allclose(asarray(p.prophess('f', at=c)), 0.0))
 
+    def test_the_gradient_agrees_with_a_numerical_one(self):
+        '''The check that holds for every fit, whatever it reproduces.
+
+        A fit need not reproduce any particular function. Catmull-Rom's end
+        slopes are one-sided estimates of the neighbours' difference, so its
+        curve is not the quadratic through the values, and its derivative has no
+        closed form to be checked against. It does have a difference quotient,
+        and that is what this compares with --- along each segment, so that the
+        perturbed positions stay on the path where the fit is defined.
+        '''
+        path = SegPath(array([[0.0, 1.1, 2.4, 3.2], [0.0, 0.7, 0.4, 1.3]]),
+                       SegTopology([[0, 1, 2], [1, 2, 3]]))
+        p = path.withprop('q', path.coords[0] ** 2 + path.coords[1],
+                          interp=('catmull-rom', 3))
+        coords = asarray(path.coords)
+        step = 1e-6
+
+        def value(pt):
+            return float(asarray(p.prop('q', at=pt.reshape(2, 1))).ravel()[0])
+
+        for (u, v) in ((0, 1), (1, 2), (2, 3)):
+            with self.subTest(segment=(u, v)):
+                mid = (coords[:, u] + coords[:, v]) / 2.0
+                along = coords[:, v] - coords[:, u]
+                along = along / linalg.norm(along)
+                got = float(asarray(p.propgrad(
+                    'q', at=mid.reshape(2, 1))).ravel() @ along)
+                want = (value(mid + step * along)
+                        - value(mid - step * along)) / (2 * step)
+                self.assertAlmostEqual(got, want, places=6)
+

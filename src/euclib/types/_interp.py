@@ -78,7 +78,7 @@ _RANK_TOLERANCE = 1e-9
 #: The others are recognized and interpolated, but their fits have no derivative
 #: written yet, so asking one for a gradient says so rather than failing
 #: somewhere deeper.
-DIFFERENTIABLE = ('polynomial', 'bezier')
+DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom')
 
 #: How many coordinates the gradient estimate advances together in one block.
 #: A block gives a stack of designs of shape ``(B, M, W)``, which is what the
@@ -528,7 +528,7 @@ def _gradient_simplex(geom, prop, loc, method, order, gradient, name, /):
         if method not in DIFFERENTIABLE:
             raise NotImplementedError(
                 f"the gradient of a {method!r} fit is not implemented yet;"
-                f" {' and '.join(map(repr, DIFFERENTIABLE))} is")
+                f" {' and '.join(map(repr, DIFFERENTIABLE))} are")
         fit = _element_fit(geom, method)
         fitted = _fitted_gradient(geom, prop, order, gradient, name)
         du = im.reshape(
@@ -612,7 +612,7 @@ def _hessian_simplex(geom, prop, loc, method, order, gradient, name, /):
     if method not in DIFFERENTIABLE:
         raise NotImplementedError(
             f"the hessian of a {method!r} fit is not implemented yet;"
-            f" {' and '.join(map(repr, DIFFERENTIABLE))} is")
+            f" {' and '.join(map(repr, DIFFERENTIABLE))} are")
     fit = _element_fit(geom, method)
     fitted = _fitted_gradient(geom, prop, order, gradient, name)
     hu = fit(geom, loc, values, corners, fitted, order,
@@ -1912,7 +1912,8 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
     return res
 
 
-def catmull_rom_fit(geom, loc, values, corners, slopes, order, /, *, whole=None):
+def catmull_rom_fit(geom, loc, values, corners, slopes, order, /, *,
+                    whole=None, derivative=False):
     '''Fits the cardinal cubic through a segment's values.
 
     The other cubic fits here build a Hermite curve from the property's slopes,
@@ -1985,6 +1986,12 @@ def catmull_rom_fit(geom, loc, values, corners, slopes, order, /, *, whole=None)
     # because the answer is a tensor when either is.
     res = _grid._zeros_for(im.promote(whole, weight)[0],
                            whole.shape[:-1] + (index.shape[0],))
+    if derivative:
+        # One leading axis for a gradient, two for a hessian --- the same
+        # convention the Bernstein fits use.
+        lead = (1,) if derivative == 1 else (1, 1)
+        dres = _grid._zeros_for(im.promote(whole, weight)[0],
+                                lead + whole.shape[:-1] + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         (u, v) = (int(indices[0, element]), int(indices[1, element]))
         # Both slopes are derivatives with respect to the *same* parameter, the
@@ -2004,12 +2011,41 @@ def catmull_rom_fit(geom, loc, values, corners, slopes, order, /, *, whole=None)
         # The Hermite basis against the values, through immlib: a quantity times
         # a tensor reaches pint's operator, which does not promote the other
         # way.
+        if derivative:
+            # The Hermite basis differentiated in the fraction along the
+            # segment, which runs the other way from the local weight --- so the
+            # first derivative is negated on the way back and the second, being
+            # negated twice, is not.
+            terms = (whole[..., u][(Ellipsis, None)],
+                     m_u[(Ellipsis, None)],
+                     whole[..., v][(Ellipsis, None)],
+                     m_v[(Ellipsis, None)])
+            if derivative == 1:
+                basis = (6.0 * s ** 2 - 6.0 * s,
+                         3.0 * s ** 2 - 4.0 * s + 1.0,
+                         -6.0 * s ** 2 + 6.0 * s,
+                         3.0 * s ** 2 - 2.0 * s)
+                dres[(Ellipsis, rows)] = im.mag(im.multiply(
+                    -1.0, _hermite(basis, terms)))
+            else:
+                basis = (12.0 * s - 6.0, 6.0 * s - 4.0,
+                         -12.0 * s + 6.0, 6.0 * s - 2.0)
+                dres[(Ellipsis, rows)] = im.mag(_hermite(basis, terms))
+            continue
         res[(Ellipsis, rows)] = im.mag(im.add(im.add(
             im.multiply(h00, whole[..., u][(Ellipsis, None)]),
             im.multiply(h10, m_u[(Ellipsis, None)])),
             im.add(im.multiply(h01, whole[..., v][(Ellipsis, None)]),
                    im.multiply(h11, m_v[(Ellipsis, None)]))))
-    return res
+    return dres if derivative else res
+
+
+def _hermite(basis, terms, /):
+    '''The four Hermite basis values against a segment's four terms.'''
+    (b0, b1, b2, b3) = basis
+    (t0, t1, t2, t3) = terms
+    return im.add(im.add(im.multiply(b0, t0), im.multiply(b1, t1)),
+                  im.add(im.multiply(b2, t2), im.multiply(b3, t3)))
 
 
 def estimate_gradient(geom, prop, order, /):
