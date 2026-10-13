@@ -30,10 +30,11 @@ from numpy import (
     full, intp, maximum, ones, repeat, sqrt, stack, tile, zeros)
 from numpy.linalg import det
 
-from pcollections import lazy
+from pcollections import holdlazy, lazy
 
 from ..abc import Geometry, UNSET, as_query
 from ..abc._geom import _carried_property
+from ..types._geom import _prop_interp
 from ..types import Grid, SegPath, TriMesh
 from ..utils import (segments_intersect, segments_triangles_intersect,
                      triangle_box_polygon)
@@ -555,11 +556,15 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
     # interpolating one over every coordinate is not cheap. The interpolation
     # the property was given is carried with it, since a caller who chose one
     # meant it.
-    for (name, prop) in mesh.properties.items():
-        try:
-            interp = prop.interp
-        except AttributeError:
-            interp = UNSET
+    # `holdlazy` rather than `items()`: reading a lazy dictionary resolves its
+    # values, so `items()` would build every property --- reading every value
+    # the deferral exists to avoid.
+    for (name, prop) in holdlazy(mesh.properties).items():
+        # The interpolation is part of the property, so reading it here would
+        # build the property and read the value. Carried as a lazy of its own,
+        # it resolves when the new property is asked for one.
+        interp = (lazy(_prop_interp, prop) if isinstance(prop, lazy)
+                  else getattr(prop, 'interp', UNSET))
         built = built.withprop(
             name, lazy(_carried_property, mesh, name, built.coords),
             gradient=lazy(_carried_gradient, mesh, name, built.coords, 2),
@@ -928,11 +933,15 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
     all_faces = concatenate(faces, axis=1)
     built = _TriMesh(all_coords,
                      _TriTopology(all_faces, coord_count=all_coords.shape[1]))
-    for (name, prop) in mesh.properties.items():
-        try:
-            interp = prop.interp
-        except AttributeError:
-            interp = UNSET
+    # `holdlazy` rather than `items()`: reading a lazy dictionary resolves its
+    # values, so `items()` would build every property --- reading every value
+    # the deferral exists to avoid.
+    for (name, prop) in holdlazy(mesh.properties).items():
+        # The interpolation is part of the property, so reading it here would
+        # build the property and read the value. Carried as a lazy of its own,
+        # it resolves when the new property is asked for one.
+        interp = (lazy(_prop_interp, prop) if isinstance(prop, lazy)
+                  else getattr(prop, 'interp', UNSET))
         built = built.withprop(
             name, lazy(_carried_property, mesh, name, built.coords),
             gradient=lazy(_carried_gradient, mesh, name, built.coords, 2),
@@ -1074,11 +1083,10 @@ def voxel_segment_intersections(path, grid, /, tolerance=None):
                  [2 * i + 1 for i in range(len(starts))]]),
         coord_count=2 * len(starts))
     built = _SegPath(coords, topo)
-    for (name, prop) in path.properties.items():
-        try:
-            interp = prop.interp
-        except AttributeError:
-            interp = UNSET
+    # `holdlazy` for the same reason the mesh versions use it.
+    for (name, prop) in holdlazy(path.properties).items():
+        interp = (lazy(_prop_interp, prop) if isinstance(prop, lazy)
+                  else getattr(prop, 'interp', UNSET))
         built = built.withprop(
             name, lazy(_carried_property, path, name, built.coords),
             gradient=lazy(_carried_gradient, path, name, built.coords, 2),

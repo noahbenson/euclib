@@ -979,11 +979,12 @@ class PrismMesh(SimplexGeometry):
         # The properties come along, as they do for `tetmesh`: the surface at an
         # elevation lies inside the prism, so each property can be read at its
         # coordinates. Lazily, since a mesh's properties are usually not read.
-        for (name, prop) in self.properties.items():
-            try:
-                interp = prop.interp
-            except AttributeError:
-                interp = UNSET
+        # `holdlazy` rather than `items()`: reading a lazy dictionary resolves
+        # its values, so `items()` would build every property --- reading every
+        # value the deferral exists to avoid.
+        for (name, prop) in holdlazy(self.properties).items():
+            interp = (lazy(_prop_interp, prop) if isinstance(prop, lazy)
+                      else getattr(prop, 'interp', UNSET))
             built = built.withprop(
                 name, lazy(_carried_property, self, name, built.coords),
                 **({} if interp is UNSET else {'interp': interp}))
@@ -1084,7 +1085,9 @@ class PrismMesh(SimplexGeometry):
             it, and the lazy mesh.
         '''
         entries = {}
-        for (pname, _) in properties.items():
+        # `holdlazy` because `items()` would resolve the values, and this only
+        # wants the names.
+        for (pname, _) in holdlazy(properties).items():
             named = elevations.get(pname, None)
             if named is None:
                 continue

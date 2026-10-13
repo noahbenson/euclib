@@ -12,6 +12,7 @@ from unittest import TestCase
 import numpy as np
 
 from numpy import allclose, array, asarray, diag, eye, sort, zeros
+from pcollections import lazy
 
 from euclib.utils import (segments_triangles_intersect,
                           triangles_segments_intersect)
@@ -556,6 +557,58 @@ class TestVoxelSurfaceIntersections(TestCase):
         got = asarray(pieces['s'])
         want = asarray(pieces.coords).sum(axis=0, keepdims=True)
         self.assertTrue(allclose(got, want))
+
+
+class TestADeferredPropertySurvivesAnIntersection(TestCase):
+    '''That cutting a geometry does not read what it was asked to defer.
+
+    A property whose value is a `lazy` is not readied until a read asks for
+    something that needs it. An intersection *enumerates* a geometry's
+    properties in order to carry them, and reading a lazy dictionary resolves
+    its values --- so `items()` builds every property and reads every value the
+    deferral exists to avoid. Every loop that carries properties uses
+    `holdlazy` instead, which is what this checks.
+    '''
+
+    def _counting(self, value):
+        return (lazy(lambda: (self.read.append(True), value)[1]), self.read)
+
+    def test_the_three_intersections_leave_a_deferred_value_deferred(self):
+        from euclib.ops import (voxel_intersections,
+                                voxel_segment_intersections,
+                                voxel_surface_intersections)
+        grid = Grid(eye(4), GridTopology((3, 3, 3)))
+        cases = (
+            (TetMesh(array([[0., 1., 0., 0.], [0., 0., 1., 0.],
+                            [0., 0., 0., 1.]]),
+                     TetTopology([[0], [1], [2], [3]])),
+             zeros(4), voxel_intersections),
+            (TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                     TriTopology([[0], [1], [2]])),
+             zeros(3), voxel_surface_intersections),
+            (SegPath(array([[0.0, 2.0], [0.0, 2.0], [0.0, 2.0]]),
+                     SegTopology([[0], [1]])),
+             zeros(2), voxel_segment_intersections),
+        )
+        for (geom, value, op) in cases:
+            with self.subTest(op=op.__name__):
+                self.read = []
+                (lazy_value, _) = self._counting(value)
+                op(geom.withprop('q', lazy_value, interp=0), grid)
+                self.assertEqual(self.read, [],
+                                 f"{op.__name__} readied the value")
+
+    def test_a_prism_s_elevation_and_tetmesh_do_the_same(self):
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(np.stack([lower, lower + array([[0.], [0.], [1.]])]),
+                          PrismTopology([[0], [1], [2]]))
+        for (name, build) in (('elevation', lambda g: g.elevation(0)),
+                              ('tetmesh', lambda g: g.tetmesh)):
+            with self.subTest(field=name):
+                self.read = []
+                (lazy_value, _) = self._counting(zeros(3))
+                build(prism.withprop('q', lazy_value, interp=0))
+                self.assertEqual(self.read, [], f"{name} readied the value")
 
 
 class TestIntegrate(TestCase):
