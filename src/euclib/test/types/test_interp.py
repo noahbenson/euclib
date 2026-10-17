@@ -2510,3 +2510,48 @@ class TestThePropertyGradient(TestCase):
                         - value(mid - step * along)) / (2 * step)
                 self.assertAlmostEqual(got, want, places=6)
 
+    def test_the_powell_sabin_gradient_agrees_with_a_numerical_one(self):
+        '''The split scheme, checked the way every fit is checked.
+
+        Powell-Sabin builds a quadratic on each of six pieces of a triangle, so
+        its gradient is a piecewise-affine field rather than one polynomial, and
+        the check that holds is against its own difference quotient --- as it is
+        for Catmull-Rom. The fit reproduces a quadratic exactly when its slopes
+        are the true ones, so that is what is supplied here; with slopes
+        estimated from the values it does not, which is the estimate and not the
+        fit.
+        '''
+        tri = TriMesh(array([[0.0, 1.3, 0.2], [0.0, 0.5, 1.1], [0.0, 0.0, 0.0]]),
+                      TriTopology([[0], [1], [2]]))
+        coords = asarray(tri.coords)
+        gradient = np.zeros((3, 3))
+        gradient[0] = 2 * coords[0]
+        gradient[1] = 2.0
+        p = tri.withprop('q', coords[0] ** 2 + 2 * coords[1],
+                         gradient=gradient, interp=('powell-sabin', 2))
+        step = 1e-7
+        for (sx, sy) in ((0.2, 0.15), (0.3, 0.15), (0.2, 0.3), (0.1, 0.2)):
+            with self.subTest(at=(sx, sy)):
+                at = array([[sx], [sy], [0.0]])
+                got = asarray(p.propgrad('q', at=at)).ravel()
+                num = []
+                for axis in range(2):
+                    plus = at.copy()
+                    minus = at.copy()
+                    plus[axis] += step
+                    minus[axis] -= step
+                    num.append(
+                        (float(asarray(p.prop('q', at=plus)).ravel()[0])
+                         - float(asarray(p.prop('q', at=minus)).ravel()[0]))
+                        / (2 * step))
+                self.assertTrue(allclose(got[:2], array(num), atol=1e-6))
+
+    def test_the_split_scheme_has_no_hessian_yet(self):
+        # The second derivative of a piecewise patch is its own construction, so
+        # it refuses by name rather than answering with the first.
+        tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                      TriTopology([[0], [1], [2]]))
+        p = tri.withprop('q', tri.coords[0], interp=('powell-sabin', 2))
+        with self.assertRaises(NotImplementedError):
+            p.prophess('q')
+

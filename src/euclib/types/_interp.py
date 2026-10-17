@@ -78,7 +78,13 @@ _RANK_TOLERANCE = 1e-9
 #: The others are recognized and interpolated, but their fits have no derivative
 #: written yet, so asking one for a gradient says so rather than failing
 #: somewhere deeper.
-DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom')
+DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom', 'powell-sabin')
+
+#: The methods whose *second* derivative is written. A method may answer for the
+#: gradient and not for the hessian --- the split schemes' patches are built
+#: piece by piece, and the second derivative of one is a separate construction
+#: from the first.
+HESSIAN_DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom')
 
 #: How many coordinates the gradient estimate advances together in one block.
 #: A block gives a stack of designs of shape ``(B, M, W)``, which is what the
@@ -609,10 +615,10 @@ def _hessian_simplex(geom, prop, loc, method, order, gradient, name, /):
         # A linear field has no second derivative and a piecewise-constant one
         # has no derivative at all.
         return zeros(values.shape[:-2] + (dim, dim, q))
-    if method not in DIFFERENTIABLE:
+    if method not in HESSIAN_DIFFERENTIABLE:
         raise NotImplementedError(
             f"the hessian of a {method!r} fit is not implemented yet;"
-            f" {' and '.join(map(repr, DIFFERENTIABLE))} are")
+            f" {' and '.join(map(repr, HESSIAN_DIFFERENTIABLE))} are")
     fit = _element_fit(geom, method)
     fitted = _fitted_gradient(geom, prop, order, gradient, name)
     hu = fit(geom, loc, values, corners, fitted, order,
@@ -1920,10 +1926,19 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
                                           inside[at].T)     # (2, C..., n)
                 m = asarray(im.mag(_ps.piece_map(
                     _ps.split_places(centre), _ps.PIECES[k])))
-                free = m[:2, :2] - m[2:3, :2] - m[:2, 2:3] + m[2, 2]
+                # `w_i = sum_k M[i, k] L_k` with the third weight implied, so a
+                # step in the triangle's *j*th free weight moves the piece's
+                # *i*th by `M[i, j] - M[i, 2]`. The third *row* is not part of
+                # it: the free coordinates are the first two weights and not
+                # their difference from the third.
+                free = m[:2, :2] - m[:2, 2:3]
                 flat = im.reshape(d, (2, -1, at.size))
+                # `free[i, j]` is what a step in the triangle's *j*th free
+                # weight does to the piece's *i*th, so the chain sums over `i`
+                # with `j` left free --- the contraction is `free` and not its
+                # transpose.
                 res_d[(Ellipsis, rows[at])] = im.mag(im.reshape(
-                    im.einsum('ji,icq->jcq', free, flat),
+                    im.einsum('ij,icq->jcq', free, flat),
                     (2,) + channels + (at.size,)))
                 continue
             got = im.mag(_ps.evaluate(ordinates[:, _ps.SLOTS[k]], inside[at].T))
