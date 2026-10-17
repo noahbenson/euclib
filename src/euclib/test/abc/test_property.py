@@ -472,7 +472,7 @@ class TestProperty(TestCase):
         self.assertEqual(
             set(Property.plan.inputs),
             {'value', 'spatial_shape', 'backend', 'vartype', 'interp', 'extrap',
-             'border', 'dtype', 'mask', 'null', 'unit', 'detach', 'gradient'})
+             'border', 'dtype', 'mask', 'null', 'detach', 'gradient'})
 
 
 class TestDeferredValues(TestCase):

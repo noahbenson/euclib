@@ -1603,7 +1603,7 @@ def _restrict_property(prop, mask, count, /):
         prop.value[sel], (count,), backend=prop.backend,
         vartype=prop.vartype, interp=prop.interp, extrap=prop.extrap,
         dtype=prop.dtype, mask=pmask,
-        null=prop.null, unit=prop.unit, detach=prop.detach)
+        null=prop.null, detach=prop.detach)
 
 
 def _is_boolean_mask(x, /):

@@ -43,8 +43,7 @@ from ._property import (
     INTERP_SUPPORTED_TETRAHEDRON, INTERP_SUPPORTED_TRIANGLE,
     EXTRAP_ORDERS, UNSET, default_interp,
     normalize_backend, normalize_vartype, normalize_interp, normalize_extrap,
-    normalize_dtype, normalize_null, normalize_mask, normalize_unit,
-    convert_value)
+    normalize_dtype, normalize_null, normalize_mask,     convert_value)
 
 
 # Exports ####################################################################
@@ -63,7 +62,7 @@ __all__ = (
     'UNSET', 'default_interp',
     'normalize_backend', 'normalize_vartype', 'normalize_interp',
     'normalize_extrap', 'normalize_dtype', 'normalize_null', 'normalize_mask',
-    'normalize_unit', 'convert_value',
+    'convert_value',
     'Topology', 'SimplexTopology',
     'LocMixin', 'make_loc', 'is_loc', 'check_simplex_loc',
     'normalize_indices',

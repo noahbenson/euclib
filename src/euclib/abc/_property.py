@@ -42,8 +42,6 @@ The metadata and its normalization rules are:
 ``null``
     The value substituted for missing results; ``NaN`` for floating-point data
     and an appropriate zero-like value otherwise.
-``unit``
-    The value's unit. Unit algebra is not yet implemented.
 ``detach``
     Whether to detach a PyTorch tensor's gradient when converting it to NumPy.
 '''
@@ -676,25 +674,6 @@ def normalize_null(null, dtype, value, /):
     return base
 
 
-def normalize_unit(unit, /):
-    '''Normalizes a ``unit`` metadata value.
-
-    Unit algebra is not yet implemented; this records the unit so that it can
-    be reported and round-tripped.
-
-    Parameters
-    ----------
-    unit : object or None
-        The value's unit.
-
-    Returns
-    -------
-    object or None
-        The unit.
-    '''
-    return None if unit is UNSET else unit
-
-
 def convert_value(value, backend, dtype, detach, /):
     '''Converts a property value to the requested backend and dtype.
 
@@ -823,8 +802,6 @@ class Property(planobject):
         The value substituted for missing results. The default, ``Ellipsis``,
         selects ``NaN`` for floating-point data and an appropriate zero-like
         value otherwise.
-    unit : object or None, optional
-        The unit of the value. Unit algebra is not yet implemented.
     detach : bool, optional
         Whether to detach a PyTorch tensor's gradient when converting it to
         NumPy. The default is ``True``.
@@ -887,7 +864,6 @@ class Property(planobject):
         self.dtype = field('dtype', None)
         self.mask = field('mask', None)
         self.null = field('null', UNSET)
-        self.unit = field('unit', None)
         self.detach = field('detach', True)
         self.gradient = field('gradient', None)
 
@@ -1159,17 +1135,6 @@ class Property(planobject):
             return lazy(normalize_null, null, dtype, value)
         return normalize_null(null, dtype, value)
 
-    @calc('unit')
-    def proc_unit(unit):
-        '''Records the property's unit.
-
-        Returns
-        -------
-        unit : object or None
-            The unit.
-        '''
-        return normalize_unit(unit)
-
     @calc('channel_shape', 'shape')
     def proc_shape(value, spatial_shape):
         '''The channel shape and the full shape of the value.
@@ -1194,7 +1159,7 @@ class Property(planobject):
 
     @calc('valid')
     def proc_valid(backend, dtype, value, vartype, interp,
-                   extrap, border, mask, null, unit, shape):
+                   extrap, border, mask, null, shape):
         '''Whether every check this property makes has passed.
 
         Its parameters *are* the checks: each of those fields is produced by a
@@ -1290,7 +1255,7 @@ class Property(planobject):
         if not kwargs:
             return self
         fields = ('backend', 'vartype', 'interp', 'extrap', 'border', 'dtype',
-                  'mask', 'null', 'unit', 'detach')
+                  'mask', 'null', 'detach')
         updates = {}
         for (k, v) in kwargs.items():
             if k not in fields:
@@ -1321,7 +1286,7 @@ class Property(planobject):
             value=self.value, spatial_shape=spatial_shape, backend=self.backend,
             vartype=self.vartype, interp=self.interp, extrap=self.extrap,
             border=self.border, dtype=self.dtype, mask=self.mask, null=self.null,
-            unit=self.unit, detach=self.detach)
+            detach=self.detach)
 
     def __getitem__(self, index):
         '''Returns the value indexed along its spatial dimensions.
