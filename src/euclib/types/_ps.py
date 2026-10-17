@@ -137,6 +137,55 @@ def evaluate(ordinates, w, /):
     return im.einsum('wq,...w->...q', bernstein(w), ordinates)
 
 
+def bernstein_gradient(w, /):
+    '''The derivatives of the six degree-two Bernstein polynomials.
+
+    The derivative along one weight is taken against the *last*, because the
+    three sum to one: a step along the first weight is a step against the third,
+    so a function of the two free weights has two derivatives and not three.
+    Writing them that way is what lets the derivative be carried from a piece's
+    weights to the triangle's without the constraint having to be tracked.
+
+    Parameters
+    ----------
+    w : numpy.ndarray
+        A ``(3, Q)`` matrix of a piece's barycentric weights.
+
+    Returns
+    -------
+    gradient : numpy.ndarray
+        A ``(2, 6, Q)`` array: the derivative of each of the six polynomials
+        along each of the two free weights, at each position.
+    '''
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
+    (one, two, three) = w
+    zero = im.multiply(0.0, one)
+    return im.mag(im.stack([
+        im.stack([im.multiply(2.0, one), zero, im.multiply(-2.0, three),
+                  im.multiply(2.0, two),
+                  im.multiply(2.0, im.subtract(three, one)),
+                  im.multiply(-2.0, two)]),
+        im.stack([zero, im.multiply(2.0, two), im.multiply(-2.0, three),
+                  im.multiply(2.0, one),
+                  im.multiply(-2.0, one),
+                  im.multiply(2.0, im.subtract(three, two))])]))
+
+
+def evaluate_gradient(ordinates, w, /):
+    '''A quadratic patch's gradient, in the piece's own weights.
+
+    The derivative of `evaluate`, on the same terms: the ordinates are
+    ``(C..., 6)``, the weights are ``(3, Q)``, and the answer is ``(2, C...,
+    Q)`` --- one gradient per free weight, with the channels in their usual
+    place.
+    '''
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
+    basis = bernstein_gradient(w)
+    if w.ndim == 1:
+        return im.einsum('aw,...w->a...', basis, ordinates)
+    return im.einsum('awq,...w->a...q', basis, ordinates)
+
+
 # The geometry, in barycentric weights #######################################
 
 def neighbours_of(vertex, /):
@@ -169,7 +218,7 @@ def centre_weights(sides, /):
     return im.mag(im.divide(lengths, im.sum(lengths)))
 
 
-def _places(centre, /):
+def split_places(centre, /):
     '''Every vertex of the split, in the macro triangle's barycentric weights.
 
     The corners are the unit vectors, the centre is what it is, and the point on
@@ -187,7 +236,7 @@ def _places(centre, /):
     return out
 
 
-def _within(places, piece, /):
+def piece_map(places, piece, /):
     '''The map from the macro triangle's weights to one mini-triangle's.
 
     The two sets of weights are related affinely, and the map is the inverse of
@@ -312,8 +361,8 @@ def basis(centre, /):
     numpy.ndarray
         A ``(19, 9)`` matrix: the ordinates of a unit datum.
     '''
-    places = _places(centre)
-    within = [_within(places, piece) for piece in PIECES]
+    places = split_places(centre)
+    within = [piece_map(places, piece) for piece in PIECES]
     rows = []
     columns = []
 
@@ -391,12 +440,12 @@ def sub_weights(weights, centre, /):
         backend of ``weights`` so that a tensor's derivative survives the
         reading-off.
     '''
-    places = _places(centre)
+    places = split_places(centre)
     whole = im.mag(im.stack([im.mag(weights[0]), im.mag(weights[1]),
                              im.mag(im.subtract(
                                  im.subtract(1.0, weights[0]), weights[1]))],
                             axis=-1))                            # (Q, 3)
-    inside = im.mag(im.stack([im.matmul(whole, _within(places, piece).T)
+    inside = im.mag(im.stack([im.matmul(whole, piece_map(places, piece).T)
                               for piece in PIECES], axis=1))     # (Q, 6, 3)
     pieces = asarray(im.mag(im.argmin(
         im.negative(im.amin(inside, axis=-1)), axis=-1)))        # (Q,)
@@ -414,4 +463,5 @@ def sub_weights(weights, centre, /):
 # Exports ####################################################################
 
 __all__ = ('VERTICES', 'PIECES', 'ORDINATES', 'WHERE', 'SLOTS', 'neighbours_of',
-           'centre_weights', 'basis', 'sub_weights', 'evaluate', 'bernstein')
+           'centre_weights', 'basis', 'sub_weights', 'evaluate', 'bernstein',
+           'bernstein_gradient', 'evaluate_gradient', 'piece_map', 'split_places')

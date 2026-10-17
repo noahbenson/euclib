@@ -1808,7 +1808,7 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
 
 
 def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
-                     whole=None):
+                     whole=None, derivative=False):
     '''Fits a C1 piecewise quadratic through one triangle's data.
 
     The element is the Powell-Sabin one: the triangle is split into six by
@@ -1866,6 +1866,10 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
     res = _grid._zeros_for(
         im.promote(whole, slopes, weight, geom.coords)[0],
         channels + (index.shape[0],))
+    if derivative:
+        res_d = _grid._zeros_for(
+            im.promote(whole, slopes, weight, geom.coords)[0],
+            (2,) + channels + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
         # The triangle's shape enters the element in exactly one place --- the
@@ -1906,10 +1910,26 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
             at = flatnonzero(pieces == k)
             if at.size == 0:
                 continue
+            if derivative:
+                # The patch's gradient in the *piece's* free weights, then
+                # through the map to the triangle's. The map is affine and its
+                # rows sum to one, so its free part --- what a step in one of
+                # the triangle's weights does to one of the piece's --- is the
+                # difference of its columns.
+                d = _ps.evaluate_gradient(ordinates[:, _ps.SLOTS[k]],
+                                          inside[at].T)     # (2, C..., n)
+                m = asarray(im.mag(_ps.piece_map(
+                    _ps.split_places(centre), _ps.PIECES[k])))
+                free = m[:2, :2] - m[2:3, :2] - m[:2, 2:3] + m[2, 2]
+                flat = im.reshape(d, (2, -1, at.size))
+                res_d[(Ellipsis, rows[at])] = im.mag(im.reshape(
+                    im.einsum('ji,icq->jcq', free, flat),
+                    (2,) + channels + (at.size,)))
+                continue
             got = im.mag(_ps.evaluate(ordinates[:, _ps.SLOTS[k]], inside[at].T))
             res[(Ellipsis, rows[at])] = im.mag(
                 im.reshape(got, channels + (at.size,)))
-    return res
+    return res_d if derivative else res
 
 
 def catmull_rom_fit(geom, loc, values, corners, slopes, order, /, *,
