@@ -117,6 +117,27 @@ written to state the limitation rather than hide it:
   lattice by $10^{-6}$ is enough to remove it, since any asymmetry at all breaks
   the tie.
 
+- **The hessian of a split scheme.** `euclib.types._ps` and `_ct` build a
+  triangle's patch piece by piece --- six quadratics for Powell-Sabin, three
+  cubics for Clough-Tocher --- and `propgrad` reports the gradient of one. The
+  *second* derivative is a separate construction, because the patch is not one
+  polynomial whose second derivative can be read off, so `prophess` refuses both
+  by name rather than answering with the first derivative. `HESSIAN_DIFFERENTIABLE`
+  in `euclib.types._interp` is the list of what does answer.
+- **Powell-Sabin's reproduction of a quadratic, when its slopes are estimated.**
+  The scheme is built to reproduce a quadratic exactly, and it does when the
+  slopes it is given are the true ones: `x^2 + 2y` over a skewed triangle comes
+  back as 0.39 at (0.3, 0.15) where the true value is 0.39. With the slopes
+  *estimated* from the values --- which is what happens when a property carries
+  none, and what `estimate_gradient` is for --- the same position comes back as
+  0.68. The estimate is doing that and not the fit, but
+  `INTERP_SUPPORTED_TRIANGLE`'s description of the scheme says it "needs nothing
+  the vertices do not carry", which reads as though the difference would not
+  matter. Either the description should say that a Powell-Sabin fit is only as
+  good as the slopes it is given, or the estimate should be good enough for the
+  scheme's own reproduction to survive it; which of those is intended has not
+  been decided.
+
 :::{seealso}
 - [The example gallery](index.md) for the pages that *are* written.
 :::
