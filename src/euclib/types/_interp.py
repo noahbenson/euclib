@@ -78,7 +78,8 @@ _RANK_TOLERANCE = 1e-9
 #: The others are recognized and interpolated, but their fits have no derivative
 #: written yet, so asking one for a gradient says so rather than failing
 #: somewhere deeper.
-DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom', 'powell-sabin')
+DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom', 'powell-sabin',
+                  'clough-tocher')
 
 #: The methods whose *second* derivative is written. A method may answer for the
 #: gradient and not for the hessian --- the split schemes' patches are built
@@ -1660,7 +1661,7 @@ def polynomial_fit(geom, loc, values, corners, gradient, order, /, *,
 
 
 def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
-                      whole=None):
+                      whole=None, derivative=False):
     '''Fits a C1 piecewise cubic through one triangle's data.
 
     The element is the Clough-Tocher one: the triangle is split into three by
@@ -1761,6 +1762,10 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
     res = _grid._zeros_for(
         im.promote(whole, slopes, weight, geom.coords)[0],
         channels + (index.shape[0],))
+    if derivative:
+        res_d = _grid._zeros_for(
+            im.promote(whole, slopes, weight, geom.coords)[0],
+            (2,) + channels + (index.shape[0],))
     # One solve for every element these positions touch, rather than one per
     # element: the basis is a (53, 30) least-squares system whose *assembly*
     # costs six hundred pseudo-inverses, and a fit that touched five thousand
@@ -1804,13 +1809,25 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
             at = flatnonzero(pieces == k)
             if at.size == 0:
                 continue
+            if derivative:
+                # The patch's gradient in the *piece's* free weights, then
+                # through the map to the triangle's --- which `free_map` gives,
+                # a step in the triangle's *j*th free weight moving the piece's
+                # *i*th by its `[i, j]`.
+                d = _ct.evaluate_gradient(controls[:, k * 10:(k + 1) * 10],
+                                          inside[at].T)      # (2, C..., n)
+                flat = im.reshape(d, (2, -1, at.size))
+                res_d[(Ellipsis, rows[at])] = im.mag(im.reshape(
+                    im.einsum('ij,icq->jcq', _ct.free_map(k), flat),
+                    (2,) + channels + (at.size,)))
+                continue
             got = im.mag(_ct.evaluate(controls[:, k * 10:(k + 1) * 10],
                                       inside[at].T))
             # The magnitude, because immlib's ``reshape`` hands back a quantity
             # and a tensor will not hold one.
             res[(Ellipsis, rows[at])] = im.mag(
                 im.reshape(got, channels + (at.size,)))
-    return res
+    return res_d if derivative else res
 
 
 def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,

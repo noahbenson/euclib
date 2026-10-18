@@ -2423,14 +2423,20 @@ class TestThePropertyGradient(TestCase):
         got = asarray(both.propgrad('v', at=tet.coords))
         self.assertEqual(got.shape, (2, 3, 4))
 
-    def test_the_fits_without_a_derivative_say_so(self):
-        # `clough-tocher` is a triangle's scheme, and its patch is built piece by
-        # piece rather than as one polynomial, so its derivative is its own work.
+    def test_the_fits_without_a_hessian_say_so(self):
+        # Every method the element-wise engine implements now answers for the
+        # gradient. The *second* derivative is a separate construction for a
+        # split scheme --- its patch is three cubics or six quadratics rather
+        # than one polynomial --- so those refuse by name instead of answering
+        # with the first derivative.
         tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
                       TriTopology([[0], [1], [2]]))
-        p = tri.withprop('c', tri.coords[0], interp=('clough-tocher', 3))
-        with self.assertRaises(NotImplementedError):
-            p.propgrad('c')
+        for interp in (('clough-tocher', 3), ('powell-sabin', 2)):
+            with self.subTest(interp=interp):
+                p = tri.withprop('c', tri.coords[0], interp=interp)
+                p.propgrad('c')             # the gradient does answer
+                with self.assertRaises(NotImplementedError):
+                    p.prophess('c')
 
     def test_a_grid_has_no_element_wise_derivative(self):
         from euclib.types import Grid, GridTopology
@@ -2510,16 +2516,16 @@ class TestThePropertyGradient(TestCase):
                         - value(mid - step * along)) / (2 * step)
                 self.assertAlmostEqual(got, want, places=6)
 
-    def test_the_powell_sabin_gradient_agrees_with_a_numerical_one(self):
-        '''The split scheme, checked the way every fit is checked.
+    def test_the_split_schemes_gradients_agree_with_a_numerical_one(self):
+        '''The two split schemes, checked the way every fit is checked.
 
-        Powell-Sabin builds a quadratic on each of six pieces of a triangle, so
-        its gradient is a piecewise-affine field rather than one polynomial, and
-        the check that holds is against its own difference quotient --- as it is
-        for Catmull-Rom. The fit reproduces a quadratic exactly when its slopes
-        are the true ones, so that is what is supplied here; with slopes
-        estimated from the values it does not, which is the estimate and not the
-        fit.
+        Clough-Tocher builds a cubic on each of three pieces of a triangle and
+        Powell-Sabin a quadratic on each of six, so neither is one polynomial
+        and the check that holds is against its own difference quotient --- as
+        it is for Catmull-Rom. Both reproduce a quadratic exactly when their
+        slopes are the true ones, so those are what is supplied here; with
+        slopes estimated from the values they do not, which is the estimate and
+        not the fit.
         '''
         tri = TriMesh(array([[0.0, 1.3, 0.2], [0.0, 0.5, 1.1], [0.0, 0.0, 0.0]]),
                       TriTopology([[0], [1], [2]]))
@@ -2527,24 +2533,25 @@ class TestThePropertyGradient(TestCase):
         gradient = np.zeros((3, 3))
         gradient[0] = 2 * coords[0]
         gradient[1] = 2.0
-        p = tri.withprop('q', coords[0] ** 2 + 2 * coords[1],
-                         gradient=gradient, interp=('powell-sabin', 2))
         step = 1e-7
-        for (sx, sy) in ((0.2, 0.15), (0.3, 0.15), (0.2, 0.3), (0.1, 0.2)):
-            with self.subTest(at=(sx, sy)):
-                at = array([[sx], [sy], [0.0]])
-                got = asarray(p.propgrad('q', at=at)).ravel()
-                num = []
-                for axis in range(2):
-                    plus = at.copy()
-                    minus = at.copy()
-                    plus[axis] += step
-                    minus[axis] -= step
-                    num.append(
-                        (float(asarray(p.prop('q', at=plus)).ravel()[0])
-                         - float(asarray(p.prop('q', at=minus)).ravel()[0]))
-                        / (2 * step))
-                self.assertTrue(allclose(got[:2], array(num), atol=1e-6))
+        for (method, order) in (('clough-tocher', 3), ('powell-sabin', 2)):
+            p = tri.withprop('q', coords[0] ** 2 + 2 * coords[1],
+                             gradient=gradient, interp=(method, order))
+            for (sx, sy) in ((0.2, 0.15), (0.3, 0.15), (0.2, 0.3), (0.1, 0.2)):
+                with self.subTest(method=method, at=(sx, sy)):
+                    at = array([[sx], [sy], [0.0]])
+                    got = asarray(p.propgrad('q', at=at)).ravel()
+                    num = []
+                    for axis in range(2):
+                        plus = at.copy()
+                        minus = at.copy()
+                        plus[axis] += step
+                        minus[axis] -= step
+                        num.append(
+                            (float(asarray(p.prop('q', at=plus)).ravel()[0])
+                             - float(asarray(p.prop('q', at=minus)).ravel()[0]))
+                            / (2 * step))
+                    self.assertTrue(allclose(got[:2], array(num), atol=1e-6))
 
     def test_the_split_scheme_has_no_hessian_yet(self):
         # The second derivative of a piecewise patch is its own construction, so

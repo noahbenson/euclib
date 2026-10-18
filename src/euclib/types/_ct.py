@@ -692,6 +692,111 @@ def sub_weights(weights, /):
     return (pieces, im.mag(im.stack(columns, axis=-1)))
 
 
+def bernstein_gradient(w, /):
+    """The derivatives of the ten degree-three Bernstein polynomials.
+
+    The derivative along one weight is taken against the *last*, because the
+    three sum to one: a step along the first weight is a step against the third,
+    so a function of the two free weights has two derivatives and not three.
+    Writing them that way is what lets the derivative be carried from a piece's
+    weights to the triangle's without the constraint having to be tracked.
+
+    Parameters
+    ----------
+    w : numpy.ndarray
+        A ``(3, Q)`` matrix of a piece's barycentric weights.
+
+    Returns
+    -------
+    gradient : numpy.ndarray
+        A ``(2, 10, Q)`` array: the derivative of each of the ten polynomials
+        along each of the two free weights, at each position.
+    """
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
+    powers = asarray(POWERS)
+    coef = asarray([COEF[p] for p in POWERS])
+    out = []
+    for free in range(2):
+        total = None
+        for (which, sign) in ((free, 1.0), (2, -1.0)):
+            # One exponent lowered, clamped at zero so that no power is taken
+            # negative; the multiplication by the exponent below zeroes the
+            # terms whose exponent was too small anyway.
+            shifted = powers.copy()
+            shifted[:, which] = (shifted[:, which] - 1).clip(min=0)
+            # One body for both shapes, as `evaluate`'s is: a vector of weights
+            # unpacks to three numbers and a matrix to three vectors, and the
+            # product is taken over the corners either way.
+            if w.ndim == 1:
+                basis = im.multiply(
+                    coef, im.prod(im.pow(w[None, :], shifted), axis=-1))
+                basis = im.multiply(basis, (powers[:, which] * sign))
+            else:
+                basis = im.multiply(coef[:, None], im.prod(
+                    im.pow(w[None, :, :], shifted[:, :, None]), axis=1))
+                basis = im.multiply(
+                    basis, (powers[:, which] * sign)[:, None])
+            total = basis if total is None else im.add(total, basis)
+        out.append(total)
+    return im.mag(im.stack(out))
+
+
+def evaluate_gradient(controls, w, /):
+    """A Bezier cubic's gradient, in the piece's own weights.
+
+    The derivative of `evaluate`, on the same terms: the controls are
+    ``(C..., 10)``, the weights are ``(3, Q)``, and the answer is ``(2, C...,
+    Q)`` --- one gradient per free weight, with the channels in their usual
+    place.
+    """
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
+    basis = bernstein_gradient(w)
+    if w.ndim == 1:
+        return im.einsum('aw,...w->a...', basis, controls)
+    return im.einsum('awq,...w->a...q', basis, controls)
+
+
+def free_map(piece, /):
+    """The map from a triangle's free weights to a piece's, differentiated.
+
+    A position with barycentric weights ``u`` has, within the piece holding the
+    two corners of the edge it leaves out, the weights
+
+        ``(u_a - u_c, u_b - u_c, 3 u_c)``
+
+    --- which is `sub_weights`'s own reading, differentiated. The free
+    coordinates are the first two weights, so a step in one of them moves the
+    left-out corner's weight by ``-1`` when that corner is the third and by a
+    unit when it is the one stepped along.
+
+    Parameters
+    ----------
+    piece : int
+        The piece, 0 through 2.
+
+    Returns
+    -------
+    mapping : numpy.ndarray
+        A ``(2, 2)`` matrix: what a step in the triangle's *j*th free weight
+        does to the piece's *i*th.
+    """
+    (a, b) = EDGES[piece]
+    left_out = [x for x in range(3) if x not in (a, b)][0]
+    out = zeros((2, 2))
+    for j in range(2):
+        # A weight's derivative is a unit in its own free direction --- except
+        # for the *third*, whose weight is what the others leave and whose
+        # derivative is therefore -1 in both. Which corner is the third is a
+        # property of the corner and not of the direction, so it is the same
+        # correction for `a`, `b` and the left-out corner alike.
+        def d(which, /):
+            return ((1.0 if which == j else 0.0)
+                    + (-1.0 if which == 2 else 0.0))
+        out[0, j] = d(a) - d(left_out)
+        out[1, j] = d(b) - d(left_out)
+    return out
+
+
 # The operator the element's edge numbers come from ##########################
 
 def edge_key(coords, i, j, /):
