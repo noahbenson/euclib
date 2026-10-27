@@ -779,3 +779,38 @@ class TestTheTetmeshCarriesTheProperties(TestCase):
         got = asarray(self._prism().tetmesh['f']).ravel().tolist()
         self.assertEqual(got, [10.0, 20.0, 30.0, 10.0, 20.0, 30.0])
 
+    def test_a_property_with_elevations_takes_the_tetmesh_s_higher_orders(self):
+        '''That a prism reads a layered property through its stack.
+
+        A property with more elevations than the prism has surfaces is read
+        through the stack of *tetrahedra* between them, and a tetrahedron
+        supports more than a triangle does --- quadratic and cubic fits among
+        them. So the attachment check has to ask what *this* property can be
+        read with and not only what the surface can, or the stack's own answers
+        are refused before anything reads them.
+        '''
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                          PrismTopology([[0], [1], [2]]),
+                          elevations={'q': array([0.0, 0.5, 1.0])})
+        vals = zeros((3, 1, 3))
+        vals[1] = 1.0
+        vals[2] = 2.0
+        for order in (1, 2, 3):
+            with self.subTest(order=order):
+                q = prism.withprop('q', vals, interp=('polynomial', order))
+                # Half way up, between the layer at 0 and the one at 1.
+                self.assertAlmostEqual(
+                    float(asarray(q.prop('q', at=array([[0.2], [0.2], [0.5]]))
+                                 ).ravel()[0]), 1.0, places=6)
+
+    def test_a_property_without_elevations_is_held_to_the_surface_s_orders(self):
+        # The surface is a triangle and nothing more, so it takes the first
+        # order and refuses the rest --- which is the same prism as above.
+        lower = array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+        prism = PrismMesh(stack([lower, lower + array([[0.], [0.], [1.]])]),
+                          PrismTopology([[0], [1], [2]]),
+                          elevations={'q': array([0.0, 0.5, 1.0])})
+        with self.assertRaises(ValueError):
+            prism.withprop('s', zeros(3), interp=('polynomial', 2))
+

@@ -155,7 +155,7 @@ def supported_interp(topo, /):
     return INTERP_SUPPORTED
 
 
-def check_property_interp(prop, topo, /):
+def check_property_interp(prop, topo, supported=None, /):
     '''Checks that a geometry can honour a property's interpolation.
 
     The check happens when the property is attached to the geometry, so that a
@@ -170,6 +170,12 @@ def check_property_interp(prop, topo, /):
         The property being attached.
     topo : Topology
         The geometry's topology.
+    supported : tuple or None, optional
+        What the geometry can honour for this property, when that depends on the
+        property and not only on the geometry --- which it does for a prism, a
+        property carrying more elevations than the prism has surfaces being read
+        through the stack of tetrahedra between them, which supports more than
+        the surface does. The default, ``None``, asks the topology.
 
     Raises
     ------
@@ -186,7 +192,8 @@ def check_property_interp(prop, topo, /):
         return
     if not prop.interp_specified:
         return
-    supported = supported_interp(topo)
+    if supported is None:
+        supported = supported_interp(topo)
     if tuple(interp) not in supported:
         order = getattr(topo, 'order', None)
         why = ("a point cloud has no interior, so it can only report the"
@@ -1047,7 +1054,15 @@ class Geometry(MetaObject, metaclass=plantypeABC):
             if isinstance(new, lazy):
                 new = new()
             new.valid
-            check_property_interp(new, self.topo)
+            # What this geometry can honour may depend on the property and not
+            # only on the geometry: a prism reads a property with more
+            # elevations than it has surfaces through the stack of tetrahedra
+            # between them, and the stack supports more than the surface does.
+            from ..types._interp import _reads_through_a_stack
+            supported = supported_interp(
+                self.topo.tettopo if _reads_through_a_stack(self, pname)
+                else self.topo)
+            check_property_interp(new, self.topo, supported)
         return self.copy(**self._props_updated(order, {pname: new}))
 
     def dropprop(self, name=UNSET, error=False):
