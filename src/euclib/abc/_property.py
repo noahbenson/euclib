@@ -174,8 +174,14 @@ INTERP_SUPPORTED_TETRAHEDRON = (('nearest', 0), ('polynomial', 1),
 #: orders are built from do not apply: there is no simplex to fit, and the
 #: values' own elevation axis is not something a tetrahedral fit of the
 #: geometry's two surfaces can see. What the first order can do is the
-#: linear blend within the triangle. The rest is deferred rather than refused;
-#: see the roadmap.
+#: linear blend within the triangle.
+#:
+#: A property with *more* elevations than the prism has surfaces is a different
+#: case and gets more: it is read through the stack of tetrahedra between those
+#: elevations (`tetlayer`), and a tetrahedron supports the full element-wise
+#: set. So this list is what the *surface* can honour; a layered property is
+#: checked against the stack's instead, which is why `check_property_interp`
+#: takes the set its caller has worked out rather than assuming this one.
 INTERP_SUPPORTED_PRISM = (('nearest', 0), ('polynomial', 1), ('bezier', 1))
 
 #: The valid extrapolation orders. Only 0 (nearest point on the object) is
