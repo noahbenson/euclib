@@ -1074,9 +1074,10 @@ def triangle_box_polygon(corners, bounds, tolerance=0.0):
     Parameters
     ----------
     corners : numpy.ndarray
-        A ``(3, 3)`` matrix: the triangle's three corners.
+        A ``(D, 3)`` matrix: the triangle's three corners, in two dimensions
+        or three.
     bounds : numpy.ndarray
-        A ``(3, 2)`` box, as the low and high coordinate along each axis.
+        A ``(D, 2)`` box, as the low and high coordinate along each axis.
     tolerance : float, optional
         How far outside a face a corner may lie and still be counted. The
         default is ``0``.
@@ -1084,14 +1085,18 @@ def triangle_box_polygon(corners, bounds, tolerance=0.0):
     Returns
     -------
     numpy.ndarray
-        A ``(3, V)`` matrix of the polygon's corners in order around it, or a
-        ``(3, 0)`` matrix when they share nothing. Fewer than three corners mean
+        A ``(D, V)`` matrix of the polygon's corners in order around it, or a
+        ``(D, 0)`` matrix when they share nothing. Fewer than three corners mean
         the same thing: a point or a segment has no area.
     '''
     corners = asarray(corners, dtype='float64')
     bounds = asarray(bounds, dtype='float64')
-    poly = [corners[:, i] for i in range(3)]
-    for axis in range(3):
+    # The dimension comes from the corners rather than being assumed: a
+    # triangle in a plane is clipped by four planes and one in space by six,
+    # and the arithmetic is the same either way.
+    dim = corners.shape[0]
+    poly = [corners[:, i] for i in range(corners.shape[1])]
+    for axis in range(dim):
         for (value, above) in ((float(bounds[axis, 0]), True),
                                (float(bounds[axis, 1]), False)):
             if not poly:
@@ -1114,7 +1119,7 @@ def triangle_box_polygon(corners, bounds, tolerance=0.0):
                     out.append(a + (da / (da - db)) * (b - a))
             poly = out
     if len(poly) < 3:
-        return zeros((3, 0))
+        return zeros((dim, 0))
     return stack(poly, axis=1)
 
 

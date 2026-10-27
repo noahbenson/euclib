@@ -14,7 +14,8 @@ import numpy as np
 from numpy import allclose, array, asarray, diag, eye, sort, zeros
 from pcollections import lazy
 
-from euclib.utils import (segments_triangles_intersect,
+from euclib.utils import (triangle_box_polygon,
+                          segments_triangles_intersect,
                           triangles_segments_intersect)
 from euclib.ops import (
     voxel_segment_intersections, voxel_surface_intersections,
@@ -609,6 +610,63 @@ class TestADeferredPropertySurvivesAnIntersection(TestCase):
                 (lazy_value, _) = self._counting(zeros(3))
                 build(prism.withprop('q', lazy_value, interp=0))
                 self.assertEqual(self.read, [], f"{name} readied the value")
+
+
+class TestThePlane(TestCase):
+    '''That a triangle mesh in a plane works, and that a mismatch is refused.
+
+    A surface in a plane is clipped by a plane grid the way one in space is
+    clipped by a volume grid: the arithmetic is the same over fewer axes. What
+    is not the same is the register --- a plane in space is some other plane's
+    image and nothing says which --- so a mesh and a grid of different
+    dimensions are refused rather than guessed at.
+    '''
+
+    def _tri(self):
+        return TriMesh(array([[0., 1., 0.], [0., 0., 1.]]),
+                       TriTopology([[0], [1], [2]]))
+
+    def test_the_clip_works_in_a_plane(self):
+        poly = asarray(triangle_box_polygon(
+            asarray(self._tri().coords), array([[-1., 1.], [-1., 1.]])))
+        self.assertEqual(poly.shape, (2, 3))
+        self.assertTrue(allclose(poly.T, self._tri().coords.T))
+
+    def test_the_intersection_keeps_the_area(self):
+        tri = self._tri()
+        (pieces, voxels) = voxel_surface_intersections(
+            tri, Grid(eye(3), GridTopology((3, 3))))
+        self.assertEqual(voxels.shape[0], 2)
+        self.assertEqual(voxels.shape[1], pieces.topo.simplex_count[2])
+        self.assertAlmostEqual(float(pieces.area.sum()), float(tri.area.sum()),
+                               places=6)
+
+    def test_integrating_in_a_plane_gives_the_area(self):
+        tri = self._tri()
+        grid = Grid(eye(3), GridTopology((3, 3)))
+        self.assertAlmostEqual(integrate(tri, grid, 1).sum(),
+                               float(tri.area.sum()), places=6)
+        # The empty part of a cell is an *area* here, so `emptyconst` fills it:
+        # nine unit cells, each of area 1.
+        self.assertAlmostEqual(integrate(tri, grid, 1, emptyconst=1).sum(), 9.0)
+
+    def test_a_mesh_and_a_grid_of_different_dimensions_are_refused(self):
+        # A plane in space has no `z` to be given, so there is no way to bring
+        # the coordinates into register.
+        with self.assertRaises(ValueError):
+            integrate(self._tri(), Grid(eye(4), GridTopology((3, 3, 3))), 1)
+        with self.assertRaises(ValueError):
+            voxel_surface_intersections(
+                self._tri(), Grid(eye(4), GridTopology((3, 3, 3))))
+
+    def test_a_surface_in_a_volume_still_has_no_empty_part(self):
+        # Its pieces measure area and the cells measure volume, so filling the
+        # rest of a cell with a constant would add an area to a volume.
+        tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                      TriTopology([[0], [1], [2]]))
+        with self.assertRaises(ValueError):
+            integrate(tri, Grid(eye(4), GridTopology((3, 3, 3))), 1,
+                      emptyconst=1)
 
 
 class TestIntegrate(TestCase):

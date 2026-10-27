@@ -27,7 +27,7 @@ from immlib import to_array
 
 from numpy import (
     arange, asarray, bincount, ceil, concatenate, cross, cumsum, einsum, floor,
-    full, intp, maximum, ones, repeat, sqrt, stack, tile, zeros)
+    full, intp, maximum, ones, prod, repeat, sqrt, stack, tile, zeros)
 from numpy.linalg import det
 
 from pcollections import holdlazy, lazy
@@ -690,9 +690,10 @@ def integrate(mesh, grid, values, /, emptyconst=0):
     if not isinstance(grid, Grid):
         raise TypeError(f"expected a Grid; found {type(grid)}")
     shape = tuple(grid.shape)
-    if len(shape) != 3:
+    if len(shape) != mesh.dim:
         raise ValueError(
-            f"a voxel grid has three dimensions; this one has {len(shape)}")
+            f"this geometry occupies {mesh.dim} dimensions, so its grid must"
+            f" have {mesh.dim}; this one has {len(shape)}")
     from ..abc import QUALITATIVE
     # The measure of a piece is the extent the source has: a tetrahedron's
     # volume, a triangle's area. Each is integrated over the voxels it falls in,
@@ -701,14 +702,18 @@ def integrate(mesh, grid, values, /, emptyconst=0):
     # between calls, since a second property of the same mesh over the same grid
     # is cut the same way.
     (pieces, voxels, measures) = _intersections(mesh, grid)
-    if emptyconst != 0 and not isinstance(mesh, _TetMesh):
-        # The empty part of a voxel is a *volume*, and a surface has none to
-        # leave empty: its pieces measure area, so filling the rest of a voxel
-        # with a constant would be adding an area to a volume.
+    if emptyconst != 0 and mesh.order != len(shape):
+        # The empty part of a cell is the measure the pieces do *not* fill, and
+        # that is only defined when they fill the cell's own extent: a
+        # tetrahedron in a volume, or a triangle in a plane. A surface in a
+        # volume has no part of it to leave empty --- its pieces measure area,
+        # so filling the rest with a constant would be adding an area to a
+        # volume --- and a path is further short again.
         raise ValueError(
             f"emptyconst needs a geometry whose pieces fill the space they are"
-            f" in; a {type(mesh).__name__}'s measure is a lower-dimensional"
-            f" extent, so there is no empty part of a voxel for it to fill")
+            f" in; a {type(mesh).__name__}'s elements have order {mesh.order}"
+            f" and the grid has {len(shape)} dimensions, so there is no empty"
+            f" part of a cell for it to fill")
     tets = measures.shape[0]
     if isinstance(values, str):
         prop = mesh.propinfo(values)
@@ -774,9 +779,13 @@ def integrate(mesh, grid, values, /, emptyconst=0):
     # The voxel each piece came from, flattened, and the voxels flattened, so
     # that the sum over a voxel is a `bincount` rather than a scatter --- one
     # call per channel, and no loop over voxels.
-    (nx, ny, nz) = shape
-    flat = (voxels[0] * (ny * nz) + voxels[1] * nz + voxels[2]).astype(intp)
-    cells = nx * ny * nz
+    # The cell each piece came from, as one index into the flattened grid ---
+    # raveled from the last axis up, so that the leading coordinate varies
+    # slowest whatever the dimension is.
+    flat = zeros(voxels.shape[1], dtype=intp)
+    for axis in range(len(shape)):
+        flat = flat * shape[axis] + voxels[axis]
+    cells = int(prod(shape))
     totals = zeros((contrib.shape[0], cells))
     for (c, one) in enumerate(contrib):
         totals[c] = bincount(flat, weights=one, minlength=cells)
@@ -785,7 +794,8 @@ def integrate(mesh, grid, values, /, emptyconst=0):
         # zero, because a piece that reaches the boundary can cover a voxel to
         # within rounding, and a negative empty volume would be a lie about it.
         covered = bincount(flat, weights=measures, minlength=cells)
-        cell = abs(det(asarray(grid.affine.matrix)[:3, :3]))
+        matrix = asarray(grid.affine.matrix)
+        cell = abs(det(matrix[:len(shape), :len(shape)]))
         totals += float(emptyconst) * maximum(cell - covered, 0.0)
     return totals.reshape(channels + shape)
 
@@ -809,7 +819,8 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
     mesh : TriMesh
         The triangle mesh.
     grid : Grid
-        A three-dimensional grid.
+        A grid of the same dimension as the mesh: two for a mesh in a plane,
+        three for one in space.
     tolerance : float or None, optional
         How far outside a face a corner may lie and still count. The default,
         ``None``, uses a small fraction of the mesh's size.
@@ -822,15 +833,15 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
         entirely within one voxel; and no coordinate appears twice, so pieces
         that meet share their corners.
     voxels : numpy.ndarray
-        A ``(3, T)`` matrix of the grid cell indices each piece came from, one
-        column per triangle of ``pieces``.
+        A ``(D, T)`` matrix of the grid cell indices each piece came from, one
+        column per triangle of ``pieces``, ``D`` being the space's dimension.
 
     Raises
     ------
     TypeError
         If either argument is not of the expected kind.
     ValueError
-        If the grid is not three-dimensional.
+        If the grid's dimension is not the mesh's.
     '''
     from ..types import TriMesh as _TriMesh
     from ..types import TriTopology as _TriTopology
@@ -839,15 +850,20 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
         raise TypeError(f"expected a TriMesh; found {type(mesh)}")
     if not isinstance(grid, Grid):
         raise TypeError(f"expected a Grid; found {type(grid)}")
-    if len(grid.shape) != 3:
+    # The grid must live in the same space the mesh does. A surface in a plane
+    # cannot be voxelized by a volume grid --- there is no way to bring the
+    # coordinates into register, since a plane in space is some other plane's
+    # image and nothing here says which --- so that is refused rather than
+    # guessed at.
+    if len(grid.shape) != mesh.dim:
         raise ValueError(
-            f"a voxel grid has three dimensions; this one has"
-            f" {len(grid.shape)}")
+            f"this mesh occupies {mesh.dim} dimensions, so its grid must have"
+            f" {mesh.dim}; this one has {len(grid.shape)}")
     tol = tolerance_of(mesh) if tolerance is None else float(tolerance)
     shape = tuple(grid.shape)
     to_index = grid.affine_inverse
     to_global = grid.affine
-    corners = mesh.coords[:, mesh.topo.indices]           # (3, 3, M)
+    corners = mesh.coords[:, mesh.topo.indices]           # (D, 3, M)
     (dim, per_tri, triangles) = corners.shape
     flat = to_index.apply(corners.reshape(dim, per_tri * triangles))
     index_space = flat.reshape(dim, per_tri, triangles).transpose(2, 0, 1).copy()
@@ -855,7 +871,12 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
     # a polygon that is a segment at best. Skipping them here is the same
     # treatment the tetrahedral version gives a tetrahedron of no volume.
     edges = [index_space[:, :, i] - index_space[:, :, 0] for i in (1, 2)]
-    area = sqrt((cross(edges[0], edges[1], axis=1) ** 2).sum(axis=1)) / 2.0
+    # The area from the Gram determinant, ``|e0|^2 |e1|^2 - (e0 . e1)^2``, which
+    # is half the squared area and needs no cross product --- the one numpy
+    # defines only in three dimensions, and which it has dropped for two.
+    (norm0, norm1) = [(e * e).sum(axis=1) for e in edges]
+    dot = (edges[0] * edges[1]).sum(axis=1)
+    area = sqrt(norm0 * norm1 - dot * dot) / 2.0
     span = sqrt(sum((e * e).sum(axis=1) for e in edges))
     live = area > _FLAT_RATIO * (span / 2.0) ** 2
 
@@ -883,15 +904,17 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
     counts = spans.prod(axis=1)
     total = int(counts.sum())
     if total == 0:
-        empty = _TriMesh(zeros((3, 0)),
+        empty = _TriMesh(zeros((dim, 0)),
                          _TriTopology(zeros((3, 0), dtype=int), coord_count=0))
-        return (empty, zeros(0, dtype=int), zeros((3, 0), dtype=int))
+        return (empty, zeros(0, dtype=int), zeros((dim, 0), dtype=int))
     pair_of_tri = repeat(arange(triangles), counts)
     starts = concatenate([[0], cumsum(counts)[:-1]])
     within = arange(total) - repeat(starts, counts)
-    offsets = zeros((total, 3), dtype=int)
+    offsets = zeros((total, dim), dtype=int)
     spans_of = spans[pair_of_tri]
-    for axis in (2, 1, 0):
+    # Unpacked from the last axis down, so that the offset's leading coordinate
+    # varies slowest --- whatever the dimension is.
+    for axis in range(dim - 1, -1, -1):
         offsets[:, axis] = within % spans_of[:, axis]
         within = within // spans_of[:, axis]
     voxel_of = reach_lo[pair_of_tri] + offsets
@@ -915,8 +938,7 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
         local = polygon_fan(count)
         remap = zeros(count, dtype='intp')
         for k in range(count):
-            key = (float(polygon[0, k]), float(polygon[1, k]),
-                   float(polygon[2, k]))
+            key = tuple(float(c) for c in polygon[:, k])
             at = seen.get(key)
             if at is None:
                 at = len(coords)
@@ -926,9 +948,9 @@ def voxel_surface_intersections(mesh, grid, /, tolerance=None):
         faces.append(remap[local])
         voxel_of_piece.append(tile(voxel_of[i][:, None], (1, local.shape[1])))
     if not faces:
-        empty = _TriMesh(zeros((3, 0)),
+        empty = _TriMesh(zeros((dim, 0)),
                          _TriTopology(zeros((3, 0), dtype=int), coord_count=0))
-        return (empty, zeros((3, 0), dtype=int))
+        return (empty, zeros((dim, 0), dtype=int))
     all_coords = to_global.apply(stack(coords, axis=1))
     all_faces = concatenate(faces, axis=1)
     built = _TriMesh(all_coords,
