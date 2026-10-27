@@ -574,13 +574,32 @@ def voxel_intersections(mesh, grid, /, tolerance=None):
 
 
 
-#: How many intersected meshes to keep. The pieces of an intersection are large
-#: --- a mesh cut against a grid has at least as many simplices as the grid has
-#: cells it reaches --- so this is deliberately small: it is enough for the case
-#: it exists for, which is integrating several properties of one mesh over one
-#: grid, and no more. Whether a cache of this size earns its memory in practice
-#: is an open question, and this is where to revisit it.
-CACHE_SIZE = 4
+#: How many intersected meshes to keep. One, because the case the cache exists
+#: for is integrating several properties of *one* mesh over one grid, and a
+#: single entry serves that completely; more only helps a caller cycling between
+#: meshes, which is not what this is for.
+#:
+#: The measurements behind that, on blocks of tetrahedra cut against grids of
+#: their own size:
+#:
+#: =========  ========  =========  ===========  ==========  ============
+#: block      tets      first      second       intersection  entry
+#: =========  ========  =========  ===========  ==========  ============
+#: 8^3        2,048     0.628 s    0.548 s      13%          ~19x source
+#: 16^3       16,384    5.979 s    5.051 s      16%          ~19x source
+#: =========  ========  =========  ===========  ==========  ============
+#:
+#: So an entry saves a sixth of a repeat call and holds about nineteen times its
+#: source mesh --- of which only a fifth is the pieces' own arrays, the rest
+#: being the planobject machinery around them --- and it pins the source mesh and
+#: grid as well, since they are the key. Four of those is a lot of memory
+#: indefinitely held for a sixth of a call.
+#:
+#: The intersection could look larger in a measurement that cut a small mesh
+#: against a large grid, where it is nearly the whole cost. It is not the whole
+#: cost on a mesh of any size, because the quadrature that reads the source at
+#: every rule point grows with the pieces and does not come from the cache.
+CACHE_SIZE = 1
 
 
 @lru_cache(maxsize=CACHE_SIZE)
