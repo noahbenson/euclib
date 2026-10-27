@@ -996,8 +996,12 @@ def _segment_box_interval(a, d, voxel, tol, /):
     '''
     (t0, t1) = (0.0, 1.0)
     for axis in range(3):
-        lo = voxel[axis] - 0.5 - tol
-        hi = voxel[axis] + 0.5 + tol
+        # The exact box. The tolerance is applied to the *reach* --- which cells
+        # a segment is considered for --- and not to the cut, because a cut made
+        # `tol` past a face is a piece that overlaps its neighbour by that much
+        # and a path whose pieces are longer than the path.
+        lo = voxel[axis] - 0.5
+        hi = voxel[axis] + 0.5
         if d[axis] == 0.0:
             if a[axis] < lo or a[axis] > hi:
                 return (1.0, 0.0)

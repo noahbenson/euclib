@@ -811,22 +811,26 @@ class TestIntegrate(TestCase):
         self.assertTrue(allclose(integrate(prism, grid, 1),
                                  integrate(prism.tetmesh, grid, 1)))
 
-    def test_a_path_s_pieces_are_its_own_length(self):
+    def test_a_path_s_pieces_are_exactly_its_length(self):
         # Clipping a segment against the voxels it crosses divides it and does
-        # not change how long it is. The pieces overlap by the tolerance the
-        # clipping allows, so the total is a shade over rather than exactly
-        # equal --- which is true of the tetrahedral and triangle versions too.
+        # not change how long it is --- *exactly*, because the cut is made at
+        # the face and not a tolerance past it. Expanding the box by the
+        # tolerance admitted the cells a segment only touches at a corner, each
+        # with a sliver twice the tolerance long, so the pieces came to a little
+        # more than the path.
         for coords in (array([[0.0, 2.0], [0.0, 2.0], [0.0, 2.0]]),
                        array([[0.0, 2.0], [0.0, 2.0], [0.5, 0.5]]),
-                       array([[0.0, 2.5], [0.0, 0.0], [0.0, 0.0]])):
+                       array([[0.0, 2.5], [0.0, 0.0], [0.0, 0.0]]),
+                       array([[0.0, 2.3], [0.4, 1.7], [0.9, 0.2]])):
             with self.subTest(coords=coords.ravel().tolist()):
                 path = SegPath(coords, SegTopology([[0], [1]]))
-                (pieces, voxels) = voxel_segment_intersections(
-                    path, self._grid())
-                self.assertEqual(voxels.shape[1],
-                                 pieces.topo.simplex_count[1])
-                self.assertAlmostEqual(float(pieces.length.sum()),
-                                       float(path.length.sum()), places=6)
+                for n in (3, 12):
+                    (pieces, voxels) = voxel_segment_intersections(
+                        path, Grid(eye(4), GridTopology((n, n, n))))
+                    self.assertEqual(voxels.shape[1],
+                                     pieces.topo.simplex_count[1])
+                    self.assertAlmostEqual(float(pieces.length.sum()),
+                                           float(path.length.sum()), places=12)
 
     def test_a_path_integrates_along_its_length(self):
         path = SegPath(array([[0.0, 2.3], [0.4, 1.7], [0.9, 0.2]]),
