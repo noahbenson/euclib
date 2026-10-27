@@ -85,7 +85,8 @@ DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom', 'powell-sabin',
 #: gradient and not for the hessian --- the split schemes' patches are built
 #: piece by piece, and the second derivative of one is a separate construction
 #: from the first.
-HESSIAN_DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom')
+HESSIAN_DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom',
+                          'powell-sabin')
 
 #: How many coordinates the gradient estimate advances together in one block.
 #: A block gives a stack of designs of shape ``(B, M, W)``, which is what the
@@ -1763,9 +1764,12 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
         im.promote(whole, slopes, weight, geom.coords)[0],
         channels + (index.shape[0],))
     if derivative:
+        # Two axes for a gradient --- the element's own --- and four for a
+        # hessian: two in and two out, in the channel order a value has.
+        lead = (2,) if derivative == 1 else (2, 2)
         res_d = _grid._zeros_for(
             im.promote(whole, slopes, weight, geom.coords)[0],
-            (2,) + channels + (index.shape[0],))
+            lead + channels + (index.shape[0],))
     # One solve for every element these positions touch, rather than one per
     # element: the basis is a (53, 30) least-squares system whose *assembly*
     # costs six hundred pseudo-inverses, and a fit that touched five thousand
@@ -1890,9 +1894,12 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
         im.promote(whole, slopes, weight, geom.coords)[0],
         channels + (index.shape[0],))
     if derivative:
+        # Two axes for a gradient --- the element's own --- and four for a
+        # hessian: two in and two out, in the channel order a value has.
+        lead = (2,) if derivative == 1 else (2, 2)
         res_d = _grid._zeros_for(
             im.promote(whole, slopes, weight, geom.coords)[0],
-            (2,) + channels + (index.shape[0],))
+            lead + channels + (index.shape[0],))
     for (slot, element) in enumerate(elements):
         here = indices[:, element]
         # The triangle's shape enters the element in exactly one place --- the
@@ -1949,14 +1956,28 @@ def powell_sabin_fit(geom, loc, values, corners, slopes, order, /, *,
                 # it: the free coordinates are the first two weights and not
                 # their difference from the third.
                 free = m[:2, :2] - m[:2, 2:3]
-                flat = im.reshape(d, (2, -1, at.size))
                 # `free[i, j]` is what a step in the triangle's *j*th free
                 # weight does to the piece's *i*th, so the chain sums over `i`
                 # with `j` left free --- the contraction is `free` and not its
                 # transpose.
-                res_d[(Ellipsis, rows[at])] = im.mag(im.reshape(
-                    im.einsum('ij,icq->jcq', free, flat),
-                    (2,) + channels + (at.size,)))
+                if derivative == 1:
+                    flat = im.reshape(d, (2, -1, at.size))
+                    res_d[(Ellipsis, rows[at])] = im.mag(im.reshape(
+                        im.einsum('ij,icq->jcq', free, flat),
+                        (2,) + channels + (at.size,)))
+                else:
+                    # The hessian is the chain applied twice: the congruence
+                    # `free^T H free`, the map from a position to a local
+                    # coordinate being affine and so contributing no
+                    # second-derivative term of its own.
+                    h = im.reshape(
+                        _ps.evaluate_hessian(ordinates[:, _ps.SLOTS[k]],
+                                             inside[at].T),
+                        (2, 2, -1, at.size))
+                    step = im.einsum('ia,ijcn->ajcn', free, h)
+                    res_d[(Ellipsis, rows[at])] = im.mag(im.reshape(
+                        im.einsum('ajcn,jb->abcn', step, free),
+                        (2, 2) + channels + (at.size,)))
                 continue
             got = im.mag(_ps.evaluate(ordinates[:, _ps.SLOTS[k]], inside[at].T))
             res[(Ellipsis, rows[at])] = im.mag(

@@ -2431,7 +2431,7 @@ class TestThePropertyGradient(TestCase):
         # with the first derivative.
         tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
                       TriTopology([[0], [1], [2]]))
-        for interp in (('clough-tocher', 3), ('powell-sabin', 2)):
+        for interp in (('clough-tocher', 3),):
             with self.subTest(interp=interp):
                 p = tri.withprop('c', tri.coords[0], interp=interp)
                 p.propgrad('c')             # the gradient does answer
@@ -2553,12 +2553,37 @@ class TestThePropertyGradient(TestCase):
                             / (2 * step))
                     self.assertTrue(allclose(got[:2], array(num), atol=1e-6))
 
-    def test_the_split_scheme_has_no_hessian_yet(self):
-        # The second derivative of a piecewise patch is its own construction, so
-        # it refuses by name rather than answering with the first.
+    def test_the_split_schemes_hessians(self):
+        # Powell-Sabin answers, its patch being a quadratic on each piece and so
+        # having a constant hessian within one. Clough-Tocher's second
+        # derivative is still its own construction and refuses by name.
         tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
                       TriTopology([[0], [1], [2]]))
         p = tri.withprop('q', tri.coords[0], interp=('powell-sabin', 2))
+        self.assertEqual(asarray(p.prophess('q', at=array([[0.2], [0.2], [0.]]))
+                                 ).shape, (3, 3, 1))
+        c = tri.withprop('c', tri.coords[0], interp=('clough-tocher', 3))
         with self.assertRaises(NotImplementedError):
-            p.prophess('q')
+            c.prophess('c')
+
+    def test_the_powell_sabin_hessian_agrees_with_a_numerical_one(self):
+        # The hessian of a patch that is quadratic on each piece is constant
+        # within one, so a second difference of the same fit is the check ---
+        # and with true slopes the fit reproduces the field, whose hessian is
+        # known.
+        tri = TriMesh(array([[0.0, 1.3, 0.2], [0.0, 0.5, 1.1], [0.0, 0.0, 0.0]]),
+                      TriTopology([[0], [1], [2]]))
+        coords = asarray(tri.coords)
+        gradient = np.zeros((3, 3))
+        gradient[0] = 2 * coords[0]
+        gradient[1] = 2.0
+        p = tri.withprop('q', coords[0] ** 2 + 2 * coords[1],
+                         gradient=gradient, interp=('powell-sabin', 2))
+        step = 1e-4
+        for (sx, sy) in ((0.2, 0.15), (0.3, 0.15), (0.2, 0.3)):
+            with self.subTest(at=(sx, sy)):
+                at = array([[sx], [sy], [0.0]])
+                got = asarray(p.prophess('q', at=at)).reshape(3, 3)
+                self.assertTrue(allclose(got.diagonal(), [2.0, 0.0, 0.0],
+                                         atol=1e-6))
 

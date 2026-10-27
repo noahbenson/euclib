@@ -171,6 +171,65 @@ def bernstein_gradient(w, /):
                   im.multiply(2.0, im.subtract(three, two))])]))
 
 
+def bernstein_hessian(w, /):
+    '''The second derivatives of the six degree-two Bernstein polynomials.
+
+    Every one of them is a constant, the basis being quadratic, so the answer
+    does not depend on the weights at all --- the weights are taken only to say
+    how many positions are being asked about. The derivatives are taken against
+    the *last* weight twice over, as `bernstein_gradient`'s are taken once,
+    because the three sum to one: a step along the first weight is a step
+    against the third, and that is true of the second derivative too, which is
+    why the reduction here is four terms rather than one.
+
+    Returns
+    -------
+    hessian : numpy.ndarray
+        A ``(2, 2, 6)`` array: the second derivative of each of the six
+        polynomials in each pair of free weights.
+    '''
+    # The three-by-three barycentric second derivatives, as rows of six.
+    # (0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2) pair by pair.
+    two = 2.0
+    bary = {
+        (0, 0): [two, 0.0, 0.0, 0.0, 0.0, 0.0],
+        (1, 1): [0.0, two, 0.0, 0.0, 0.0, 0.0],
+        (2, 2): [0.0, 0.0, two, 0.0, 0.0, 0.0],
+        (0, 1): [0.0, 0.0, 0.0, two, 0.0, 0.0],
+        (0, 2): [0.0, 0.0, 0.0, 0.0, two, 0.0],
+        (1, 2): [0.0, 0.0, 0.0, 0.0, 0.0, two],
+    }
+
+    def d(i, j, /):
+        return asarray(bary[(i, j)] if (i, j) in bary else bary[(j, i)])
+
+    out = []
+    for a in range(2):
+        row = []
+        for b in range(2):
+            # d/du_a d/du_b = (d/dL_a - d/dL_2)(d/dL_b - d/dL_2), four terms
+            # with alternating signs.
+            value = d(a, b) - d(a, 2) - d(2, b) + d(2, 2)
+            row.append(value)
+        out.append(row)
+    return asarray(out)
+
+
+def evaluate_hessian(ordinates, w, /):
+    '''A quadratic patch's hessian, in the piece's own weights.
+
+    The second derivative of `evaluate`, on the same terms: the ordinates are
+    ``(C..., 6)``, the weights are ``(3, Q)``, and the answer is ``(2, 2, C...,
+    Q)`` --- one hessian per pair of free weights, with the channels in their
+    usual place.
+    '''
+    basis = bernstein_hessian(w)
+    if w.ndim == 1:
+        return im.einsum('abw,...w->ab...', basis, ordinates)
+    flat = im.einsum('abw,...w->ab...', basis, ordinates)
+    return im.reshape(flat, (2, 2) + ordinates.shape[:-1] + (w.shape[1],))
+
+
 def evaluate_gradient(ordinates, w, /):
     '''A quadratic patch's gradient, in the piece's own weights.
 
@@ -464,4 +523,5 @@ def sub_weights(weights, centre, /):
 
 __all__ = ('VERTICES', 'PIECES', 'ORDINATES', 'WHERE', 'SLOTS', 'neighbours_of',
            'centre_weights', 'basis', 'sub_weights', 'evaluate', 'bernstein',
-           'bernstein_gradient', 'evaluate_gradient', 'piece_map', 'split_places')
+           'bernstein_gradient', 'evaluate_gradient', 'piece_map', 'split_places',
+           'bernstein_hessian', 'evaluate_hessian')
