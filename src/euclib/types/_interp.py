@@ -86,7 +86,7 @@ DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom', 'powell-sabin',
 #: piece by piece, and the second derivative of one is a separate construction
 #: from the first.
 HESSIAN_DIFFERENTIABLE = ('polynomial', 'bezier', 'catmull-rom',
-                          'powell-sabin')
+                          'powell-sabin', 'clough-tocher')
 
 #: How many coordinates the gradient estimate advances together in one block.
 #: A block gives a stack of designs of shape ``(B, M, W)``, which is what the
@@ -1820,10 +1820,23 @@ def clough_tocher_fit(geom, loc, values, corners, slopes, order, /, *,
                 # *i*th by its `[i, j]`.
                 d = _ct.evaluate_gradient(controls[:, k * 10:(k + 1) * 10],
                                           inside[at].T)      # (2, C..., n)
+                free = _ct.free_map(k)
                 flat = im.reshape(d, (2, -1, at.size))
-                res_d[(Ellipsis, rows[at])] = im.mag(im.reshape(
-                    im.einsum('ij,icq->jcq', _ct.free_map(k), flat),
-                    (2,) + channels + (at.size,)))
+                if derivative == 1:
+                    res_d[(Ellipsis, rows[at])] = im.mag(im.reshape(
+                        im.einsum('ij,icq->jcq', free, flat),
+                        (2,) + channels + (at.size,)))
+                else:
+                    # The congruence `free^T H free`, the map from a position
+                    # to a local coordinate being affine.
+                    h = im.reshape(
+                        _ct.evaluate_hessian(controls[:, k * 10:(k + 1) * 10],
+                                             inside[at].T),
+                        (2, 2, -1, at.size))
+                    step = im.einsum('ia,ijcn->ajcn', free, h)
+                    res_d[(Ellipsis, rows[at])] = im.mag(im.reshape(
+                        im.einsum('ajcn,jb->abcn', step, free),
+                        (2, 2) + channels + (at.size,)))
                 continue
             got = im.mag(_ct.evaluate(controls[:, k * 10:(k + 1) * 10],
                                       inside[at].T))

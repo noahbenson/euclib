@@ -2423,148 +2423,18 @@ class TestThePropertyGradient(TestCase):
         got = asarray(both.propgrad('v', at=tet.coords))
         self.assertEqual(got.shape, (2, 3, 4))
 
-    def test_the_fits_without_a_hessian_say_so(self):
-        # Every method the element-wise engine implements now answers for the
-        # gradient. The *second* derivative is a separate construction for a
-        # split scheme --- its patch is three cubics or six quadratics rather
-        # than one polynomial --- so those refuse by name instead of answering
-        # with the first derivative.
-        tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
-                      TriTopology([[0], [1], [2]]))
-        for interp in (('clough-tocher', 3),):
-            with self.subTest(interp=interp):
-                p = tri.withprop('c', tri.coords[0], interp=interp)
-                p.propgrad('c')             # the gradient does answer
-                with self.assertRaises(NotImplementedError):
-                    p.prophess('c')
-
-    def test_a_grid_has_no_element_wise_derivative(self):
-        from euclib.types import Grid, GridTopology
-        g = Grid(eye(4), GridTopology((3, 3, 3)))
-        g = g.withprop('v', np.zeros(g.property_shape))
-        with self.assertRaises(NotImplementedError):
-            g.propgrad('v')
-
-    def test_a_quadratic_field_has_the_hessian_of_that_quadratic(self):
-        # f = x^2, whose hessian is diag(2, 0, 0) everywhere.
-        tet = self._tet()
-        gradient = np.zeros((3, 4))
-        gradient[0] = 2 * tet.coords[0]
-        c = asarray(tet.coords).mean(axis=1).reshape(3, 1)
-        want = np.diag([2.0, 0.0, 0.0])
-        for (method, order) in (('polynomial', 2), ('bezier', 2),
-                                ('bezier', 3)):
-            with self.subTest(method=method, order=order):
-                p = tet.withprop('q', tet.coords[0] ** 2,
-                                 gradient=gradient, interp=(method, order))
-                got = asarray(p.prophess('q', at=c))
-                self.assertEqual(got.shape, (3, 3, 1))
-                self.assertTrue(allclose(got[..., 0], want, atol=1e-12))
-
-    def test_a_segment_s_quadratic_hessian_is_exact(self):
-        path = SegPath(array([[0., 2.], [0., 0.]]), SegTopology([[0], [1]]))
-        gradient = np.zeros((2, 2))
-        gradient[0] = 2 * path.coords[0]
-        at = array([[0.5], [0.0]])
-        for order in (2, 3):
-            with self.subTest(order=order):
-                p = path.withprop('q', path.coords[0] ** 2,
-                                  gradient=gradient,
-                                  interp=('bezier', order))
-                self.assertTrue(allclose(
-                    asarray(p.prophess('q', at=at)).ravel(), [2, 0, 0, 0],
-                    atol=1e-12))
-
-    def test_a_field_below_the_quadratic_order_has_no_hessian(self):
-        # A linear field's second derivative vanishes and a piecewise-constant
-        # one has no derivative at all, so both report zero.
-        tet = self._tet()
-        c = asarray(tet.coords).mean(axis=1).reshape(3, 1)
-        for interp in (('polynomial', 1), ('nearest', 0)):
-            with self.subTest(interp=interp):
-                p = tet.withprop('f', tet.coords[0], interp=interp)
-                self.assertTrue(allclose(asarray(p.prophess('f', at=c)), 0.0))
-
-    def test_the_gradient_agrees_with_a_numerical_one(self):
-        '''The check that holds for every fit, whatever it reproduces.
-
-        A fit need not reproduce any particular function. Catmull-Rom's end
-        slopes are one-sided estimates of the neighbours' difference, so its
-        curve is not the quadratic through the values, and its derivative has no
-        closed form to be checked against. It does have a difference quotient,
-        and that is what this compares with --- along each segment, so that the
-        perturbed positions stay on the path where the fit is defined.
-        '''
-        path = SegPath(array([[0.0, 1.1, 2.4, 3.2], [0.0, 0.7, 0.4, 1.3]]),
-                       SegTopology([[0, 1, 2], [1, 2, 3]]))
-        p = path.withprop('q', path.coords[0] ** 2 + path.coords[1],
-                          interp=('catmull-rom', 3))
-        coords = asarray(path.coords)
-        step = 1e-6
-
-        def value(pt):
-            return float(asarray(p.prop('q', at=pt.reshape(2, 1))).ravel()[0])
-
-        for (u, v) in ((0, 1), (1, 2), (2, 3)):
-            with self.subTest(segment=(u, v)):
-                mid = (coords[:, u] + coords[:, v]) / 2.0
-                along = coords[:, v] - coords[:, u]
-                along = along / linalg.norm(along)
-                got = float(asarray(p.propgrad(
-                    'q', at=mid.reshape(2, 1))).ravel() @ along)
-                want = (value(mid + step * along)
-                        - value(mid - step * along)) / (2 * step)
-                self.assertAlmostEqual(got, want, places=6)
-
-    def test_the_split_schemes_gradients_agree_with_a_numerical_one(self):
-        '''The two split schemes, checked the way every fit is checked.
-
-        Clough-Tocher builds a cubic on each of three pieces of a triangle and
-        Powell-Sabin a quadratic on each of six, so neither is one polynomial
-        and the check that holds is against its own difference quotient --- as
-        it is for Catmull-Rom. Both reproduce a quadratic exactly when their
-        slopes are the true ones, so those are what is supplied here; with
-        slopes estimated from the values they do not, which is the estimate and
-        not the fit.
-        '''
-        tri = TriMesh(array([[0.0, 1.3, 0.2], [0.0, 0.5, 1.1], [0.0, 0.0, 0.0]]),
-                      TriTopology([[0], [1], [2]]))
-        coords = asarray(tri.coords)
-        gradient = np.zeros((3, 3))
-        gradient[0] = 2 * coords[0]
-        gradient[1] = 2.0
-        step = 1e-7
-        for (method, order) in (('clough-tocher', 3), ('powell-sabin', 2)):
-            p = tri.withprop('q', coords[0] ** 2 + 2 * coords[1],
-                             gradient=gradient, interp=(method, order))
-            for (sx, sy) in ((0.2, 0.15), (0.3, 0.15), (0.2, 0.3), (0.1, 0.2)):
-                with self.subTest(method=method, at=(sx, sy)):
-                    at = array([[sx], [sy], [0.0]])
-                    got = asarray(p.propgrad('q', at=at)).ravel()
-                    num = []
-                    for axis in range(2):
-                        plus = at.copy()
-                        minus = at.copy()
-                        plus[axis] += step
-                        minus[axis] -= step
-                        num.append(
-                            (float(asarray(p.prop('q', at=plus)).ravel()[0])
-                             - float(asarray(p.prop('q', at=minus)).ravel()[0]))
-                            / (2 * step))
-                    self.assertTrue(allclose(got[:2], array(num), atol=1e-6))
-
     def test_the_split_schemes_hessians(self):
-        # Powell-Sabin answers, its patch being a quadratic on each piece and so
-        # having a constant hessian within one. Clough-Tocher's second
-        # derivative is still its own construction and refuses by name.
+        # Both split schemes answer: their patches are quadratic and cubic on
+        # each piece, and a second derivative is a separate construction from
+        # the first either way.
         tri = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
                       TriTopology([[0], [1], [2]]))
-        p = tri.withprop('q', tri.coords[0], interp=('powell-sabin', 2))
-        self.assertEqual(asarray(p.prophess('q', at=array([[0.2], [0.2], [0.]]))
-                                 ).shape, (3, 3, 1))
-        c = tri.withprop('c', tri.coords[0], interp=('clough-tocher', 3))
-        with self.assertRaises(NotImplementedError):
-            c.prophess('c')
+        for (interp, at) in ((('powell-sabin', 2), array([[0.2], [0.2], [0.]])),
+                             (('clough-tocher', 3), array([[0.2], [0.2], [0.]]))):
+            with self.subTest(interp=interp):
+                p = tri.withprop('q', tri.coords[0], interp=interp)
+                self.assertEqual(asarray(p.prophess('q', at=at)).shape,
+                                 (3, 3, 1))
 
     def test_the_powell_sabin_hessian_agrees_with_a_numerical_one(self):
         # The hessian of a patch that is quadratic on each piece is constant

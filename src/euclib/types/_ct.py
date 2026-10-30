@@ -741,6 +741,91 @@ def bernstein_gradient(w, /):
     return im.mag(im.stack(out))
 
 
+def bernstein_hessian(w, /):
+    """The second derivatives of the ten degree-three Bernstein polynomials.
+
+    Unlike the degree-two basis's, these are not constant: a cubic's second
+    derivative is linear in the weights. They are taken against the *last*
+    weight twice over, as the gradient's are taken once, because the three sum
+    to one --- which is why reducing to the two free weights takes four terms
+    with alternating signs rather than one.
+
+    Parameters
+    ----------
+    w : numpy.ndarray
+        A ``(3,)`` vector or a ``(3, Q)`` matrix of a piece's barycentric
+        weights.
+
+    Returns
+    -------
+    hessian : numpy.ndarray
+        A ``(2, 2, 10)`` array for a vector of weights, or ``(2, 2, 10, Q)``
+        for a matrix: the second derivative of each of the ten polynomials in
+        each pair of free weights.
+    """
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
+    powers = asarray(POWERS)
+    coef = asarray([COEF[p] for p in POWERS])
+
+    def bary(axes, /):
+        """The basis differentiated along a multiset of barycentric axes."""
+        shifted = powers.copy()
+        for i in range(3):
+            for axis in axes:
+                if i == axis:
+                    # Clamped before the power so that none is taken negative;
+                    # the zeroing of the terms whose exponent was too small is
+                    # done by the factors below.
+                    shifted[:, i] = (shifted[:, i] - 1).clip(min=0)
+        if w.ndim == 1:
+            value = im.multiply(coef, im.prod(im.pow(w[None, :], shifted), axis=-1))
+        else:
+            value = im.multiply(coef[:, None], im.prod(
+                im.pow(w[None, :, :], shifted[:, :, None]), axis=1))
+        # One factor of the exponent per axis named, and `e - 1` more when it is
+        # named twice --- which is the difference between the second derivative
+        # and the square of the first.
+        for axis in sorted(set(axes)):
+            e = powers[:, axis]
+            factor = e * (e - 1).clip(min=0) if axes.count(axis) == 2 else e
+            factor = factor[:, None] if value.ndim > 1 else factor
+            value = im.multiply(value, factor)
+        return value
+
+    out = []
+    for a in range(2):
+        row = []
+        for b in range(2):
+            total = bary((a, b))
+            total = im.subtract(total, bary((a, 2)))
+            total = im.subtract(total, bary((2, b)))
+            total = im.add(total, bary((2, 2)))
+            row.append(total)
+        out.append(im.stack(row))
+    return im.mag(im.stack(out))
+
+
+def evaluate_hessian(controls, w, /):
+    """A Bezier cubic's hessian, in the piece's own weights.
+
+    The second derivative of `evaluate`, on the same terms: the controls are
+    ``(C..., 10)``, the weights are ``(3, Q)``, and the answer is ``(2, 2,
+    C..., Q)`` --- one hessian per pair of free weights, with the channels in
+    their usual place.
+    """
+    w = im.mag(w) if hasattr(w, 'requires_grad') else asarray(w)
+    basis = bernstein_hessian(w)
+    if w.ndim == 1:
+        return im.einsum('abw,...w->ab...', basis, controls)
+    # The cubic's second derivative depends on the weights, so the basis has a
+    # position axis the contraction has to keep --- and `einsum` takes the
+    # ellipsis in one place, with one label before it. So the positions are
+    # taken one at a time and stacked.
+    parts = [im.einsum('abw,...w->ab...', basis[..., i], controls)
+             for i in range(w.shape[1])]
+    return im.stack(parts, axis=-1)
+
+
 def evaluate_gradient(controls, w, /):
     """A Bezier cubic's gradient, in the piece's own weights.
 
