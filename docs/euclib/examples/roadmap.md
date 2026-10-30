@@ -117,13 +117,6 @@ written to state the limitation rather than hide it:
   lattice by $10^{-6}$ is enough to remove it, since any asymmetry at all breaks
   the tie.
 
-- **The hessian of a split scheme.** `euclib.types._ps` and `_ct` build a
-  triangle's patch piece by piece --- six quadratics for Powell-Sabin, three
-  cubics for Clough-Tocher --- and `propgrad` reports the gradient of one. The
-  *second* derivative is a separate construction, because the patch is not one
-  polynomial whose second derivative can be read off, so `prophess` refuses both
-  by name rather than answering with the first derivative. `HESSIAN_DIFFERENTIABLE`
-  in `euclib.types._interp` is the list of what does answer.
 - **Powell-Sabin's reproduction of a quadratic, when its slopes are estimated.**
   The scheme is built to reproduce a quadratic exactly, and it does when the
   slopes it is given are the true ones: `x^2 + 2y` over a skewed triangle comes
