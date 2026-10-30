@@ -2436,24 +2436,23 @@ class TestThePropertyGradient(TestCase):
                 self.assertEqual(asarray(p.prophess('q', at=at)).shape,
                                  (3, 3, 1))
 
-    def test_the_powell_sabin_hessian_agrees_with_a_numerical_one(self):
-        # The hessian of a patch that is quadratic on each piece is constant
-        # within one, so a second difference of the same fit is the check ---
-        # and with true slopes the fit reproduces the field, whose hessian is
-        # known.
+    def test_the_split_schemes_hessians_agree_with_a_numerical_one(self):
+        # A patch quadratic or cubic on each piece has a hessian that is
+        # constant or linear within one, and with true slopes the fit
+        # reproduces the field --- whose hessian is diag(2, 0, 0) for
+        # `x^2 + 2y`.
         tri = TriMesh(array([[0.0, 1.3, 0.2], [0.0, 0.5, 1.1], [0.0, 0.0, 0.0]]),
                       TriTopology([[0], [1], [2]]))
         coords = asarray(tri.coords)
         gradient = np.zeros((3, 3))
         gradient[0] = 2 * coords[0]
         gradient[1] = 2.0
-        p = tri.withprop('q', coords[0] ** 2 + 2 * coords[1],
-                         gradient=gradient, interp=('powell-sabin', 2))
-        step = 1e-4
-        for (sx, sy) in ((0.2, 0.15), (0.3, 0.15), (0.2, 0.3)):
-            with self.subTest(at=(sx, sy)):
-                at = array([[sx], [sy], [0.0]])
-                got = asarray(p.prophess('q', at=at)).reshape(3, 3)
-                self.assertTrue(allclose(got.diagonal(), [2.0, 0.0, 0.0],
-                                         atol=1e-6))
-
+        for (method, order) in (('powell-sabin', 2), ('clough-tocher', 3)):
+            p = tri.withprop('q', coords[0] ** 2 + 2 * coords[1],
+                             gradient=gradient, interp=(method, order))
+            for (sx, sy) in ((0.2, 0.15), (0.3, 0.15), (0.2, 0.3)):
+                with self.subTest(method=method, at=(sx, sy)):
+                    got = asarray(p.prophess(
+                        'q', at=array([[sx], [sy], [0.0]]))).reshape(3, 3)
+                    self.assertTrue(allclose(got.diagonal(), [2.0, 0.0, 0.0],
+                                             atol=1e-6))
