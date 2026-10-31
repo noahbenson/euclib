@@ -170,42 +170,47 @@ def separation(a, b, /):
     # amin is the plain reduction; imath.min returns the value together with
     # its index, as torch's does.
     best = imath.amin(distance(a, b), axis=0)
-    if isinstance(b, SimplexGeometry) and getattr(b, 'order', None) == 2:
-        best = _triangles_apart(a, b, best)
+    if isinstance(b, SimplexGeometry) and b.order >= 1:
+        # A point cloud's elements are single vertices, which have no interior:
+        # its positions are already the whole answer.
+        best = _elements_apart(a, b, best)
     return best
 
 
-def _triangles_apart(a, b, best, /):
-    '''The smallest distance from ``b``'s triangles to ``a``'s.
+def _elements_apart(a, b, best, /):
+    '''The smallest distance from ``b``'s elements to ``a``'s.
 
     A mesh can pass closer to another between its vertices than at any of them,
-    so the positions are not enough: every triangle of ``b`` is measured against
-    the triangles of ``a`` near it. Only the near ones, because `_nearby` gives
-    them from the geometry's own index and a mesh of a few thousand triangles
-    has too many pairs to take one at a time.
+    so the positions are not enough: every element of ``b`` is measured against
+    the elements of ``a`` near it. Only the near ones, because `_nearby` gives
+    them from the geometry's own index and a mesh of a few thousand elements has
+    too many pairs to take one at a time.
 
     `best` is the answer the positions gave, which is an upper bound and so is
     the radius the search may stop at.
     '''
     from ._intersect import _nearby
-    from ..utils._pycore import triangles_separation
-    if not isinstance(a, SimplexGeometry) or getattr(a, 'order', None) != 2:
-        # The other pairs are not measured yet; the positions remain the answer.
+    from ..utils._pycore import simplexes_separation
+    if not isinstance(a, SimplexGeometry) or a.order < 1:
+        # Only a simplex geometry of order one or more has elements to measure
+        # between; a grid's or a point cloud's positions are the answer.
         return best
-    here = asarray(b.coords)[:, b.topo.indices]        # (D, 3, M)
-    there = asarray(a.coords)[:, a.topo.indices]       # (D, 3, N)
+    here = asarray(b.coords)[:, b.topo.indices]        # (D, K+1, M)
+    there = asarray(a.coords)[:, a.topo.indices]       # (D, L+1, N)
     (dim, _, count) = here.shape
     for m in range(count):
         corners = here[:, :, m]
         centre = corners.mean(axis=1)
-        # The triangle's own reach, so that a candidate whose centre is further
+        # The element's own reach, so that a candidate whose centre is further
         # than `best` but whose corners are not is still examined.
         reach = float((((corners - centre.reshape(dim, 1)) ** 2).sum(axis=0)
                        ).max() ** 0.5)
         for n in _nearby(a, centre, float(best) + reach):
-            got = triangles_separation(corners, there[:, :, n])
+            got = simplexes_separation(corners, there[:, :, n])
             if got < best:
                 best = got
+        if best == 0.0:
+            return 0.0
     return best
 
 

@@ -833,6 +833,97 @@ def closest_segment_params(a0, a1, b0, b1):
     return (s, t)
 
 
+def _faces_of(count, /):
+    '''The corner sets of a simplex's faces, each ``count - 1`` of them.'''
+    return [tuple(i for i in range(count) if i != k) for k in range(count)]
+
+
+def _segment_meets_simplex(p, q, simplex, /):
+    '''Whether a segment passes through a simplex.
+
+    For a triangle, that is whether its endpoints straddle the plane and the
+    crossing point is inside. For a tetrahedron it is the same question asked of
+    each of its four faces. For a segment the simplex *is* the segment.
+    '''
+    count = simplex.shape[1]
+    if count == 2:
+        (s, t) = closest_segment_params(p.reshape(-1, 1), q.reshape(-1, 1),
+                                        simplex[:, 0:1], simplex[:, 1:2])
+        one = p + float(s[0]) * (q - p)
+        two = simplex[:, 0] + float(t[0]) * (simplex[:, 1] - simplex[:, 0])
+        return float(((one - two) ** 2).sum() ** 0.5) <= 1e-12
+    if count == 3:
+        return _segment_meets_triangle(p, q, simplex)
+    return any(_segment_meets_triangle(p, q, simplex[:, list(face)])
+               for face in _faces_of(count))
+
+
+def simplexes_separation(first, second, /):
+    '''The smallest distance between two simplices of any order.
+
+    Two convex sets are closest either at a vertex of one against the other, or
+    along an edge of each, or they meet. The vertices cover more than it looks:
+    a simplex wholly inside another has its vertices inside, and a point inside
+    is zero from the simplex that holds it, so containment needs no separate
+    test.
+
+    The edge pairs alone do not cover a crossing --- the segment two triangles
+    share can end on one triangle's edge and in the other's interior, where no
+    two edges cross --- so each edge is also asked whether it passes through the
+    other simplex.
+
+    Parameters
+    ----------
+    first, second : numpy.ndarray
+        ``(D, K+1)`` matrices: each simplex's corners. A segment is ``(D, 2)``,
+        a triangle ``(D, 3)``, a tetrahedron ``(D, 4)``.
+
+    Returns
+    -------
+    float
+        The smallest distance. Zero when the simplices meet.
+    '''
+    a = _as_numpy(first)
+    b = _as_numpy(second)
+    best = float('inf')
+    for i in range(a.shape[1]):
+        best = min(best, point_simplex_distance(a[:, i], b))
+    for i in range(b.shape[1]):
+        best = min(best, point_simplex_distance(b[:, i], a))
+    if best == 0.0:
+        return 0.0
+    def pairs(count, /):
+        return [(i, j) for i in range(count) for j in range(i + 1, count)]
+
+    for (u, v) in pairs(a.shape[1]):
+        if _segment_meets_simplex(a[:, u], a[:, v], b):
+            return 0.0
+    for (u, v) in pairs(b.shape[1]):
+        if _segment_meets_simplex(b[:, u], b[:, v], a):
+            return 0.0
+    for (u, v) in pairs(a.shape[1]):
+        for (s, t) in pairs(b.shape[1]):
+            (ta, tb) = closest_segment_params(
+                a[:, u:u + 1], a[:, v:v + 1], b[:, s:s + 1], b[:, t:t + 1])
+            one = a[:, u] + float(ta[0]) * (a[:, v] - a[:, u])
+            two = b[:, s] + float(tb[0]) * (b[:, t] - b[:, s])
+            best = min(best, float(((one - two) ** 2).sum() ** 0.5))
+    return best
+
+
+def point_simplex_distance(point, simplex, /):
+    '''The smallest distance from a position to a simplex of any order.'''
+    point = _as_numpy(point)
+    simplex = _as_numpy(simplex)
+    count = simplex.shape[1]
+    indices = arange(count).reshape(count, 1)
+    (index, weight) = closest_simplex(simplex, indices, point.reshape(-1, 1))
+    first = asarray(weight).reshape(-1)
+    w = concatenate([first, [1.0 - first.sum()]])
+    nearest = (simplex * w[None, :]).sum(axis=1)
+    return float(((point - nearest) ** 2).sum() ** 0.5)
+
+
 def _segment_meets_triangle(p, q, triangle, /):
     '''Whether a segment passes through a triangle.
 

@@ -13,7 +13,8 @@ import numpy as np
 from numpy import asarray
 from numpy import allclose, array, sqrt, stack, zeros
 
-from euclib.utils._pycore import triangles_separation
+from euclib.utils._pycore import (simplexes_separation,
+                                  triangles_separation)
 from euclib.ops import distance, nearest, positions_of, separation
 from euclib.types import (
     Grid, GridTopology, PrismMesh, PrismTopology, SegPath, SegTopology, TriMesh,
@@ -273,4 +274,47 @@ class TestTheTriangleSeparation(TestCase):
         lifted = TriMesh(asarray(b.coords) + array([[0.], [0.], [1.]]),
                          TriTopology(b.topo.indices))
         self.assertAlmostEqual(float(separation(a, lifted)), 1.0, places=9)
+
+class TestTheSimplexSeparation(TestCase):
+    '''The smallest distance between two simplices of any order.'''
+
+    def _unit(self):
+        return array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+
+    def test_a_segment_through_a_triangle_is_no_distance_away(self):
+        a = self._unit()
+        through = array([[0.3, 0.3], [0.3, 0.3], [-1., 1.]])
+        self.assertLess(simplexes_separation(a, through), 1e-12)
+        self.assertAlmostEqual(
+            simplexes_separation(a, through + array([[0.], [0.], [2.]])), 1.0,
+            places=12)
+
+    def test_two_segments(self):
+        one = array([[0., 1.], [0., 0.], [0., 0.]])
+        # Skew to it, and crossing it.
+        self.assertAlmostEqual(
+            simplexes_separation(one, array([[0., 0.], [0., 0.], [1., 1.]])),
+            1.0, places=12)
+        self.assertLess(simplexes_separation(
+            one, array([[0.5, 0.5], [-1., 1.], [0., 0.]])), 1e-12)
+
+    def test_two_tetrahedra(self):
+        t = array([[0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]])
+        # A small one well inside, and the same lifted two clear in z --- whose
+        # distance is from the unit tetrahedron's apex to its nearest corner.
+        small = t * 0.1 + array([[0.05], [0.05], [0.05]])
+        self.assertLess(simplexes_separation(t, small), 1e-12)
+        self.assertAlmostEqual(
+            simplexes_separation(t, small + array([[0.], [0.], [2.]])),
+            (0.05 ** 2 + 0.05 ** 2 + 1.05 ** 2) ** 0.5, places=12)
+
+    def test_separation_uses_them(self):
+        # A path whose two ends are far away and whose middle runs through a
+        # triangle mesh.
+        mesh = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                       TriTopology([[0], [1], [2]]))
+        path = SegPath(array([[-10., 10.], [0.3, 0.3], [0., 0.]]),
+                       SegTopology([[0], [1]]))
+        self.assertLess(float(separation(mesh, path)), 1e-12)
+        self.assertGreater(float(np.amin(distance(mesh, path))), 8.0)
 
