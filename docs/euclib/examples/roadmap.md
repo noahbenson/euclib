@@ -26,6 +26,7 @@ the [gallery](index.md) following the standard template.
 | Mass properties (inertia tensors) | trimesh `tests/test_inertia.py::test_primitives` |
 | Vector-field integration (streamlines) | pyvista `test_dataset_filters.py::test_streamlines_evenly_spaced_2d` |
 | Primitive generators (boxes, spheres, and so on from a size) | pyvista `tests/core/test_geometric_objects.py::test_cube`, `::test_icosphere`; trimesh `tests/test_creation.py::test_box`, `::test_spheres` |
+| Smoothing kernels: the cotangent Laplacian over a triangle mesh and its tetrahedral generalization, and the image kernels (Gaussian, box, bilateral) | trimesh `smoothing.py::filter_laplacian`, `::filter_humphrey`; pyvista `test_polydata.py::test_smooth`; scipy.ndimage's `gaussian_filter`, `uniform_filter` |
 
 ## Recently implemented and documented
 
