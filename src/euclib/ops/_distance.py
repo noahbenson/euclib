@@ -169,7 +169,44 @@ def separation(a, b, /):
     '''
     # amin is the plain reduction; imath.min returns the value together with
     # its index, as torch's does.
-    return imath.amin(distance(a, b), axis=0)
+    best = imath.amin(distance(a, b), axis=0)
+    if isinstance(b, SimplexGeometry) and getattr(b, 'order', None) == 2:
+        best = _triangles_apart(a, b, best)
+    return best
+
+
+def _triangles_apart(a, b, best, /):
+    '''The smallest distance from ``b``'s triangles to ``a``'s.
+
+    A mesh can pass closer to another between its vertices than at any of them,
+    so the positions are not enough: every triangle of ``b`` is measured against
+    the triangles of ``a`` near it. Only the near ones, because `_nearby` gives
+    them from the geometry's own index and a mesh of a few thousand triangles
+    has too many pairs to take one at a time.
+
+    `best` is the answer the positions gave, which is an upper bound and so is
+    the radius the search may stop at.
+    '''
+    from ._intersect import _nearby
+    from ..utils._pycore import triangles_separation
+    if not isinstance(a, SimplexGeometry) or getattr(a, 'order', None) != 2:
+        # The other pairs are not measured yet; the positions remain the answer.
+        return best
+    here = asarray(b.coords)[:, b.topo.indices]        # (D, 3, M)
+    there = asarray(a.coords)[:, a.topo.indices]       # (D, 3, N)
+    (dim, _, count) = here.shape
+    for m in range(count):
+        corners = here[:, :, m]
+        centre = corners.mean(axis=1)
+        # The triangle's own reach, so that a candidate whose centre is further
+        # than `best` but whose corners are not is still examined.
+        reach = float((((corners - centre.reshape(dim, 1)) ** 2).sum(axis=0)
+                       ).max() ** 0.5)
+        for n in _nearby(a, centre, float(best) + reach):
+            got = triangles_separation(corners, there[:, :, n])
+            if got < best:
+                best = got
+    return best
 
 
 # Exports ####################################################################

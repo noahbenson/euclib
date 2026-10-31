@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from unittest import TestCase
 
+import numpy as np
 from numpy import allclose, array, sqrt, stack, zeros
 
 from euclib.utils._pycore import triangles_separation
@@ -256,4 +257,19 @@ class TestTheTriangleSeparation(TestCase):
     def test_a_triangle_is_no_distance_from_itself(self):
         a = self._unit()
         self.assertEqual(triangles_separation(a, a), 0.0)
+
+    def test_separation_sees_an_edge_that_the_vertices_do_not(self):
+        # A big triangle whose lower edge runs through a small one: every vertex
+        # of it is far away, and the two meet.
+        a = TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                    TriTopology([[0], [1], [2]]))
+        b = TriMesh(array([[-10., 10., 0.], [0.3, 0.3, 10.], [0., 0., 0.]]),
+                    TriTopology([[0], [1], [2]]))
+        # They meet, so the distance is zero to within rounding.
+        self.assertLess(float(separation(a, b)), 1e-12)
+        self.assertGreater(float(np.amin(distance(a, b))), 8.0)
+        # Lifted clear of the plane by a unit, it is a unit away.
+        lifted = TriMesh(asarray(b.coords) + array([[0.], [0.], [1.]]),
+                         TriTopology(b.topo.indices))
+        self.assertAlmostEqual(float(separation(a, lifted)), 1.0, places=9)
 
