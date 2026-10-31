@@ -833,6 +833,93 @@ def closest_segment_params(a0, a1, b0, b1):
     return (s, t)
 
 
+def _segment_meets_triangle(p, q, triangle, /):
+    '''Whether a segment passes through a triangle.
+
+    The endpoints must lie on opposite sides of the triangle's plane --- or one
+    of them *in* it, which is a touch and counts --- and where the segment meets
+    the plane must be inside the triangle.
+    '''
+    (a, b, c) = (triangle[:, 0], triangle[:, 1], triangle[:, 2])
+    # `cross3` works on a (3, Q) pair of edges, so each is given a column.
+    normal = cross3((b - a).reshape(-1, 1), (c - a).reshape(-1, 1)).ravel()
+    (dp, dq) = (float((p - a) @ normal), float((q - a) @ normal))
+    if dp * dq > 0.0:
+        # Both strictly on the same side.
+        return False
+    if dp == 0.0 and dq == 0.0:
+        # The segment lies in the plane; whether it is inside is a question
+        # about two dimensions, and the caller's edge distances answer it.
+        return False
+    at = p + (dp / (dp - dq)) * (q - p)
+    w = barycentric_in_triangle(at.reshape(-1, 1), a.reshape(-1, 1),
+                                b.reshape(-1, 1), c.reshape(-1, 1))
+    return bool((asarray(w) >= -1e-12).all())
+
+
+def point_triangle_distance(point, triangle, /):
+    '''The smallest distance from a position to a triangle.
+
+    The closest point of a triangle is not the projection onto its plane with
+    the negative barycentric weights clamped --- beside an edge that gives the
+    wrong point --- so this asks `closest_simplex`, which searches the faces.
+    '''
+    point = _as_numpy(point)
+    triangle = _as_numpy(triangle)
+    coords = triangle
+    indices = asarray([[0], [1], [2]])
+    (index, weight) = closest_simplex(coords, indices, point.reshape(-1, 1))
+    # A local coordinate stores the first K barycentric weights; the last
+    # corner's is what they leave of the unit sum.
+    first = asarray(weight).reshape(-1)
+    w = concatenate([first, [1.0 - first.sum()]])
+    # `coords` is (D, 3), one column per corner, so the weights go along its
+    # second axis.
+    nearest = (coords * w[None, :]).sum(axis=1)
+    return float(((point - nearest) ** 2).sum() ** 0.5)
+
+
+def triangles_separation(first, second, /):
+    '''The smallest distance between two triangles.
+
+    Two convex sets are closest either at a vertex of one against the other, or
+    along an edge of each. Two triangles that *cross* are zero apart, and the
+    edge pairs find that too: the segment they share ends where an edge of one
+    meets an edge of the other, so some pair of edges crosses.
+
+    Parameters
+    ----------
+    first, second : numpy.ndarray
+        ``(D, 3)`` matrices: each triangle's three corners.
+
+    Returns
+    -------
+    float
+        The smallest distance. Zero when the triangles meet.
+    '''
+    a = _as_numpy(first)
+    b = _as_numpy(second)
+    best = float('inf')
+    for i in range(3):
+        best = min(best, point_triangle_distance(a[:, i], b))
+        best = min(best, point_triangle_distance(b[:, i], a))
+    # A crossing need not be an edge-edge one: the segment two triangles share
+    # can end on one triangle's edge and in the other's interior, so each edge
+    # is also asked whether it passes through the other triangle.
+    for (u, v) in ((0, 1), (1, 2), (2, 0)):
+        if (_segment_meets_triangle(a[:, u], a[:, v], b)
+                or _segment_meets_triangle(b[:, u], b[:, v], a)):
+            return 0.0
+    for (u, v) in ((0, 1), (1, 2), (2, 0)):
+        for (s, t) in ((0, 1), (1, 2), (2, 0)):
+            (ta, tb) = closest_segment_params(
+                a[:, u:u + 1], a[:, v:v + 1], b[:, s:s + 1], b[:, t:t + 1])
+            one = a[:, u] + float(ta[0]) * (a[:, v] - a[:, u])
+            two = b[:, s] + float(tb[0]) * (b[:, t] - b[:, s])
+            best = min(best, float(((one - two) ** 2).sum() ** 0.5))
+    return best
+
+
 def segments_intersect(a0, a1, b0, b1, tolerance=0.0):
     '''Finds where each pair of segments meets.
 

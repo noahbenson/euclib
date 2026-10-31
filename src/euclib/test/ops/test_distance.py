@@ -11,6 +11,7 @@ from unittest import TestCase
 
 from numpy import allclose, array, sqrt, stack, zeros
 
+from euclib.utils._pycore import triangles_separation
 from euclib.ops import distance, nearest, positions_of, separation
 from euclib.types import (
     Grid, GridTopology, PrismMesh, PrismTopology, SegPath, SegTopology, TriMesh,
@@ -221,3 +222,38 @@ class TestSeparation(TestCase):
         other = SegPath(array([[0., 1.], [3., 3.]]), SegTopology([[0], [1]]))
         # The nearest point of the path at y = 0 to either end is its start.
         self.assertTrue(allclose(separation(_path(), other), [3.]))
+
+class TestTheTriangleSeparation(TestCase):
+    '''The smallest distance between two triangles.'''
+
+    def _unit(self):
+        # The unit triangle in the plane z = 0.
+        return array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+
+    def test_parallel_triangles_are_their_gap_apart(self):
+        a = self._unit()
+        for gap in (0.5, 2.0):
+            with self.subTest(gap=gap):
+                b = a + array([[0.], [0.], [gap]])
+                self.assertAlmostEqual(triangles_separation(a, b), gap, places=12)
+
+    def test_side_by_side_in_a_plane_is_edge_to_edge(self):
+        a = self._unit()
+        b = a + array([[2.], [0.], [0.]])
+        self.assertAlmostEqual(triangles_separation(a, b), 1.0, places=12)
+
+    def test_a_triangle_through_another_is_no_distance_away(self):
+        # A crossing need not put two edges across: here the shared segment
+        # ends on the unit triangle's edge and inside the vertical one.
+        a = self._unit()
+        b = array([[0.3, 0.3, 0.3], [0.2, 0.2, 0.6], [-1., 1., 1.]])
+        self.assertEqual(triangles_separation(a, b), 0.0)
+        # ...and lifted clear of the plane, it is a unit away.
+        self.assertAlmostEqual(
+            triangles_separation(a, b + array([[0.], [0.], [2.]])), 1.0,
+            places=12)
+
+    def test_a_triangle_is_no_distance_from_itself(self):
+        a = self._unit()
+        self.assertEqual(triangles_separation(a, a), 0.0)
+
