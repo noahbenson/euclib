@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest import TestCase
 
 import numpy as np
+from numpy import asarray
 from numpy import allclose, array, sqrt, stack, zeros
 
 from euclib.utils._pycore import triangles_separation
