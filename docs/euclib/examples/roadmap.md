@@ -75,9 +75,6 @@ written to state the limitation rather than hide it:
   inversion, and application; decomposing a matrix back into translation,
   rotation, scale, and shear is not implemented (pyvista
   `test_utilities.py::test_transform_decompose`).
-- **Separation between geometries** — `euclib.separation` is exact only when
-  the closest approach is at a vertex of one geometry; the general
-  simplex-to-simplex case is pending.
 - **Ray-style queries** — `euclib.path_crossings` answers "what does this
   segment hit?" for a whole path at once, but there is no ray-casting object
   that fires independent rays from arbitrary origins and directions, which is
