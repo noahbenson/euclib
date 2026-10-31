@@ -29,7 +29,8 @@ shape, and a step of one means the same thing on every mesh.
 
 from __future__ import annotations
 
-from numpy import (arange, asarray, concatenate, maximum, sqrt, where, zeros)
+from numpy import (add, arange, asarray, concatenate, maximum, sqrt,
+                   where, zeros)
 from scipy.sparse import coo_matrix
 
 
@@ -118,6 +119,11 @@ def mass(coords, indices, /):
     cot = cotangents(coords, indices)
     size = int(indices.max()) + 1 if indices.size else 0
     out = zeros(size)
+    # Whether the triangle is obtuse at all, and if so at which corner: a
+    # cotangent is negative exactly there, the angle being greater than a right
+    # one.
+    blunt = (number == 3) & (cot < 0).any(axis=0)
+    where_blunt = (cot < 0).argmax(axis=0)
     for k in range(count):
         # A corner's Voronoi share of a triangle is an eighth of the sum over
         # its two leaving edges of `cot(opposite) * |edge|^2`.
@@ -126,10 +132,18 @@ def mass(coords, indices, /):
         v = coords[:, indices[two]] - coords[:, indices[k]]
         share = ((u * u).sum(axis=0) * cot[two]
                  + (v * v).sum(axis=0) * cot[one]) / 8.0
-        # An obtuse corner owns half the triangle and the others a quarter.
-        obtuse = (number == 3) & (cot[k] < 0)
-        share = asarray(share)
-        share = (1.0 - obtuse) * share + obtuse * (area / 2.0)
-        out[indices[k]] += share
+        # Meyer's mixed area: a triangle obtuse at a corner gives that corner
+        # half its area and the other two a quarter each, because the Voronoi
+        # cells of those two fall outside it and the Voronoi share goes negative.
+        mine = share
+        blunt_here = blunt & (where_blunt == k)
+        blunt_else = blunt & (where_blunt != k)
+        mine = (1.0 - blunt) * asarray(mine) + blunt_here * (area / 2.0) \
+            + blunt_else * (area / 4.0)
+        # `add.at` rather than `out[...] += `: a vertex is a corner of several
+        # triangles, and the fancy-indexed `+=` keeps only the last of a
+        # repeated index instead of accumulating them --- the shares then total
+        # less than the mesh's area, which is how this was found.
+        add.at(out, indices[k], asarray(mine))
     return coo_matrix((out, (arange(size), arange(size))),
                       shape=(size, size)).tocsr()
