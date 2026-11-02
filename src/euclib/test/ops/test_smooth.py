@@ -186,11 +186,22 @@ class TestTheSmoothOperation(TestCase):
         # ...and the property it was given still holds what it held.
         self.assertTrue(allclose(asarray(mesh.propinfo('b').value), bump))
 
-    def test_a_geometry_without_simplices_is_refused(self):
+    def test_a_grid_smooths_with_a_kernel(self):
+        # A grid's cells are boxes, so its smoothing is a kernel along each axis
+        # rather than a Laplacian over elements.
         from euclib.types import Grid, GridTopology
-        grid = Grid(eye(4), GridTopology((2, 2, 2)))
-        with self.assertRaises(TypeError):
-            smooth(grid, zeros(8))
+        grid = Grid(eye(4), GridTopology((5, 5, 5)))
+        step = zeros((5, 5, 5)); step[2:] = 10.0
+        blurred = asarray(smooth(grid.withprop('s', step), 's',
+                                 kernel='gaussian', sigma=1.0).value)
+        self.assertAlmostEqual(float(blurred[2, 2, 2]), 7.0, delta=0.05)
+        # The bilateral filter does not smooth across the step: a neighbour ten
+        # away contributes almost nothing, however near it is.
+        kept = asarray(smooth(grid.withprop('s', step), 's',
+                              kernel='bilateral', sigma=1.0,
+                              rangesigma=0.5).value)
+        self.assertAlmostEqual(float(kept[2, 2, 2]), 10.0, places=6)
+        self.assertAlmostEqual(float(kept[1, 2, 2]), 0.0, places=6)
 
 def _cube():
     '''The unit cube as six tetrahedra, all eight vertices on its skin.'''

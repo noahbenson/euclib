@@ -281,7 +281,8 @@ def smooth_values(values, coords, indices, /, loglambda=0.0,
     return out.reshape(shape + (out.shape[-1],))
 
 def smooth(geom, values, /, loglambda=0.0, method='implicit',
-           fixboundary=True):
+           fixboundary=True, sigma=1.0, kernel='gaussian', border='edge',
+           rangesigma=1.0):
     '''Smooths a property of a geometry, or a value array, over that geometry.
 
     The values come from a property of ``geom`` when ``values`` is its name, and
@@ -316,10 +317,23 @@ def smooth(geom, values, /, loglambda=0.0, method='implicit',
         is built from --- a grid's cells are boxes rather than simplices.
     '''
     from ..abc import Property
+    from ..types import Grid
+    if isinstance(geom, Grid):
+        # A grid's cells are boxes, so its smoothing is a kernel along each
+        # axis rather than a Laplacian over elements.
+        array = (geom.propinfo(values).value if isinstance(values, str)
+                 else values)
+        if kernel == 'bilateral':
+            out = smooth_bilateral(asarray(array), tuple(geom.shape),
+                                   sigma=sigma, rangesigma=rangesigma,
+                                   border=border)
+        else:
+            out = smooth_grid(asarray(array), tuple(geom.shape), sigma=sigma,
+                              kernel=kernel, border=border)
+        return Property(out, geom.property_shape)
     if not isinstance(geom, SimplexGeometry):
         raise TypeError(
-            f"expected a SimplexGeometry, whose elements a Laplacian is built"
-            f" from; found {type(geom).__name__}")
+            f"expected a SimplexGeometry or a Grid; found {type(geom).__name__}")
     if isinstance(values, str):
         held = geom.propinfo(values)
         array = held.value
@@ -337,3 +351,174 @@ def smooth(geom, values, /, loglambda=0.0, method='implicit',
                         geom.topo.indices, loglambda=loglambda, method=method,
                         fixboundary=fixboundary)
     return Property(out, geom.property_shape, **meta)
+
+# Images #####################################################################
+
+#: The border policies a smoothing may pad with, named as numpy's `pad` names
+#: them: an image is smoothed at its edge by pretending something lies beyond.
+BORDERS = {'constant': 'constant', 'edge': 'edge', 'reflect': 'reflect',
+           'wrap': 'wrap'}
+
+
+def smoothing_kernel(name, sigma, /):
+    '''A one-dimensional smoothing kernel and its radius.
+
+    Parameters
+    ----------
+    name : str
+        ``'gaussian'``, whose weights are exp(-x^2 / 2 sigma^2) normalised, or
+        ``'box'``, whose weights are equal over the window.
+    sigma : float
+        The kernel's width, in cells. A gaussian is cut at three sigma; a box's
+        half-width is sigma rounded.
+
+    Returns
+    -------
+    weights : numpy.ndarray
+        The kernel's weights, summing to one.
+    radius : int
+        How far it reaches either side.
+
+    Raises
+    ------
+    ValueError
+        If the kernel is not one of those two.
+    '''
+    from numpy import exp, full, round as around
+    sigma = float(sigma)
+    if sigma <= 0.0:
+        return (asarray([1.0]), 0)
+    if name == 'box':
+        radius = max(1, int(around(sigma)))
+        return (full(2 * radius + 1, 1.0 / (2 * radius + 1)), radius)
+    if name == 'gaussian':
+        radius = max(1, int(around(3.0 * sigma)))
+        x = arange(-radius, radius + 1, dtype='float64')
+        weights = exp(-(x * x) / (2.0 * sigma * sigma))
+        return (weights / weights.sum(), radius)
+    raise ValueError(
+        f"unknown smoothing kernel {name!r}; expected 'gaussian' or 'box'")
+
+
+def _blur_axis(values, axis, weights, radius, border, /):
+    '''One separable pass of a kernel along one axis.'''
+    from numpy import pad, take
+    values = asarray(values)
+    pad_width = [(0, 0)] * values.ndim
+    pad_width[axis] = (radius, radius)
+    padded = pad(values, pad_width, mode=BORDERS[border])
+    out = zeros(values.shape)
+    for (k, weight) in enumerate(weights):
+        index = [slice(None)] * values.ndim
+        index[axis] = slice(k, k + values.shape[axis])
+        out += weight * padded[tuple(index)]
+    return out
+
+
+def smooth_grid(values, shape, /, sigma=1.0, kernel='gaussian',
+                border='edge'):
+    '''Smooths an image with a separable kernel.
+
+    A grid's cells are the unit boxes of an index space, so its smoothing is a
+    kernel applied along each axis in turn rather than a Laplacian over elements
+    --- which is exactly what makes it separable, and cheap.
+
+    Parameters
+    ----------
+    values : array-like
+        ``(C..., X...)``: the image, with any channel dimensions leading and
+        the grid's own shape trailing.
+    shape : tuple of int
+        The grid's shape, which says how many of the trailing axes are the
+        grid's own --- four for a 2-D image with two channels, two for the
+        image alone.
+    sigma : float, optional
+        The kernel's width in cells. The default is one.
+    kernel : str, optional
+        ``'gaussian'``, the default, or ``'box'``.
+    border : str, optional
+        How the image is continued past its edge: ``'edge'``, the default, or
+        ``'constant'``, ``'reflect'`` or ``'wrap'``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The smoothed image, shaped as the input was.
+    '''
+    values = asarray(values, dtype='float64')
+    (weights, radius) = smoothing_kernel(kernel, sigma)
+    if radius == 0:
+        return values.copy()
+    out = values
+    # The channel dimensions lead, so the grid's own axes are the last ones ---
+    # as many as the shape says.
+    rank = len(tuple(shape))
+    if rank > values.ndim:
+        raise ValueError(
+            f"a grid of {rank} dimensions cannot smooth a {values.ndim}-"
+            f"dimensional array")
+    for axis in range(values.ndim - rank, values.ndim):
+        out = _blur_axis(out, axis, weights, radius, border)
+    return out
+
+def smooth_bilateral(values, shape, /, sigma=1.0, rangesigma=1.0,
+                     border='edge'):
+    '''Smooths an image with a bilateral filter.
+
+    The weights are the product of a spatial gaussian and a gaussian in the
+    *values*, so a step in the image is not smoothed across: a neighbour whose
+    value is far from the centre's contributes little however near it is. That
+    is why it is not separable --- the weights depend on the values, so the two
+    axes cannot be taken one at a time.
+
+    Parameters
+    ----------
+    values : array-like
+        ``(C..., X...)``: the image, channels leading and the grid's shape
+        trailing.
+    shape : tuple of int
+        The grid's shape, which says how many of the trailing axes are its own.
+    sigma : float, optional
+        The spatial width, in cells.
+    rangesigma : float, optional
+        The width in value. The default, one, smooths differences of about one
+        and leaves larger steps alone.
+    border : str, optional
+        How the image is continued past its edge.
+
+    Returns
+    -------
+    numpy.ndarray
+        The smoothed image, shaped as the input was.
+    '''
+    from numpy import exp, moveaxis, ndindex, pad, take
+    values = asarray(values, dtype='float64')
+    rank = len(tuple(shape))
+    if rank > values.ndim:
+        raise ValueError(
+            f"a grid of {rank} dimensions cannot smooth a {values.ndim}-"
+            f"dimensional array")
+    radius = max(1, int(3.0 * float(sigma)))
+    (spatial, _) = smoothing_kernel('gaussian', sigma)
+    pad_width = [(0, 0)] * values.ndim
+    for axis in range(values.ndim - rank, values.ndim):
+        pad_width[axis] = (radius, radius)
+    padded = pad(values, pad_width, mode=BORDERS[border])
+    total = zeros(values.shape)
+    weight = zeros(values.shape)
+    for offset in ndindex(*([2 * radius + 1] * rank)):
+        shift = tuple(o - radius for o in offset)
+        index = [slice(None)] * values.ndim
+        for (k, axis) in enumerate(range(values.ndim - rank, values.ndim)):
+            index[axis] = slice(offset[k], offset[k] + values.shape[axis])
+        near = padded[tuple(index)]
+        spatial_weight = 1.0
+        for (k, o) in enumerate(offset):
+            # `o` is the window's index along its axis, which is the kernel's
+            # own index: the kernel has one weight per window position.
+            spatial_weight = spatial_weight * spatial[o]
+        close = exp(-((near - values) ** 2) / (2.0 * float(rangesigma) ** 2))
+        weight_here = spatial_weight * close
+        total += weight_here * near
+        weight += weight_here
+    return total / weight
