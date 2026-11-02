@@ -20,11 +20,12 @@ from ._intersect import (
     voxel_segment_intersections, voxel_surface_intersections)
 from ._distance import distance, nearest, separation
 from ._geodesic import geodesic
+from ._smooth import smooth
 
 
 # Exports ####################################################################
 
-__all__ = ('distance', 'nearest', 'separation', 'geodesic',
+__all__ = ('distance', 'nearest', 'separation', 'geodesic', 'smooth',
            'positions_of', 'sample', 'transfer',
            'path_crossings', 'path_intersections', 'contains',
            'tolerance_of', 'voxel_intersections',

@@ -33,6 +33,8 @@ from numpy import (add, arange, asarray, concatenate, maximum, minimum,
                    ones, sqrt, unique, where, zeros)
 from scipy.sparse import coo_matrix
 
+from ..abc import SimplexGeometry
+
 
 # The operator ###############################################################
 
@@ -186,8 +188,8 @@ def _solve(matrix, right, /):
     return solved
 
 
-def smooth(values, coords, indices, /, loglambda=0.0, method='implicit',
-           fixboundary=True):
+def smooth_values(values, coords, indices, /, loglambda=0.0,
+                  method='implicit', fixboundary=True):
     '''Smooths a value array over a simplex mesh.
 
     One step of the diffusion equation, with the cotangent Laplacian and Meyer's
@@ -256,3 +258,61 @@ def smooth(values, coords, indices, /, loglambda=0.0, method='implicit',
     out = flat.copy()
     out[:, free] = solved.T
     return out.reshape(shape + (out.shape[-1],))
+
+def smooth(geom, values, /, loglambda=0.0, method='implicit',
+           fixboundary=True):
+    '''Smooths a property of a geometry, or a value array, over that geometry.
+
+    The values come from a property of ``geom`` when ``values`` is its name, and
+    are used as given when it is an array, a tensor or a quantity. What comes
+    back is a `Property` --- the geometry is not changed, and a caller attaches
+    the result with ``withprop``, which is how every other operation here
+    behaves.
+
+    Parameters
+    ----------
+    geom : SimplexGeometry
+        The geometry whose elements the smoothing runs over.
+    values : hashable or array-like
+        The property's name, or the values themselves.
+    loglambda : float, optional
+        The logarithm of the step; see `smooth_values`.
+    method : str, optional
+        ``'implicit'``, the default, or ``'explicit'``.
+    fixboundary : bool, optional
+        Whether boundary vertices keep their values. The default does.
+
+    Returns
+    -------
+    Property
+        The smoothed values, with the metadata the property carried when one was
+        named.
+
+    Raises
+    ------
+    TypeError
+        If the geometry is not a simplex geometry, whose elements the Laplacian
+        is built from --- a grid's cells are boxes rather than simplices.
+    '''
+    from ..abc import Property
+    if not isinstance(geom, SimplexGeometry):
+        raise TypeError(
+            f"expected a SimplexGeometry, whose elements a Laplacian is built"
+            f" from; found {type(geom).__name__}")
+    if isinstance(values, str):
+        held = geom.propinfo(values)
+        array = held.value
+        # A smoothed field is still the same kind of thing: its type, its unit
+        # and its interpolation go with it.
+        meta = {'vartype': held.vartype, 'interp': held.interp,
+                'extrap': held.extrap, 'border': held.border,
+                'mask': held.mask, 'null': held.null,
+                'dtype': held.dtype, 'detach': held.detach}
+        meta = {k: v for (k, v) in meta.items() if v is not None}
+    else:
+        array = values
+        meta = {}
+    out = smooth_values(asarray(array), asarray(geom.coords),
+                        geom.topo.indices, loglambda=loglambda, method=method,
+                        fixboundary=fixboundary)
+    return Property(out, geom.property_shape, **meta)

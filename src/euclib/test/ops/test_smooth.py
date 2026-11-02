@@ -7,12 +7,13 @@
 
 from __future__ import annotations
 
-from numpy import allclose, asarray, meshgrid, stack
+from numpy import allclose, asarray, eye, meshgrid, stack, zeros
 import unittest
 from unittest import TestCase
 
 from euclib.ops._smooth import (boundary_vertices, cotangents, mass,
-                                smooth, stiffness)
+                                smooth, smooth_values, stiffness)
+from euclib.types import TriMesh, TriTopology
 from euclib.utils import simplex_measures
 
 
@@ -107,16 +108,16 @@ class TestTheSmoothingStep(TestCase):
         for fix in (True, False):
             with self.subTest(fixboundary=fix):
                 self.assertTrue(allclose(
-                    smooth(asarray([5.0] * coords.shape[1]), coords, indices,
+                    smooth_values(asarray([5.0] * coords.shape[1]), coords, indices,
                            fixboundary=fix), 5.0))
 
     def test_a_linear_field_is_preserved(self):
         # The cotangent Laplacian is linear-precise: a plane through the mesh is
         # already harmonic, so smoothing leaves it exactly alone.
         (coords, indices) = _square()
-        self.assertTrue(allclose(smooth(coords[0], coords, indices),
+        self.assertTrue(allclose(smooth_values(coords[0], coords, indices),
                                  coords[0]))
-        self.assertTrue(allclose(smooth(coords[1], coords, indices),
+        self.assertTrue(allclose(smooth_values(coords[1], coords, indices),
                                  coords[1]))
 
     def test_a_bump_moves_toward_its_neighbours(self):
@@ -124,14 +125,14 @@ class TestTheSmoothingStep(TestCase):
         bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
         inside = ~boundary_vertices(indices)
         # Its minimum is at the middle; smoothing pulls it up toward the rim.
-        self.assertTrue(float(smooth(bump, coords, indices)[inside].min())
+        self.assertTrue(float(smooth_values(bump, coords, indices)[inside].min())
                         > float(bump[inside].min()))
 
     def test_a_larger_step_smooths_more(self):
         (coords, indices) = _square()
         bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
         inside = ~boundary_vertices(indices)
-        amounts = [float(smooth(bump, coords, indices, loglambda=lam
+        amounts = [float(smooth_values(bump, coords, indices, loglambda=lam
                                 )[inside].mean()) for lam in (-6, -2, 0, 2)]
         self.assertEqual(amounts, sorted(amounts))
 
@@ -140,8 +141,8 @@ class TestTheSmoothingStep(TestCase):
         # goes to zero.
         (coords, indices) = _square()
         bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
-        implicit = smooth(bump, coords, indices, loglambda=-8)
-        explicit = smooth(bump, coords, indices, loglambda=-8,
+        implicit = smooth_values(bump, coords, indices, loglambda=-8)
+        explicit = smooth_values(bump, coords, indices, loglambda=-8,
                           method='explicit')
         self.assertTrue(allclose(implicit, explicit, atol=1e-5))
 
@@ -152,12 +153,42 @@ class TestTheSmoothingStep(TestCase):
         # plane would leave every vertex unchanged and the second assertion
         # below would prove nothing.
         before = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
-        after = smooth(before, coords, indices)
+        after = smooth_values(before, coords, indices)
         self.assertTrue(allclose(after[rim], before[rim]))
         self.assertFalse(allclose(after[~rim], before[~rim]))
 
     def test_an_unknown_method_is_refused(self):
         (coords, indices) = _square()
         with self.assertRaises(ValueError):
-            smooth(coords[0], coords, indices, method='spectral')
+            smooth_values(coords[0], coords, indices, method='spectral')
+
+class TestTheSmoothOperation(TestCase):
+    '''The entry point: a name or an array in, a `Property` out.'''
+
+    def _mesh(self):
+        (coords, indices) = _square()
+        return TriMesh(coords, TriTopology(indices))
+
+    def test_a_name_and_an_array_give_the_same_answer(self):
+        (coords, _) = _square()
+        bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
+        mesh = self._mesh().withprop('b', bump)
+        self.assertTrue(allclose(asarray(smooth(mesh, 'b').value),
+                                 asarray(smooth(mesh, bump).value)))
+
+    def test_it_returns_a_property_and_leaves_the_geometry_alone(self):
+        (coords, _) = _square()
+        bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
+        mesh = self._mesh().withprop('b', bump)
+        out = smooth(mesh, 'b')
+        self.assertEqual(type(out).__name__, 'Property')
+        self.assertEqual(out.spatial_shape, mesh.property_shape)
+        # ...and the property it was given still holds what it held.
+        self.assertTrue(allclose(asarray(mesh.propinfo('b').value), bump))
+
+    def test_a_geometry_without_simplices_is_refused(self):
+        from euclib.types import Grid, GridTopology
+        grid = Grid(eye(4), GridTopology((2, 2, 2)))
+        with self.assertRaises(TypeError):
+            smooth(grid, zeros(8))
 
