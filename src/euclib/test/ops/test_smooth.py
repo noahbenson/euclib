@@ -192,3 +192,44 @@ class TestTheSmoothOperation(TestCase):
         with self.assertRaises(TypeError):
             smooth(grid, zeros(8))
 
+def _cube():
+    '''The unit cube as six tetrahedra, all eight vertices on its skin.'''
+    coords = asarray([[0., 1., 0., 0., 1., 1., 0., 1.],
+                      [0., 0., 1., 0., 1., 0., 1., 1.],
+                      [0., 0., 0., 1., 0., 1., 1., 1.]])
+    def vid(i, j, k):
+        return (i * 2 + j) * 2 + k
+    tets = [
+        [vid(0,0,0), vid(1,0,0), vid(0,1,0), vid(0,0,1)],
+        [vid(1,0,0), vid(1,1,0), vid(0,1,0), vid(1,1,1)],
+        [vid(0,1,0), vid(1,1,0), vid(0,1,1), vid(1,1,1)],
+        [vid(0,0,0), vid(0,1,0), vid(0,0,1), vid(0,1,1)],
+        [vid(0,0,0), vid(1,0,0), vid(0,0,1), vid(1,0,1)],
+        [vid(1,0,0), vid(1,1,0), vid(1,0,1), vid(1,1,1)],
+    ]
+    return (coords, asarray(tets).T)
+
+
+class TestTheBoundary(TestCase):
+    '''Which vertices are on a mesh's boundary, for any order.'''
+
+    def test_a_triangle_mesh_s_boundary_is_its_edges(self):
+        (_, indices) = _square()
+        b = boundary_vertices(indices)
+        # The rim of a four by four grid of points, and not the interior four.
+        self.assertEqual(int(b.sum()), 12)
+
+    def test_a_solid_s_boundary_is_its_faces(self):
+        # Counting edges would find none: in a tetrahedral mesh every edge is
+        # shared by at least three tetrahedra. The boundary is the faces used
+        # once, and every vertex of this cube touches one.
+        (_, indices) = _cube()
+        self.assertEqual(int(boundary_vertices(indices).sum()), 8)
+
+    def test_a_single_tetrahedron_has_all_its_vertices_on_its_boundary(self):
+        self.assertEqual(int(boundary_vertices(asarray([[0], [1], [2], [3]]))
+                             .sum()), 4)
+
+    def test_a_point_cloud_is_all_boundary(self):
+        self.assertEqual(int(boundary_vertices(asarray([[0, 1, 2]])).sum()), 3)
+

@@ -29,8 +29,8 @@ shape, and a step of one means the same thing on every mesh.
 
 from __future__ import annotations
 
-from numpy import (add, arange, asarray, concatenate, maximum, minimum,
-                   ones, sqrt, unique, where, zeros)
+from numpy import (add, arange, asarray, concatenate, isin, maximum,
+                   minimum, ones, sort, sqrt, unique, where, zeros)
 from scipy.sparse import coo_matrix
 
 from ..abc import SimplexGeometry
@@ -151,27 +151,48 @@ def mass(coords, indices, /):
                       shape=(size, size)).tocsr()
 
 def boundary_vertices(indices, /):
-    '''Which vertices lie on a boundary, for a mesh of simplices.
+    '''Which vertices lie on a boundary, for a mesh of any order.
 
-    An edge belongs to two elements in the interior and to one at a boundary, so
-    an edge used once marks both its ends.
+    The boundary of a mesh is its simplices' *faces* --- the corners left when
+    one is dropped --- that belong to a single element. A triangle's faces are
+    its edges, a tetrahedron's are its triangles, and one rule serves both:
+    count the faces, and the ones counted once are on the boundary.
+
+    Counting *edges* instead would be right for a triangle and wrong for a
+    tetrahedron, where a closed mesh still has every edge shared by three or
+    more tetrahedra and would report no boundary at all.
     '''
     indices = asarray(indices)
     (count, number) = indices.shape
     size = int(indices.max()) + 1 if indices.size else 0
-    pairs = []
-    for k in range(count):
-        (one, two) = ((k + 1) % count, (k + 2) % count)
-        low = minimum(indices[one], indices[two])
-        high = maximum(indices[one], indices[two])
-        pairs.append(low * size + high)
-    flat = concatenate(pairs) if pairs else zeros(0, dtype=int)
-    (keys, counts) = unique(flat, return_counts=True)
-    on_edge = keys[counts == 1]
+    if count < 2:
+        # A point has no faces, so every point of a cloud is on its boundary.
+        out = zeros(size, dtype=bool)
+        out[indices.ravel()] = True
+        return out
+    keys = []
+    for dropped in range(count):
+        corners = asarray([indices[k] for k in range(count) if k != dropped])
+        keys.append(pack_corners(corners, size))
+    flat = concatenate(keys) if keys else zeros(0, dtype='int64')
+    (_, counts) = unique(flat, return_counts=True)
+    on_face = unique(flat)[counts == 1]
     out = zeros(size, dtype=bool)
-    out[on_edge // size] = True
-    out[on_edge % size] = True
+    for dropped in range(count):
+        corners = asarray([indices[k] for k in range(count) if k != dropped])
+        here = pack_corners(corners, size)
+        hit = isin(here, on_face)
+        out[corners[:, hit].ravel()] = True
     return out
+
+
+def pack_corners(corners, size, /):
+    '''A face's corners, sorted and packed into one integer.'''
+    corners = sort(asarray(corners), axis=0)
+    key = zeros(corners.shape[1], dtype='int64')
+    for row in corners:
+        key = key * size + row
+    return key
 
 
 def _solve(matrix, right, /):
