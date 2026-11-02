@@ -11,7 +11,8 @@ from numpy import allclose, asarray, meshgrid, stack
 import unittest
 from unittest import TestCase
 
-from euclib.ops._smooth import cotangents, mass, stiffness
+from euclib.ops._smooth import (boundary_vertices, cotangents, mass,
+                                smooth, stiffness)
 from euclib.utils import simplex_measures
 
 
@@ -93,3 +94,70 @@ class TestTheOperators(TestCase):
         (coords, indices) = _right_triangle()
         self.assertAlmostEqual(float(mass(coords, indices).sum()), 0.5,
                                places=12)
+
+class TestTheSmoothingStep(TestCase):
+    '''One step of the diffusion equation.'''
+
+    def test_a_constant_is_preserved(self):
+        # A Laplacian annihilates constants, so a constant field is unchanged
+        # whatever the step --- including at the fixed boundary, whose
+        # contribution to the free vertices' equations has to be moved to the
+        # other side for this to hold.
+        (coords, indices) = _square()
+        for fix in (True, False):
+            with self.subTest(fixboundary=fix):
+                self.assertTrue(allclose(
+                    smooth(asarray([5.0] * coords.shape[1]), coords, indices,
+                           fixboundary=fix), 5.0))
+
+    def test_a_linear_field_is_preserved(self):
+        # The cotangent Laplacian is linear-precise: a plane through the mesh is
+        # already harmonic, so smoothing leaves it exactly alone.
+        (coords, indices) = _square()
+        self.assertTrue(allclose(smooth(coords[0], coords, indices),
+                                 coords[0]))
+        self.assertTrue(allclose(smooth(coords[1], coords, indices),
+                                 coords[1]))
+
+    def test_a_bump_moves_toward_its_neighbours(self):
+        (coords, indices) = _square()
+        bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
+        inside = ~boundary_vertices(indices)
+        # Its minimum is at the middle; smoothing pulls it up toward the rim.
+        self.assertTrue(float(smooth(bump, coords, indices)[inside].min())
+                        > float(bump[inside].min()))
+
+    def test_a_larger_step_smooths_more(self):
+        (coords, indices) = _square()
+        bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
+        inside = ~boundary_vertices(indices)
+        amounts = [float(smooth(bump, coords, indices, loglambda=lam
+                                )[inside].mean()) for lam in (-6, -2, 0, 2)]
+        self.assertEqual(amounts, sorted(amounts))
+
+    def test_the_explicit_step_agrees_with_the_implicit_for_a_small_step(self):
+        # They are two approximations of the same step, so they meet as the step
+        # goes to zero.
+        (coords, indices) = _square()
+        bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
+        implicit = smooth(bump, coords, indices, loglambda=-8)
+        explicit = smooth(bump, coords, indices, loglambda=-8,
+                          method='explicit')
+        self.assertTrue(allclose(implicit, explicit, atol=1e-5))
+
+    def test_the_boundary_keeps_its_values_by_default(self):
+        (coords, indices) = _square()
+        rim = boundary_vertices(indices)
+        # A bump, not a plane: the Laplacian preserves planes exactly, so a
+        # plane would leave every vertex unchanged and the second assertion
+        # below would prove nothing.
+        before = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
+        after = smooth(before, coords, indices)
+        self.assertTrue(allclose(after[rim], before[rim]))
+        self.assertFalse(allclose(after[~rim], before[~rim]))
+
+    def test_an_unknown_method_is_refused(self):
+        (coords, indices) = _square()
+        with self.assertRaises(ValueError):
+            smooth(coords[0], coords, indices, method='spectral')
+

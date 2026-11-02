@@ -29,8 +29,8 @@ shape, and a step of one means the same thing on every mesh.
 
 from __future__ import annotations
 
-from numpy import (add, arange, asarray, concatenate, maximum, sqrt,
-                   where, zeros)
+from numpy import (add, arange, asarray, concatenate, maximum, minimum,
+                   ones, sqrt, unique, where, zeros)
 from scipy.sparse import coo_matrix
 
 
@@ -147,3 +147,112 @@ def mass(coords, indices, /):
         add.at(out, indices[k], asarray(mine))
     return coo_matrix((out, (arange(size), arange(size))),
                       shape=(size, size)).tocsr()
+
+def boundary_vertices(indices, /):
+    '''Which vertices lie on a boundary, for a mesh of simplices.
+
+    An edge belongs to two elements in the interior and to one at a boundary, so
+    an edge used once marks both its ends.
+    '''
+    indices = asarray(indices)
+    (count, number) = indices.shape
+    size = int(indices.max()) + 1 if indices.size else 0
+    pairs = []
+    for k in range(count):
+        (one, two) = ((k + 1) % count, (k + 2) % count)
+        low = minimum(indices[one], indices[two])
+        high = maximum(indices[one], indices[two])
+        pairs.append(low * size + high)
+    flat = concatenate(pairs) if pairs else zeros(0, dtype=int)
+    (keys, counts) = unique(flat, return_counts=True)
+    on_edge = keys[counts == 1]
+    out = zeros(size, dtype=bool)
+    out[on_edge // size] = True
+    out[on_edge % size] = True
+    return out
+
+
+def _solve(matrix, right, /):
+    '''Solves a sparse system with one right-hand side per channel.
+
+    `right` is ``(N, C)`` --- one row per unknown, one column per channel ---
+    and so is the answer. `spsolve` handles both shapes it can take, but a
+    single channel comes back flat, so that is made two-dimensional.
+    '''
+    from scipy.sparse.linalg import spsolve
+    solved = spsolve(matrix.tocsc(), asarray(right))
+    if solved.ndim == 1:
+        solved = solved.reshape(-1, 1)
+    return solved
+
+
+def smooth(values, coords, indices, /, loglambda=0.0, method='implicit',
+           fixboundary=True):
+    '''Smooths a value array over a simplex mesh.
+
+    One step of the diffusion equation, with the cotangent Laplacian and Meyer's
+    mixed mass. The operator is `M^-1 L`, which is dimensionless --- its
+    eigenvalues lie in [0, 2] whatever the mesh's size or shape --- so a step of
+    one means the same thing on every mesh, and `loglambda` is exponential in it
+    so that linear changes in the parameter are multiplicative in the step.
+
+    Parameters
+    ----------
+    values : array-like
+        ``(C..., N)``: the value at each vertex, with the channel dimensions
+        leading.
+    coords, indices : numpy.ndarray
+        The mesh's coordinates and its ``(K+1, M)`` matrix of corners.
+    loglambda : float, optional
+        The logarithm of the step. The default, ``0``, is a step of one.
+    method : str, optional
+        ``'implicit'``, the default, which is stable at any step, or
+        ``'explicit'``, which is cheaper per step and stable only below a bound
+        the mesh decides.
+    fixboundary : bool, optional
+        Whether boundary vertices keep their values. The default, ``True``,
+        does; ``False`` smooths them along their interior edges.
+
+    Returns
+    -------
+    numpy.ndarray
+        The smoothed values, shaped as the input was.
+    '''
+    from math import exp
+    values = asarray(values, dtype='float64')
+    # The channels lead and the vertices trail, so the arithmetic is done on
+    # `(C, N)` and the shape is put back at the end.
+    shape = values.shape[:-1]
+    flat = values.reshape(-1, values.shape[-1])          # (C, N)
+    L = stiffness(coords, indices)
+    M = mass(coords, indices)
+    step = exp(float(loglambda))
+    free = ones(L.shape[0], dtype=bool)
+    if fixboundary:
+        free = ~boundary_vertices(indices)
+    if method == 'explicit':
+        # f - lambda M^-1 L f, which needs no solve.
+        moves = (L @ flat.T) / M.diagonal()[:, None]
+        out = flat.copy()
+        out[:, free] -= step * moves.T[:, free]
+        return out.reshape(shape + (out.shape[-1],))
+    if method != 'implicit':
+        raise ValueError(
+            f"unknown smoothing method {method!r}; expected 'implicit' or"
+            f" 'explicit'")
+    # (M + lambda L) f' = M f, restricted to the vertices whose values move.
+    # The restricted system's right-hand side is not just its own rows: a free
+    # vertex's equation involves its neighbours' values, and the fixed ones are
+    # known --- so their contribution moves to the other side. Without that the
+    # operator stops annihilating constants, and a constant field comes back
+    # smoothed toward whatever the fixed vertices happen to be.
+    full = (M + L * step).tocsr()
+    known = ~free
+    right = M @ flat.T
+    if known.any():
+        right = right - full[:, known] @ flat.T[known, :]
+    system = full[free][:, free]
+    solved = _solve(system, right[free, :])
+    out = flat.copy()
+    out[:, free] = solved.T
+    return out.reshape(shape + (out.shape[-1],))
