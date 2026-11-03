@@ -195,13 +195,45 @@ def pack_corners(corners, size, /):
     return key
 
 
+def _is_tensor(x, /):
+    '''Whether a value belongs to a PyTorch tensor's backend.'''
+    return type(x).__module__.split('.')[0] == 'torch'
+
+
+def _operator(matrix, like, /):
+    '''A sparse operator, on the backend and in the dtype of `like`.'''
+    if not _is_tensor(like):
+        return matrix
+    import torch
+    return torch.as_tensor(asarray(matrix.todense()), dtype=like.dtype,
+                           device=like.device)
+
+
+def _clone(values, /):
+    '''A copy, spelled the backend's way.'''
+    return values.clone() if _is_tensor(values) else values.copy()
+
+
 def _solve(matrix, right, /):
     '''Solves a sparse system with one right-hand side per channel.
 
     `right` is ``(N, C)`` --- one row per unknown, one column per channel ---
     and so is the answer. `spsolve` handles both shapes it can take, but a
     single channel comes back flat, so that is made two-dimensional.
+
+    A tensor's right-hand side is solved by torch, and *densely*: torch 2.13
+    has no sparse solve, and the dense one is differentiable where a conversion
+    to numpy would silently drop the gradient. The cost is the matrix's size
+    squared rather than its nonzeros --- the one place the two backends differ
+    in more than a type.
     '''
+    if _is_tensor(right):
+        import torch
+        dense = (matrix if _is_tensor(matrix)
+                 else torch.as_tensor(asarray(matrix.todense()),
+                                      dtype=right.dtype,
+                                      device=right.device))
+        return torch.linalg.solve(dense, right)
     from scipy.sparse.linalg import spsolve
     solved = spsolve(matrix.tocsc(), asarray(right))
     if solved.ndim == 1:
@@ -242,13 +274,15 @@ def smooth_values(values, coords, indices, /, loglambda=0.0,
         The smoothed values, shaped as the input was.
     '''
     from math import exp
-    values = asarray(values, dtype='float64')
+    backend = _is_tensor(values)
+    if not backend:
+        values = asarray(values, dtype='float64')
     # The channels lead and the vertices trail, so the arithmetic is done on
     # `(C, N)` and the shape is put back at the end.
     shape = values.shape[:-1]
     flat = values.reshape(-1, values.shape[-1])          # (C, N)
-    L = stiffness(coords, indices)
-    M = mass(coords, indices)
+    L = _operator(stiffness(coords, indices), values)
+    M = _operator(mass(coords, indices), values)
     step = exp(float(loglambda))
     free = ones(L.shape[0], dtype=bool)
     if fixboundary:
@@ -256,7 +290,7 @@ def smooth_values(values, coords, indices, /, loglambda=0.0,
     if method == 'explicit':
         # f - lambda M^-1 L f, which needs no solve.
         moves = (L @ flat.T) / M.diagonal()[:, None]
-        out = flat.copy()
+        out = _clone(flat)
         out[:, free] -= step * moves.T[:, free]
         return out.reshape(shape + (out.shape[-1],))
     if method != 'implicit':
@@ -269,14 +303,16 @@ def smooth_values(values, coords, indices, /, loglambda=0.0,
     # known --- so their contribution moves to the other side. Without that the
     # operator stops annihilating constants, and a constant field comes back
     # smoothed toward whatever the fixed vertices happen to be.
-    full = (M + L * step).tocsr()
+    full = M + L * step
+    if not backend:
+        full = full.tocsr()
     known = ~free
     right = M @ flat.T
     if known.any():
         right = right - full[:, known] @ flat.T[known, :]
     system = full[free][:, free]
     solved = _solve(system, right[free, :])
-    out = flat.copy()
+    out = _clone(flat)
     out[:, free] = solved.T
     return out.reshape(shape + (out.shape[-1],))
 

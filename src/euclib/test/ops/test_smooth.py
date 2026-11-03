@@ -288,3 +288,37 @@ class TestTheImageKernels(TestCase):
                 self.assertTrue(allclose(
                     asarray(smooth_op(held, 'c', kernel=kernel).value), 3.0))
 
+class TestTheTensorPath(TestCase):
+    '''That a tensor is smoothed as a tensor, its gradient intact.'''
+
+    def _needs_torch(self):
+        try:
+            import torch
+        except ImportError:                     # pragma: no cover
+            self.skipTest("torch is not installed")
+        return torch
+
+    def test_a_tensor_s_gradient_survives_the_solve(self):
+        # The solve is the one backend-specific step: scipy's `spsolve` for
+        # numpy, a dense `torch.linalg.solve` for a tensor, which is the only
+        # differentiable one torch offers. A conversion to numpy would lose the
+        # gradient silently, which is what this would catch.
+        torch = self._needs_torch()
+        (coords, indices) = _square()
+        bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
+        held = torch.tensor(bump, dtype=torch.float64, requires_grad=True)
+        out = smooth_values(held, coords, indices)
+        self.assertTrue(bool(out.requires_grad))
+        out.sum().backward()
+        self.assertIsNotNone(held.grad)
+        self.assertTrue(bool(held.grad.abs().sum() > 0))
+
+    def test_a_tensor_and_an_array_agree(self):
+        torch = self._needs_torch()
+        (coords, indices) = _square()
+        bump = (coords[0] - 1.5) ** 2 + (coords[1] - 1.5) ** 2
+        held = torch.tensor(bump, dtype=torch.float64)
+        self.assertTrue(allclose(
+            asarray(smooth_values(held, coords, indices)).ravel(),
+            asarray(smooth_values(bump, coords, indices)).ravel(), atol=1e-10))
+
