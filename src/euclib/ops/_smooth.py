@@ -491,14 +491,16 @@ def smooth_bilateral(values, shape, /, sigma=1.0, rangesigma=1.0,
     numpy.ndarray
         The smoothed image, shaped as the input was.
     '''
-    from numpy import exp, moveaxis, ndindex, pad, take
+    from numpy import around, exp, ndindex, pad
     values = asarray(values, dtype='float64')
     rank = len(tuple(shape))
     if rank > values.ndim:
         raise ValueError(
             f"a grid of {rank} dimensions cannot smooth a {values.ndim}-"
             f"dimensional array")
-    radius = max(1, int(3.0 * float(sigma)))
+    # Rounded as the separable kernels round theirs, so that `sigma` means the
+    # same reach whatever kernel it is given to.
+    radius = max(1, int(around(3.0 * float(sigma))))
     (spatial, _) = smoothing_kernel('gaussian', sigma)
     pad_width = [(0, 0)] * values.ndim
     for axis in range(values.ndim - rank, values.ndim):

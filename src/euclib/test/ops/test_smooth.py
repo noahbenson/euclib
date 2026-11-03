@@ -7,12 +7,15 @@
 
 from __future__ import annotations
 
-from numpy import allclose, asarray, eye, meshgrid, stack, zeros
+import inspect
+
+from numpy import (allclose, asarray, eye, meshgrid, ones, stack, zeros)
 import unittest
 from unittest import TestCase
 
 from euclib.ops._smooth import (boundary_vertices, cotangents, mass,
-                                smooth, smooth_values, stiffness)
+                                smooth, smooth_values, smoothing_kernel,
+                                stiffness)
 from euclib.types import TriMesh, TriTopology
 from euclib.utils import simplex_measures
 
@@ -243,4 +246,45 @@ class TestTheBoundary(TestCase):
 
     def test_a_point_cloud_is_all_boundary(self):
         self.assertEqual(int(boundary_vertices(asarray([[0, 1, 2]])).sum()), 3)
+
+class TestTheImageKernels(TestCase):
+    '''The kernels a grid smooths with.'''
+
+    def test_the_gaussian_reaches_three_sigma(self):
+        for sigma in (0.5, 1.0, 2.0, 3.0):
+            with self.subTest(sigma=sigma):
+                (weights, radius) = smoothing_kernel('gaussian', sigma)
+                self.assertEqual(radius, max(1, int(round(3.0 * sigma))))
+                self.assertAlmostEqual(float(weights.sum()), 1.0, places=12)
+
+    def test_the_box_is_a_half_width_of_sigma(self):
+        (weights, radius) = smoothing_kernel('box', 2.0)
+        self.assertEqual(radius, 2)
+        self.assertTrue(allclose(weights, 0.2))
+
+    def test_a_tiny_sigma_is_a_delta_not_a_wrong_kernel(self):
+        # The radius floors at one, but the sampled gaussian is already a delta
+        # at that width, so a tiny sigma smooths by nothing rather than by a
+        # three-point average.
+        (weights, _) = smoothing_kernel('gaussian', 0.1)
+        self.assertTrue(allclose(weights, [0.0, 1.0, 0.0], atol=1e-9))
+
+    def test_every_kernel_reaches_the_same_distance(self):
+        # `sigma` must mean one thing: the bilateral used to truncate where the
+        # separable kernels round, so sigma 1.5 reached four cells in one and
+        # six in the other.
+        from euclib.ops._smooth import smooth_bilateral
+        (_, separable) = smoothing_kernel('gaussian', 1.5)
+        source = inspect.getsource(smooth_bilateral)
+        self.assertIn('around(3.0 * float(sigma))', source)
+
+    def test_an_image_constant_survives_every_kernel(self):
+        from euclib.types import Grid, GridTopology
+        grid = Grid(eye(4), GridTopology((5, 5, 5)))
+        held = grid.withprop('c', ones((5, 5, 5)) * 3.0)
+        for kernel in ('gaussian', 'box', 'bilateral'):
+            with self.subTest(kernel=kernel):
+                from euclib.ops import smooth as smooth_op
+                self.assertTrue(allclose(
+                    asarray(smooth_op(held, 'c', kernel=kernel).value), 3.0))
 
