@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Clough–Tocher Interpolation on a Triangle
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 [Bézier interpolation on a triangle](bezier-triangle.md) builds a cubic patch on
 each triangle, and two triangles sharing an edge agree on that edge *because*
 both compute the edge's control values from the same two corner values and

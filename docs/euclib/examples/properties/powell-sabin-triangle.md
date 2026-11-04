@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Powell–Sabin Interpolation on a Triangle
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 [Clough–Tocher](clough-tocher-triangle.md) makes the field's slope continuous
 across a triangle mesh's edges by splitting each triangle into three cubics. It
 pays for the smoothness with a **datum the vertices do not carry**: the

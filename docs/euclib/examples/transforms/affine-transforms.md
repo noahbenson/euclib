@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Affine Transforms: Translation, Scale, and Rotation
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 An affine transformation is the general "move, resize, and turn" operation on
 space. `euclib` represents one as an `euclib.types.Affine`, a `(D+1, D+1)`
 matrix that can be applied to positions, composed with other transforms, and

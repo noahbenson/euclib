@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Bézier Interpolation on a Triangle
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 Interpolating a property *within* a triangle is easy to state and surprisingly
 delicate to get right. A triangle has three vertices, so it carries three
 values; a smooth surface over it needs many more numbers than that. This page

@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Circles and Ellipses as Segment Paths
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 A closed curve is the simplest object built from 1-dimensional simplices. This
 page builds a circle and an ellipse as `euclib.types.SegPath` objects — closed
 loops of line segments — and checks their geometry through the segment measures

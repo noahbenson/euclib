@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Bézier Interpolation on a Tetrahedron
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 [Bézier interpolation on a triangle](bezier-triangle.md) derives the rules that
 turn a triangle's vertex values and derivatives into a smooth field over it. The
 same construction works on a tetrahedron, one dimension up, and this page is

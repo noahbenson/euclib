@@ -1,5 +1,15 @@
 # Roadmap: Operations Not Yet Implemented
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 `euclib` is under active development, and several operations that other geometry
 libraries demonstrate are not implemented yet. This page records them, with the
 upstream test that would make a good example page once the operation lands, so

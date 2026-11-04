@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Interpolating a Grid: Nearest and Linear
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 A grid is not a mesh. Its cells are the unit boxes of an **index
 space**, and that space is related to where the cells actually are by an
 **affine transformation** — which may scale, shear, rotate or reflect. This page

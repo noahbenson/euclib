@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Interpolating a Grid: Lanczos
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 Every method so far has been a *piecewise polynomial*: a triangle, a cubic, a
 B-spline, each one reproducing the polynomials its support can pay for, exactly.
 Lanczos is a different kind of thing — an approximation to the **ideal**

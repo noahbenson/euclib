@@ -33,6 +33,7 @@ first from passing because the walk found nothing.
 from __future__ import annotations
 
 import inspect
+import pathlib
 from importlib import import_module
 from types import ModuleType
 from unittest import TestCase
@@ -347,3 +348,46 @@ class TestTheDocumentationLinks(TestCase):
                                   f"{target} is not in the table of contents, so"
                                   f" MyST will link a hashed copy of it under"
                                   f" build/ rather than the page")
+
+class TestTheAIWarning(TestCase):
+    '''That every substantive page says it has not been reviewed by a person.
+
+    The prose in this documentation was written with AI assistance. The pages
+    that state an operation --- the examples and the API reference --- carry a
+    warning at the top saying so; the overview pages and the intro do not,
+    because they describe the library rather than make claims a reader might
+    act on.
+    '''
+
+    #: The pages that are overviews rather than substance.
+    OVERVIEWS = {'intro.md', 'intro/about.md', 'intro/design.md',
+                 'intro/getting-started.md', 'license.md', 'api.md',
+                 'examples/index.md'}
+
+    def _pages(self):
+        here = pathlib.Path(__file__).resolve().parents[3] / 'docs' / 'euclib'
+        return {str(p.relative_to(here)): p
+                for p in here.rglob('*.md') if '_build' not in p.parts}
+
+    def test_every_substantive_page_warns(self):
+        pages = self._pages()
+        self.assertGreater(len(pages), 40, "the walk is not looking where they are")
+        for (rel, path) in sorted(pages.items()):
+            if rel in self.OVERVIEWS:
+                continue
+            with self.subTest(page=rel):
+                text = path.read_text()
+                self.assertIn('written with AI assistance', text,
+                              f"{rel} does not say it was written with AI"
+                              f" assistance")
+
+    def test_the_overview_pages_do_not_warn(self):
+        # An overview that says it has not been reviewed would be speaking about
+        # itself rather than about an operation, and the warning is for the
+        # latter.
+        pages = self._pages()
+        for rel in sorted(self.OVERVIEWS):
+            with self.subTest(page=rel):
+                self.assertNotIn('written with AI assistance',
+                                 pages[rel].read_text())
+

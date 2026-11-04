@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Interpolating a Grid: the Polynomial Fit
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 Every method on the [family page](grid-lanczos.md) is an *interpolator*: a field
 that passes through the data and is at least continuous between the samples.
 `('polynomial', k)` is not. It is the monomial least-squares fit the method's

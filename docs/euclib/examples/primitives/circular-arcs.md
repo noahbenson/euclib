@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Circular Arcs: Length along a Curve vs Distance across It
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 An arc is a `euclib.types.SegPath` that is *not* closed. This page builds one
 and compares two numbers that are easy to confuse: the length *along* the curve
 — the sum of the segment measures — and the straight-line distance *across* it,

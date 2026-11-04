@@ -14,6 +14,16 @@ kernelspec:
 ---
 # Resampling a Volume onto a Grid
 
+:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::
+
 A tetrahedral mesh and an image grid can describe the same region in different
 ways, and it is often useful to express one in terms of the other: which voxels
 does a piece of this volume fall in, and how much of it? `euclib.voxel_intersections`
