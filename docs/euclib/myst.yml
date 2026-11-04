@@ -50,6 +50,7 @@ project:
             - file: examples/intersections/path-mesh.md
             - file: examples/intersections/path-path.md
             - file: examples/intersections/mesh-grid.md
+            - file: examples/intersections/mesh-grid-integration.md
         - title: Transforms
           children:
             - file: examples/transforms/affine-transforms.md
