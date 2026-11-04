@@ -112,9 +112,23 @@ def render_object(name, obj):
         lines += [doc, '']
     return '\n'.join(lines)
 
+#: Every generated page says it has not been reviewed by a person. The API
+#: reference is drawn from docstrings rather than written, but the prose around
+#: them is generated too, and a reader should know that before trusting it.
+AI_WARNING = """:::{admonition} Warning: This page was written with AI assistance.
+:class: warning
+
+This page was written using AI assistance and has not yet been carefully
+reviewed by a human. Its code runs and its claims are checked against the test
+suite, but a person has not read it end to end. Treat it as an unreviewed draft:
+verify the behaviour you depend on against the API reference and the tests, and
+report anything that looks wrong.
+:::"""
+
+
 def render_module(name, module):
     "Renders a whole module's page."
-    lines = [f'# {name}', '']
+    lines = [f'# {name}', '', AI_WARNING, '']
     moddoc = render_docstring(module)
     if moddoc:
         lines += [moddoc, '']
