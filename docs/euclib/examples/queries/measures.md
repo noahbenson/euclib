@@ -89,6 +89,20 @@ print('corner tetrahedron volume:', float(np.sum(tet.measures)))
 print('expected (1/6)           :', 1 / 6)
 ```
 
+## The names each geometry gives its measure
+
+`measures` is what a geometry of *any* order calls the extent of its simplices.
+Each kind of geometry also names it: a path's is its `length`, a triangle mesh's
+its `area`, a tetrahedral mesh's its `volume`. The three are the same vector
+under the name it has there.
+
+```{code-cell}
+print('the path\'s lengths :', path.length)
+print('...and its measures:', path.measures)
+print('the square\'s areas  :', square.area)
+print('the tet\'s volume    :', tet.volume)
+```
+
 ## The same topology, different coordinates
 
 Measures are a function of *both* the coordinates and the topology. Stretching

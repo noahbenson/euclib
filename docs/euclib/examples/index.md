@@ -40,6 +40,7 @@ different construction.
 | Page | Adapted from | Exercises |
 |---|---|---|
 | [Geodesic distance along a surface](surfaces/geodesic.md) | pyvista `test_polydata.py::test_geodesic_distance` | `geodesic`, sources as a mask, distance fields |
+| [Smoothing a field over a mesh or an image](surfaces/smoothing.md) | trimesh `smoothing.py::filter_laplacian`; pyvista `test_polydata.py::test_smooth` | `smooth`, `loglambda`, `fixboundary`, image kernels |
 
 ## Intersections
 
@@ -66,6 +67,7 @@ different construction.
 | [Interpolating a property within a geometry](properties/interpolation.md) | pyvista `test_dataset_filters.py::test_sample_over_line` | `prop(at=...)`, interp order, mask, extrapolation |
 | [Transferring a property between geometries](properties/transfer.md) | pyvista `test_dataset_filters.py::test_implicit_distance` | `el.ops.transfer`, `el.ops.sample`, cross-representation |
 | [Metadata, immutability, and transient edits](properties/immutability.md) | trimesh `test_meta.py::test_glb`; pyvista `test_utilities.py::test_transform_translate` | `withmeta`, `dropmeta`, `transient`, `persistent` |
+| [The gradient and hessian of an interpolated field](properties/gradients.md) | pyvista `test_dataset_filters.py::test_compute_gradient`; trimesh `test_proximity.py::test_signed_distance` | `propgrad`, `prophess`, a skewed element |
 
 ## Grids and images
 

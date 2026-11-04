@@ -75,6 +75,34 @@ reader who remembers them being absent knows where they went:
   [Lanczos](properties/grid-lanczos.md) and
   [the polynomial fit](properties/grid-polynomial.md).
 
+## Known defects
+
+Operations that work in the cases they are used for and not in others. These
+are defects rather than gaps: a caller can get a wrong answer rather than a
+refusal, so they are listed separately.
+
+- **Smoothing a tetrahedral mesh, and smoothing at a boundary.** The Laplacian
+  the mesh smoothing uses is the *cotangent* one, which is the triangle's
+  formula. A tetrahedron's is the linear finite-element stiffness,
+  `-V (grad phi_i . grad phi_j)`, and the two agree on an interior triangle edge
+  and disagree elsewhere: on a boundary edge the cotangent form gives zero where
+  the finite-element one does not. So a tetrahedral mesh smooths with the wrong
+  operator, and any mesh smooths its boundary edges with the wrong weights.
+
+  The boundary is a second question with the same origin. A plane is harmonic on
+  a *closed* surface and not on an open one, where the weak Laplacian picks up a
+  boundary term --- so with `fixboundary=False` a plane through a mesh does not
+  stay a plane, which is the opposite of what a diffusion equation ought to do
+  to it.
+
+  Which convention the boundary should take --- the cotangent one, which leaves
+  boundary edges out so that a plane stays harmonic, or the finite-element one,
+  which keeps them so that a free boundary diffuses --- is undecided, and it
+  decides what `fixboundary` means. The test that would have caught the first
+  half was vacuous: `test_a_linear_field_is_preserved` uses the default
+  `fixboundary=True`, so the boundary is held still and nothing moves whatever
+  the operator is.
+
 ## Partly implemented
 
 A few operations exist but are incomplete, so their example pages will be

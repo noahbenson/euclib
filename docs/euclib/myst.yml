@@ -44,6 +44,7 @@ project:
         - title: Surfaces and Paths
           children:
             - file: examples/surfaces/geodesic.md
+            - file: examples/surfaces/smoothing.md
         - title: Intersections
           children:
             - file: examples/intersections/mesh-mesh.md
@@ -76,6 +77,7 @@ project:
             - file: examples/properties/grid-polynomial.md
             - file: examples/properties/transfer.md
             - file: examples/properties/immutability.md
+            - file: examples/properties/gradients.md
         - title: Grids and Images
           children:
             - file: examples/grids/grids-from-arrays.md

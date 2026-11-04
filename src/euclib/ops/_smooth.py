@@ -346,6 +346,16 @@ def smooth(geom, values, /, loglambda=0.0, method='implicit',
         The smoothed values, with the metadata the property carried when one was
         named.
 
+    Warns
+    -----
+    The Laplacian is the cotangent one, which is a *triangle's* formula. A
+    tetrahedral mesh needs the linear finite-element stiffness, and the two
+    disagree on boundary edges --- so a `TetMesh` smooths with the wrong
+    operator, and any mesh smooths its boundary edges with the wrong weights.
+    A plane is also not harmonic at a boundary, so `fixboundary=False` does not
+    leave one alone as a diffusion equation ought to. Both are recorded under
+    the known defects in the roadmap and are not yet fixed.
+
     Raises
     ------
     TypeError
