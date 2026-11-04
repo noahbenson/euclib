@@ -49,6 +49,7 @@ different construction.
 | [Where a path crosses a surface](intersections/path-mesh.md) | trimesh `test_ray.py::test_rps` | `path_crossings`, crossing triangle indices |
 | [Where two paths cross](intersections/path-path.md) | trimesh `test_intersect.py::test_line_line` | `path_intersections`, segment indices |
 | [Resampling a volume onto a grid](intersections/mesh-grid.md) | pyvista `test_dataset_filters.py::test_delaunay_3d_grid`; trimesh `test_voxel.py::test_voxel` | `voxel_intersections`, cell indices |
+| [Integrating a volume's field over a grid](intersections/mesh-grid-integration.md) | pyvista `test_dataset_filters.py::test_delaunay_3d_grid`; trimesh `test_voxel.py::test_voxel` | `integrate`, `emptyconst`, closed-form checks |
 
 ## Transforms
 
