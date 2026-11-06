@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 
+import numpy as np
 from numpy import (allclose, asarray, eye, meshgrid, ones, stack, zeros)
 import unittest
 from unittest import TestCase
@@ -321,4 +322,44 @@ class TestTheTensorPath(TestCase):
         self.assertTrue(allclose(
             asarray(smooth_values(held, coords, indices)).ravel(),
             asarray(smooth_values(bump, coords, indices)).ravel(), atol=1e-10))
+
+class TestTheTetrahedralOperator(TestCase):
+    '''The Laplacian on a solid, which the cotangent formula does not give.
+
+    The cotangent formula is a *triangle's*. A tetrahedron's is the linear
+    finite-element stiffness, and the two coincide on a triangle --- so a triangle
+    mesh was right all along and a tetrahedral one was not.
+    '''
+
+    def _cube(self):
+        return _cube()
+
+    def test_the_operator_has_the_shape_a_laplacian_must(self):
+        (coords, indices) = self._cube()
+        L = stiffness(coords, indices)
+        D = np.asarray(L.todense())
+        self.assertTrue(np.allclose(D.sum(axis=1), 0), "rows must sum to zero")
+        self.assertTrue(np.allclose(D, D.T), "it must be symmetric")
+        self.assertTrue((np.linalg.eigvalsh((D + D.T) / 2) >= -1e-12).all(),
+                        "it must be positive semi-definite")
+
+    def test_a_constant_is_preserved(self):
+        (coords, indices) = self._cube()
+        for fix in (True, False):
+            with self.subTest(fixboundary=fix):
+                self.assertTrue(allclose(
+                    smooth_values(asarray([5.0] * coords.shape[1]), coords,
+                                  indices, fixboundary=fix), 5.0))
+
+    def test_a_plane_is_preserved_only_when_the_boundary_is_held(self):
+        # A held boundary is a Dirichlet condition, and a plane satisfies it. A
+        # free one is the weak Laplacian's natural condition, df/dn = 0, which a
+        # plane does not satisfy --- so it moves, and that is not a defect.
+        (coords, indices) = self._cube()
+        plane = coords[0].copy()
+        self.assertTrue(allclose(smooth_values(plane, coords, indices), plane))
+        self.assertFalse(allclose(
+            smooth_values(plane, coords, indices, fixboundary=False), plane))
+        # ...and the boundary is what moves: every vertex of this cube is on it.
+        self.assertTrue(bool(boundary_vertices(indices).all()))
 

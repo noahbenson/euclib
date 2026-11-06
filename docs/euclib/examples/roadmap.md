@@ -81,29 +81,32 @@ Operations that work in the cases they are used for and not in others. These
 are defects rather than gaps: a caller can get a wrong answer rather than a
 refusal, so they are listed separately.
 
-- **Smoothing a tetrahedral mesh, and smoothing at a boundary.** The Laplacian
-  the mesh smoothing uses is the *cotangent* one, which is the triangle's
-  formula. A tetrahedron's is the linear finite-element stiffness,
-  `-V (grad phi_i . grad phi_j)`, and the two agree on an interior triangle edge
-  and disagree elsewhere: on a boundary edge the cotangent form gives zero where
-  the finite-element one does not. So a tetrahedral mesh smooths with the wrong
-  operator, and any mesh smooths its boundary edges with the wrong weights.
+None at present.
 
-  The boundary is a second question with the same origin. A plane is harmonic on
-  a *closed* surface and not on an open one, where the weak Laplacian picks up a
-  boundary term --- so with `fixboundary=False` a plane through a mesh does not
-  stay a plane, which is the opposite of what a diffusion equation ought to do
-  to it.
+:::{admonition} What was here, and why it went
+:class: note
+A defect was recorded against mesh smoothing for two reasons, and on
+investigation neither was one.
 
-  Which convention the boundary should take --- the cotangent one, which leaves
-  boundary edges out so that a plane stays harmonic, or the finite-element one,
-  which keeps them so that a free boundary diffuses --- is undecided, and it
-  decides what `fixboundary` means. The test that would have caught the first
-  half was vacuous: `test_a_linear_field_is_preserved` uses the default
-  `fixboundary=True`, so the boundary is held still and nothing moves whatever
-  the operator is.
+The first was that the tetrahedral smoothing used the *cotangent* formula,
+which is a triangle's. That was real, and it is fixed: the stiffness is the
+linear finite-element one, ``V (grad phi_i . grad phi_j)``, which *is* the
+cotangent formula on a triangle --- so the triangle path was right all along and
+only the tetrahedral one was wrong.
 
-## Partly implemented
+The second was that a plane is not preserved when the boundary is free. That is
+not a defect. The weak Laplacian's natural boundary condition is ``df/dn = 0``,
+which a plane does not satisfy; a plane is preserved under a *Dirichlet*
+boundary, which is what ``fixboundary=True`` supplies. Both behaviours are now
+tested, so the next person meets them as specification rather than as surprise.
+
+The test that would have caught the first half was vacuous:
+``test_a_linear_field_is_preserved`` used the default ``fixboundary=True``, so
+the boundary was held still and nothing moved whatever the operator was. It has
+been replaced by one that asserts what each boundary treatment should do.
+:::
+
+## Partly implemented## Partly implemented
 
 A few operations exist but are incomplete, so their example pages will be
 written to state the limitation rather than hide it:

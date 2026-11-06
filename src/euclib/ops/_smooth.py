@@ -34,6 +34,7 @@ from numpy import (add, arange, asarray, concatenate, isin, maximum,
 from scipy.sparse import coo_matrix
 
 from ..abc import SimplexGeometry
+from ..utils import simplex_measures
 
 
 # The operator ###############################################################
@@ -73,47 +74,63 @@ def cotangents(coords, indices, /):
 
 
 def stiffness(coords, indices, /):
-    '''The cotangent stiffness matrix of a simplex mesh, as a sparse COO.
+    '''The linear finite-element stiffness matrix, as a sparse COO.
 
-    Each edge's weight is half the sum of the cotangents of the angles opposite
-    it --- the angles at the corners the edge does not touch --- which is the
-    linear finite-element discretization of the Laplacian. The diagonal is the
-    negated row sum, so the matrix annihilates constants.
+    Each entry is ``V (grad phi_i . grad phi_j)`` summed over the simplices that
+    share the two vertices, the gradient of a barycentric coordinate being
+    constant within one simplex. The sign is the Laplacian's rather than the
+    stiffness matrix's: a diagonal entry is positive and the off-diagonal ones
+    negative, which is what ``-(1/2) cot`` gives on a triangle and what makes
+    ``mass + step * stiffness`` positive definite. That is the *general* form: on a triangle it is
+    exactly the cotangent formula --- ``V (grad phi_i . grad phi_j)`` equals
+    ``-(1/2) cot`` of the angle opposite the edge --- and on a tetrahedron it is
+    something the cotangent formula does not give, which is why it is written
+    this way rather than as cotangents.
+
+    The diagonal is the negated row sum, so the matrix annihilates constants.
+
+    The boundary is the *natural* one: a vertex's equation is its row of the
+    weak Laplacian, so the condition implied at a boundary vertex is
+    ``df/dn = 0``. Nothing here holds the boundary still --- that is the
+    caller's choice, and `smooth_values` makes it with `fixboundary`.
     '''
+    from numpy import linalg
     coords = asarray(coords)
     indices = asarray(indices)
     (count, number) = indices.shape
-    cot = cotangents(coords, indices)
+    k = count - 1
+    size = int(indices.max()) + 1 if indices.size else 0
+    ends = coords[:, indices]                          # (D, K+1, M)
+    jac = ends[:, :k, :] - ends[:, k:k + 1, :]         # (D, K, M)
+    measure = asarray(simplex_measures(coords, indices))
+    # The barycentric gradient of each of the first K corners; the last is the
+    # negative of their sum, since the weights add to one.
+    grad = linalg.pinv(jac.transpose(2, 0, 1))         # (M, K, D)
+    full = concatenate([grad, -grad.sum(axis=1, keepdims=True)], axis=1)
     rows = []
     cols = []
     data = []
-    for k in range(count):
-        # The edge opposite corner `k` is the one between the other two, and its
-        # weight is half of that corner's cotangent.
-        (one, two) = ((k + 1) % count, (k + 2) % count)
-        rows.append(indices[one])
-        cols.append(indices[two])
-        data.append(-0.5 * cot[k])
-        rows.append(indices[two])
-        cols.append(indices[one])
-        data.append(-0.5 * cot[k])
-    rows = concatenate(rows)
-    cols = concatenate(cols)
-    data = concatenate(data)
-    size = int(indices.max()) + 1 if indices.size else 0
-    at = rows * size + cols
+    for m in range(number):
+        here = indices[:, m]
+        for i in range(count):
+            for j in range(count):
+                weight = float(measure[m]) * float(full[m, i] @ full[m, j])
+                rows.append(int(here[i]))
+                cols.append(int(here[j]))
+                data.append(weight)
+    rows = asarray(rows)
+    cols = asarray(cols)
+    data = asarray(data)
     total = zeros(size)
-    for (one, value, entry) in zip(rows, data, at):
-        total[one] += value
-    rows = concatenate([rows, arange(size)])
-    cols = concatenate([cols, arange(size)])
-    data = concatenate([data, -total])
-    return coo_matrix((data, (rows, cols)), shape=(size, size)).tocsr()
+    add.at(total, rows, data)
+    return coo_matrix((concatenate([data, -total]),
+                       (concatenate([rows, arange(size)]),
+                        concatenate([cols, arange(size)]))),
+                      shape=(size, size)).tocsr()
 
 
 def mass(coords, indices, /):
     '''Meyer's mixed Voronoi area, one entry per vertex, as a sparse diagonal.'''
-    from ..utils import simplex_measures
     coords = asarray(coords)
     indices = asarray(indices)
     (count, number) = indices.shape
