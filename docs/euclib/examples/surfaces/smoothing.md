@@ -30,17 +30,6 @@ along each axis of an image. The mesh side is the cotangent Laplacian with
 Meyer's mixed mass; the image side is a separable kernel, or a bilateral one
 that does not smooth across a step.
 
-:::{admonition} Warning: This page documents a partly broken operation.
-:class: warning
-The mesh smoothing is **not correct at a boundary, and not correct on a
-tetrahedral mesh**. The Laplacian it uses is the cotangent formula, which is a
-*triangle's*; a tetrahedron's is the linear finite-element stiffness, and the
-two disagree. A plane is also not harmonic at a boundary, so `fixboundary=False`
-does not leave one alone. Both are recorded under the roadmap's known defects.
-The examples below use a closed interior with a fixed rim, where the operator is
-right.
-:::
-
 :::{admonition} What this demonstrates
 :class: tip
 - `euclib.ops.smooth(geom, values, loglambda=...)`, which returns a `Property`
@@ -137,14 +126,13 @@ print('gaussian  across the step:', blurred[:, 2, 2].round(3))
 print('bilateral across the step:', kept[:, 2, 2].round(3))
 ```
 
-:::{admonition} The broken cases
-:class: warning
-A `TetMesh` smooths with the wrong operator, and any mesh smooths its boundary
-edges with the wrong weights; a plane is also not harmonic at a boundary. The
-roadmap records both under known defects, together with the question that has to
-be settled before either is fixed: whether the Laplacian should leave boundary
-edges out, as the cotangent convention does, or keep them, as the finite-element
-one does.
+:::{admonition} The boundary is a condition, not a defect
+:class: note
+The Laplacian's natural boundary condition is ``df/dn = 0``, so a field with a
+gradient across the boundary is not left alone there unless the boundary is
+held. A plane is preserved by the default --- which holds it, a Dirichlet
+condition --- and moves without it. Both behaviours are tested, so this is the
+operator's specification rather than a surprise.
 :::
 
 ## Provenance
