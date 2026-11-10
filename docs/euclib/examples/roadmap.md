@@ -32,7 +32,6 @@ the [gallery](index.md) following the standard template.
 | Convex hull, oriented bounding boxes, principal axes | trimesh `tests/test_convex.py::test_convex`, `tests/test_bounds.py::test_obb_mesh`; pyvista `test_dataset_filters.py::test_oriented_bounding_box`, `test_utilities.py::test_principal_axes` |
 | Plane and line fitting | pyvista `test_utilities.py::test_fit_plane_to_points`, `::test_fit_line_to_points` |
 | Mesh remeshing, subdivision, and simplification | trimesh `tests/test_remesh.py::test_subdivide`, `tests/test_simplify.py::test_merge_colinear` |
-| Mass properties (inertia tensors) | trimesh `tests/test_inertia.py::test_primitives` |
 | Vector-field integration (streamlines) | pyvista `test_dataset_filters.py::test_streamlines_evenly_spaced_2d` |
 | Primitive generators (boxes, spheres, and so on from a size) | pyvista `tests/core/test_geometric_objects.py::test_cube`, `::test_icosphere`; trimesh `tests/test_creation.py::test_box`, `::test_spheres` |
 

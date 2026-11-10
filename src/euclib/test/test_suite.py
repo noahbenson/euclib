@@ -165,6 +165,13 @@ class TestEveryFieldOfAGeometry(TestCase):
         ('PrismMesh', 'vertices'): 'a prism has two surfaces, not one set of points',
         ('PrismMesh', 'edges'): 'a prism has two surfaces, not one set of edges',
         ('PrismMesh', 'triangles'): 'a prism has two surfaces, not one set of faces',
+        # A grid's cells are boxes rather than simplices, so there is no
+        # element to measure and no sum to take; its centroid and inertia are a
+        # different computation.
+        ('Grid', 'centroid'): 'a grid has no simplices to centre a measure on',
+        ('Grid', 'inertia'): 'a grid has no simplices to sum an inertia over',
+        ('PrismMesh', 'centroid'): 'a prism\'s coordinates are two surfaces',
+        ('PrismMesh', 'inertia'): 'a prism\'s coordinates are two surfaces',
     }
 
     def _geometries(self, /):

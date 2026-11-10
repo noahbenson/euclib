@@ -11,7 +11,7 @@ from numpy import asarray, isnan
 
 from unittest import TestCase
 
-from numpy import allclose, array, zeros
+from numpy import allclose, eye, array, zeros
 
 from euclib.abc import is_geometry, is_simplex_geometry
 from euclib.types import (
@@ -532,3 +532,47 @@ class TestThePropertiesAreSharedNotCopied(TestCase):
         mesh = self._mesh()
         self.assertEqual(asarray(mesh.vertices['f']).ravel().tolist(),
                          asarray(mesh['f']).ravel().tolist())
+
+class TestTheCentroidAndInertia(TestCase):
+    '''Where a geometry's measure is centred, and how it resists rotation.'''
+
+    def _tet(self):
+        return TetMesh(array([[0., 1., 0., 0.], [0., 0., 1., 0.],
+                              [0., 0., 0., 1.]]),
+                       TetTopology([[0], [1], [2], [3]]))
+
+    def test_the_unit_tetrahedron_s_inertia_is_its_closed_form(self):
+        # About the centroid: I_xx = int(y^2 + z^2) - V c_y^2 - V c_z^2, which
+        # is 1/30 - 1/48 = 1/80, and the off-diagonal is -(1/120) + V c_y c_z.
+        tet = self._tet()
+        self.assertTrue(allclose(tet.centroid, [0.25, 0.25, 0.25]))
+        self.assertTrue(allclose(tet.inertia,
+                                 [[1/80, 1/480, 1/480],
+                                  [1/480, 1/80, 1/480],
+                                  [1/480, 1/480, 1/80]]))
+        self.assertTrue(allclose(tet.inertia, tet.inertia.T))
+
+    def test_a_square_s_shell_has_inertia_one_twelfth(self):
+        square = TriMesh(array([[0., 1., 0., 1.], [0., 0., 1., 1.]]),
+                         TriTopology([[0, 0], [1, 3], [3, 2]]))
+        self.assertTrue(allclose(square.centroid, [0.5, 0.5]))
+        self.assertTrue(allclose(square.inertia, eye(2) / 12.0))
+
+    def test_a_segment_s_wire_has_no_inertia_about_its_own_axis(self):
+        # A line along x: all its measure lies on the axis, so rotating about x
+        # moves nothing, and the other moment is int x^2 - L c^2 = 8/3 - 2.
+        segment = SegPath(array([[0., 2.], [0., 0.]]), SegTopology([[0], [1]]))
+        self.assertTrue(allclose(segment.centroid, [1., 0.]))
+        self.assertTrue(allclose(segment.inertia,
+                                 [[0.0, 0.0], [0.0, 2/3]]))
+
+    def test_the_inertia_is_about_the_centroid(self):
+        # Moving a geometry does not change what it is like to rotate about its
+        # own centre.
+        tet = self._tet()
+        moved = TetMesh(array(tet.coords) + array([[5.], [-3.], [2.]]),
+                        TetTopology(tet.topo.indices))
+        self.assertTrue(allclose(moved.inertia, tet.inertia))
+        self.assertTrue(allclose(moved.centroid,
+                                 array(tet.centroid) + [5., -3., 2.]))
+

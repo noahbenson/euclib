@@ -92,6 +92,40 @@ def normalize_properties(properties, spatial_shape, /):
 
 
 
+def _second_moment(coords, indices, /):
+    '''The integral of ``x x^T`` over a mesh's elements, summed.
+
+    A simplex's second moment has a closed form: with the corners as columns,
+    ``V (sum_i v_i v_i^T + S S^T) / (n+1)(n+2)`` where ``S`` is the sum of the
+    corners and ``n`` the simplex's order. The integral is additive, so summing
+    over the elements gives the mesh's.
+
+    Returns
+    -------
+    moment : numpy.ndarray
+        A ``(D, D)`` matrix, ``D`` the space's dimension.
+    measure : float
+        The total measure: a volume, an area, or a length.
+    '''
+    from numpy import asarray, zeros
+    from ..utils import simplex_measures
+    coords = asarray(coords)
+    indices = asarray(indices)
+    (count, number) = indices.shape
+    dim = coords.shape[0]
+    if number == 0:
+        return (zeros((dim, dim)), 0.0)
+    ends = coords[:, indices]                          # (D, K+1, M)
+    measures = asarray(simplex_measures(coords, indices))
+    moment = zeros((dim, dim))
+    for m in range(number):
+        corners = ends[:, :, m]
+        total = corners.sum(axis=1, keepdims=True)
+        moment += measures[m] * (corners @ corners.T + total @ total.T) / (
+            count * (count + 1))
+    return (moment, float(measures.sum()))
+
+
 def _carried_property(mesh, name, coords, /):
     '''One of a mesh's properties, interpolated onto new coordinates.
 
@@ -887,6 +921,69 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         return interpolate_hessian(self, prop, at, name=pname, **kw)
 
     # Updating ##############################################################
+
+    @calc('centroid')
+    def proc_centroid(coords, topo):
+        if not hasattr(topo, 'indices') or len(getattr(coords, 'shape', ())) != 2:
+            raise NotImplementedError(
+                "this geometry has no simplices to measure, so its measure is"
+                " not centred anywhere; a grid's cells are boxes and its"
+                " centroid is a separate computation")
+        '''The centre of the measure each simplex carries.
+
+        A volume, an area or a length, summed over the elements and weighted by
+        where each one is, the weight being its own measure.
+
+        Returns
+        -------
+        centroid : numpy.ndarray
+            A length-``D`` vector.
+        '''
+        from numpy import asarray, zeros
+        from ..utils import simplex_measures
+        coords = asarray(coords)
+        indices = topo.indices
+        if indices.shape[1] == 0:
+            return zeros(coords.shape[0])
+        measures = asarray(simplex_measures(coords, indices))
+        total = float(measures.sum())
+        if total == 0.0:
+            return zeros(coords.shape[0])
+        centres = coords[:, indices].mean(axis=1)          # (D, M)
+        return (centres * measures[None, :]).sum(axis=1) / total
+
+    @calc('inertia')
+    def proc_inertia(coords, topo):
+        if not hasattr(topo, 'indices') or len(getattr(coords, 'shape', ())) != 2:
+            raise NotImplementedError(
+                "this geometry has no simplices to measure, so its inertia is"
+                " not a sum over elements; a grid's cells are boxes and its"
+                " inertia is a separate computation")
+        '''The inertia tensor about the centroid, for unit density.
+
+        ``I = tr(M) 1 - M`` where ``M`` is the second moment of the elements
+        about their common centroid. A volume mesh gives the inertia of the
+        solid it encloses, a triangle mesh that of a shell with that surface,
+        and a path that of a wire --- the difference being what each simplex's
+        measure is.
+
+        Returns
+        -------
+        inertia : numpy.ndarray
+            A ``(D, D)`` matrix.
+        '''
+        from numpy import asarray, eye, zeros
+        from ..utils import simplex_measures
+        coords = asarray(coords)
+        indices = topo.indices
+        dim = coords.shape[0]
+        (moment, total) = _second_moment(coords, indices)
+        if total == 0.0:
+            return zeros((dim, dim))
+        centre = (coords[:, indices].mean(axis=1) * asarray(
+            simplex_measures(coords, indices))[None, :]).sum(axis=1) / total
+        shifted = moment - total * centre[:, None] @ centre[None, :]
+        return eye(dim) * shifted.trace() - shifted
 
     def _prop_container(self, order, /):
         '''The mapping of properties for a given order.'''
