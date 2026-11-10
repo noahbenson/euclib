@@ -18,6 +18,7 @@ from euclib.utils import (triangle_box_polygon,
                           segments_triangles_intersect,
                           triangles_segments_intersect)
 from euclib.ops import (
+    ray_crossings,
     voxel_segment_intersections, voxel_surface_intersections,
     contains, integrate, mesh_intersections, path_crossings,
     path_intersections, tolerance_of, voxel_intersections)
@@ -874,4 +875,79 @@ class TestIntegrate(TestCase):
     def test_a_grid_that_is_not_three_dimensional_is_refused(self):
         with self.assertRaises(ValueError):
             integrate(_tet(), Grid(eye(3), GridTopology((3, 3))), 1)
+
+def _unit_triangle():
+    '''The unit triangle in the plane z = 0.'''
+    return TriMesh(array([[0., 1., 0.], [0., 0., 1.], [0., 0., 0.]]),
+                   TriTopology([[0], [1], [2]]))
+
+
+def _box_mesh():
+    '''A closed unit cube of twelve triangles.'''
+    coords = array([[0., 1., 0., 0., 1., 1., 0., 1.],
+                    [0., 0., 1., 0., 1., 0., 1., 1.],
+                    [0., 0., 0., 1., 0., 1., 1., 1.]])
+    faces = [(0,2,1),(2,3,1),(4,5,6),(6,5,7),
+             (0,1,4),(4,1,5),(2,6,3),(3,6,7),
+             (0,4,2),(2,4,6),(1,3,5),(5,3,7)]
+    return TriMesh(coords, TriTopology(asarray(faces).T))
+
+
+class TestRayCrossings(TestCase):
+    '''Rays fired independently at a mesh.'''
+
+    def test_a_ray_meets_the_triangle_it_points_at(self):
+        (points, rays, tris, distance) = ray_crossings(
+            array([[0.25], [0.25], [1.0]]), array([[0.], [0.], [-1.0]]),
+            _unit_triangle())
+        # The unit tetrahedron's face in z = 0 spans x, y >= 0, x + y <= 1.
+        self.assertEqual(points.shape[1], 1)
+        self.assertTrue(allclose(points.ravel(), [0.25, 0.25, 0.0]))
+        self.assertEqual(int(rays[0]), 0)
+        self.assertAlmostEqual(float(distance[0]), 1.0)
+
+    def test_a_ray_pointing_away_from_the_mesh_meets_nothing(self):
+        # A ray does not extend behind its origin.
+        (points, _, _, _) = ray_crossings(
+            array([[0.25], [0.25], [1.0]]), array([[0.], [0.], [1.0]]),
+            _unit_triangle())
+        self.assertEqual(points.shape[1], 0)
+
+    def test_a_ray_through_a_closed_mesh_meets_both_surfaces(self):
+        (points, _, _, distance) = ray_crossings(
+            array([[0.5], [0.5], [-1.0]]), array([[0.], [0.], [1.0]]),
+            _box_mesh(), tolerance=1e-9)
+        # The ray runs up the cube's diagonal, so it passes through shared
+        # edges at each end: one hit per triangle that meets there, as
+        # `path_crossings` reports a crossing on an edge. How many triangles a
+        # corner has depends on how the box was split, so the *positions* and
+        # *distances* are what is asserted rather than the count.
+        self.assertGreaterEqual(points.shape[1], 2)
+        self.assertTrue(allclose(sorted(set(points[2].round(9).tolist())),
+                                 [0.0, 1.0]))
+        self.assertTrue(allclose(sorted(set(distance.round(9).tolist())),
+                                 [1.0, 2.0]))
+
+    def test_a_ray_that_starts_inside_meets_one_surface(self):
+        (points, _, _, distance) = ray_crossings(
+            array([[0.5], [0.5], [0.5]]), array([[0.], [0.], [1.0]]),
+            _box_mesh(), tolerance=1e-9)
+        self.assertTrue(allclose(points[2], 1.0))
+        self.assertTrue(allclose(distance, 0.5))
+
+    def test_each_ray_is_its_own(self):
+        # Two rays from the same origin in opposite directions: the one that
+        # reaches the mesh and the one that does not.
+        origins = array([[0.25, 0.25], [0.25, 0.25], [1.0, 1.0]])
+        directions = array([[0., 0.], [0., 0.], [-1., 1.]])
+        (points, rays, _, _) = ray_crossings(origins, directions,
+                                             _unit_triangle())
+        self.assertEqual(points.shape[1], 1)
+        self.assertEqual(int(rays[0]), 0)
+
+    def test_a_mismatch_of_ray_counts_is_refused(self):
+        with self.assertRaises(ValueError):
+            ray_crossings(array([[0.], [0.], [1.]]), array([[0., 0.], [0., 0.],
+                                                            [-1., -1.]]),
+                          _unit_triangle())
 

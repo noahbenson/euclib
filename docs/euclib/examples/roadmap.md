@@ -25,7 +25,6 @@ the [gallery](index.md) following the standard template.
 | Operation | Upstream test that would demonstrate it |
 |---|---|
 | Boolean union / intersection / difference | pyvista `tests/core/test_polydata.py::test_boolean_union_intersection`, `::test_boolean_difference`; trimesh `tests/test_boolean.py::test_boolean`, `::test_multiple` |
-| Ray casting (many rays from arbitrary origins) | trimesh `tests/test_ray.py::test_rps` |
 | Delaunay triangulation and tetrahedralization | pyvista `test_polydata.py::test_delaunay_2d`, `test_dataset_filters.py::test_delaunay_3d_grid` |
 | Marching cubes / surface reconstruction | trimesh `tests/test_voxel.py::test_marching_points` |
 | Clipping and sectioning a volume | pyvista `test_dataset_filters.py::test_clip_closed_surface`; trimesh `tests/test_section.py::test_section`, `::test_slice` |
@@ -115,10 +114,6 @@ written to state the limitation rather than hide it:
   inversion, and application; decomposing a matrix back into translation,
   rotation, scale, and shear is not implemented (pyvista
   `test_utilities.py::test_transform_decompose`).
-- **Ray-style queries** — `euclib.path_crossings` answers "what does this
-  segment hit?" for a whole path at once, but there is no ray-casting object
-  that fires independent rays from arbitrary origins and directions, which is
-  what the trimesh benchmark above exercises.
 - **The estimated gradient over tensor coordinates, on a symmetric mesh.**
   Asking a geometry whose coordinates are a tensor for the derivative of an
   interpolation whose *gradient* the library must estimate --- order 2 or higher

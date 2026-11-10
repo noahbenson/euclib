@@ -1139,6 +1139,108 @@ def voxel_segment_intersections(path, grid, /, tolerance=None):
     return (built, asarray(cells, dtype=intp).T)
 
 
+def ray_crossings(origins, directions, mesh, /, tolerance=None,
+                  maxdistance=None):
+    '''Finds where each of a set of rays meets a triangle mesh.
+
+    A ray is an origin and a direction: everything from the origin along the
+    direction, and nothing behind it. The rays are independent of one another
+    --- unlike a path's segments, which meet end to end --- so a caller may fire
+    any number from anywhere, which is what a rendering or a visibility query
+    wants.
+
+    Each ray is cast as a segment reaching `maxdistance` along its direction,
+    and `path_crossings` finds the triangles it meets. A crossing behind the
+    origin is dropped, since a ray does not extend that way.
+
+    Parameters
+    ----------
+    origins : numpy.ndarray
+        A ``(3, R)`` matrix of origins.
+    directions : numpy.ndarray
+        A ``(3, R)`` matrix of directions, one per origin. They need not be
+        unit length; the distance reported is measured along them as given, so
+        a caller who wants distances in the same units should normalise them.
+    mesh : TriMesh
+        The mesh, which must occupy three-dimensional space.
+    tolerance : float or None, optional
+        How near a ray and a triangle must come to count as meeting. The
+        default, ``None``, uses a small fraction of the mesh's size.
+    maxdistance : float or None, optional
+        How far a ray reaches. The default, ``None``, reaches far enough to
+        leave the mesh: twice its diagonal from the origin farthest from it.
+
+    Returns
+    -------
+    points : numpy.ndarray
+        A ``(3, K)`` matrix of crossing points, in no particular order.
+    rays : numpy.ndarray
+        A length-``K`` vector of the ray each crossing lies on.
+    triangles : numpy.ndarray
+        A length-``K`` vector of the mesh triangle each crossing lies on.
+    distance : numpy.ndarray
+        A length-``K`` vector of how far along its ray each crossing is, in the
+        units of that ray's direction.
+
+    Raises
+    ------
+    TypeError
+        If the mesh is not a `TriMesh`.
+    ValueError
+        If the mesh, or either matrix, is not three-dimensional, or if the
+        two matrices have different numbers of rays.
+    '''
+    from numpy import zeros
+    if not isinstance(mesh, TriMesh):
+        raise TypeError(f"expected a TriMesh; found {type(mesh)}")
+    origins = asarray(origins)
+    directions = asarray(directions)
+    if mesh.dim != 3:
+        raise ValueError(
+            f"a ray meets a triangle mesh in three-dimensional space; found"
+            f" a mesh of {mesh.dim} dimensions")
+    for (name, value) in (("origins", origins), ("directions", directions)):
+        if value.ndim != 2 or value.shape[0] != 3:
+            raise ValueError(
+                f"{name} must be a (3, R) matrix; found shape {value.shape}")
+    if origins.shape[1] != directions.shape[1]:
+        raise ValueError(
+            f"there are {origins.shape[1]} origins and"
+            f" {directions.shape[1]} directions")
+    count = origins.shape[1]
+    if maxdistance is None:
+        # Far enough to leave the mesh from anywhere: twice its diagonal.
+        extent = asarray(mesh.coords)
+        span = float(((extent.max(axis=1) - extent.min(axis=1)) ** 2
+                      ).sum() ** 0.5)
+        reach = 2.0 * span + float(
+            ((origins - extent.mean(axis=1, keepdims=True)) ** 2
+             ).sum(axis=0).max() ** 0.5) if count else 2.0 * span
+    else:
+        reach = float(maxdistance)
+    tips = origins + directions * reach
+    # One segment per ray, so that `path_crossings`' segment index is the
+    # ray's: the coordinates are the origins and then the tips, so segment `r`
+    # runs from `r` to `count + r`.
+    coords = concatenate([origins, tips], axis=1)
+    indices = asarray([list(range(count)),
+                       [count + r for r in range(count)]])
+    from ..types import SegPath as _SegPath
+    from ..types import SegTopology as _SegTopology
+    rays = _SegPath(coords, _SegTopology(indices))
+    (points, segments, triangles) = path_crossings(rays, mesh,
+                                                   tolerance=tolerance)
+    if points.shape[1] == 0:
+        return (points, zeros(0, dtype=int), triangles, asarray([]))
+    which = segments
+    # How far along each ray the crossing lies, in the direction's own units.
+    span = directions[:, which]
+    t = ((points - origins[:, which]) * span).sum(axis=0) / (span * span).sum(
+        axis=0)
+    ahead = t >= 0.0
+    return (points[:, ahead], which[ahead], triangles[ahead], t[ahead])
+
+
 def mesh_intersections(first, second, /, tolerance=None):
     '''Finds the segments along which two triangle meshes meet.
 
