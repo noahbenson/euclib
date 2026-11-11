@@ -33,6 +33,8 @@ class TestNamespace(TestCase):
     def test_the_operations_are_imported_here(self):
         for name in ('distance', 'separation', 'nearest', 'geodesic',
                      'contains', 'fit_line', 'fit_plane', 'convex_hull',
+                     'boolean_union', 'boolean_intersection',
+                     'boolean_difference',
                      'principal_axes', 'oriented_bounding_box',
                      'path_crossings', 'path_intersections',
                      'mesh_intersections', 'voxel_intersections'):

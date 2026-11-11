@@ -15,6 +15,8 @@ extended to a new pair of types without changing either type.
 from __future__ import annotations
 
 from ._axes import oriented_bounding_box, principal_axes
+from ._boolean import (
+    boolean_difference, boolean_intersection, boolean_union)
 from ._cross import positions_of, sample, transfer
 from ._hull import convex_hull
 from ._intersect import (
@@ -31,6 +33,7 @@ from ._smooth import smooth
 
 __all__ = ('distance', 'nearest', 'separation', 'fit_line', 'fit_plane',
            'principal_axes', 'oriented_bounding_box', 'convex_hull',
+           'boolean_union', 'boolean_intersection', 'boolean_difference',
            'geodesic', 'smooth',
            'positions_of', 'sample', 'transfer',
            'path_crossings', 'path_intersections', 'contains',
