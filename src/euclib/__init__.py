@@ -75,9 +75,9 @@ from .types import (
 # ``tolerance_of``) and the ones whose names would not stand on their own
 # (``sample``, ``transfer``) stay in ``euclib.ops``.
 from .ops import (
-    contains, distance, fit_line, fit_plane, geodesic, mesh_intersections,
-    nearest, oriented_bounding_box, path_crossings, path_intersections,
-    principal_axes, separation, voxel_intersections,
+    contains, convex_hull, distance, fit_line, fit_plane, geodesic,
+    mesh_intersections, nearest, oriented_bounding_box, path_crossings,
+    path_intersections, principal_axes, separation, voxel_intersections,
     voxel_surface_intersections)
 
 #: The public modules, shallowest first. A name that appears in more than one
@@ -171,7 +171,7 @@ __all__ = (
     'is_geometry', 'is_simplex_geometry', 'is_topology', 'is_simplex_topology',
     'is_loc', 'is_property',
     # the operations, which remain in euclib.ops as well
-    'contains', 'distance', 'fit_line', 'fit_plane', 'geodesic',
+    'contains', 'convex_hull', 'distance', 'fit_line', 'fit_plane', 'geodesic',
     'mesh_intersections', 'nearest', 'oriented_bounding_box', 'path_crossings',
     'path_intersections', 'principal_axes', 'separation',
     'voxel_intersections', 'voxel_surface_intersections')

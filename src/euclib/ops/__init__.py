@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from ._axes import oriented_bounding_box, principal_axes
 from ._cross import positions_of, sample, transfer
+from ._hull import convex_hull
 from ._intersect import (
     contains, integrate, mesh_intersections, path_crossings,
     path_intersections, ray_crossings, tolerance_of, voxel_intersections,
@@ -29,7 +30,7 @@ from ._smooth import smooth
 # Exports ####################################################################
 
 __all__ = ('distance', 'nearest', 'separation', 'fit_line', 'fit_plane',
-           'principal_axes', 'oriented_bounding_box',
+           'principal_axes', 'oriented_bounding_box', 'convex_hull',
            'geodesic', 'smooth',
            'positions_of', 'sample', 'transfer',
            'path_crossings', 'path_intersections', 'contains',

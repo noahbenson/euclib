@@ -29,7 +29,6 @@ the [gallery](index.md) following the standard template.
 | Marching cubes / surface reconstruction | trimesh `tests/test_voxel.py::test_marching_points` |
 | Clipping and sectioning a volume | pyvista `test_dataset_filters.py::test_clip_closed_surface`; trimesh `tests/test_section.py::test_section`, `::test_slice` |
 | Rasterization of 2D paths | trimesh `tests/test_raster.py::test_rasterize` |
-| Convex hull | trimesh `tests/test_convex.py::test_convex` |
 | Minimum-volume oriented bounding boxes | trimesh `tests/test_bounds.py::test_obb_mesh`; the box in `euclib.oriented_bounding_box` follows the principal axes instead |
 | Mesh remeshing, subdivision, and simplification | trimesh `tests/test_remesh.py::test_subdivide`, `tests/test_simplify.py::test_merge_colinear` |
 | Vector-field integration (streamlines) | pyvista `test_dataset_filters.py::test_streamlines_evenly_spaced_2d` |
@@ -58,6 +57,8 @@ reader who remembers them being absent knows where they went:
   `euclib.oriented_bounding_box`, see
   [Principal axes and oriented bounding boxes](queries/principal-axes.md). The
   box is the one aligned with the axes, not the minimum-volume box.
+- **Convex hulls** — `euclib.convex_hull`, see
+  [Convex hulls](queries/convex-hull.md).
 - **One-line constructors** — `euclib.trimesh` and friends, see
   [One-line constructors](construction/constructors.md).
 - **Metadata and transient editing** — see
