@@ -30,7 +30,6 @@ the [gallery](index.md) following the standard template.
 | Clipping and sectioning a volume | pyvista `test_dataset_filters.py::test_clip_closed_surface`; trimesh `tests/test_section.py::test_section`, `::test_slice` |
 | Rasterization of 2D paths | trimesh `tests/test_raster.py::test_rasterize` |
 | Convex hull, oriented bounding boxes, principal axes | trimesh `tests/test_convex.py::test_convex`, `tests/test_bounds.py::test_obb_mesh`; pyvista `test_dataset_filters.py::test_oriented_bounding_box`, `test_utilities.py::test_principal_axes` |
-| Plane and line fitting | pyvista `test_utilities.py::test_fit_plane_to_points`, `::test_fit_line_to_points` |
 | Mesh remeshing, subdivision, and simplification | trimesh `tests/test_remesh.py::test_subdivide`, `tests/test_simplify.py::test_merge_colinear` |
 | Vector-field integration (streamlines) | pyvista `test_dataset_filters.py::test_streamlines_evenly_spaced_2d` |
 | Primitive generators (boxes, spheres, and so on from a size) | pyvista `tests/core/test_geometric_objects.py::test_cube`, `::test_icosphere`; trimesh `tests/test_creation.py::test_box`, `::test_spheres` |
@@ -52,6 +51,8 @@ reader who remembers them being absent knows where they went:
   [Resampling a volume onto a grid](intersections/mesh-grid.md).
 - **Containment** — `euclib.contains`, see
   [Containment: on a surface, or within a volume](queries/containment.md).
+- **Line and plane fitting** — `euclib.fit_line` and `euclib.fit_plane`, see
+  [Fitting a line or a plane](queries/fitting.md).
 - **One-line constructors** — `euclib.trimesh` and friends, see
   [One-line constructors](construction/constructors.md).
 - **Metadata and transient editing** — see
@@ -104,7 +105,7 @@ the boundary was held still and nothing moved whatever the operator was. It has
 been replaced by one that asserts what each boundary treatment should do.
 :::
 
-## Partly implemented## Partly implemented
+## Partly implemented
 
 A few operations exist but are incomplete, so their example pages will be
 written to state the limitation rather than hide it:

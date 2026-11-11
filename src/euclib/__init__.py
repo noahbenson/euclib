@@ -75,9 +75,9 @@ from .types import (
 # ``tolerance_of``) and the ones whose names would not stand on their own
 # (``sample``, ``transfer``) stay in ``euclib.ops``.
 from .ops import (
-    contains, distance, geodesic, mesh_intersections, nearest,
-    path_crossings, path_intersections, separation, voxel_intersections,
-    voxel_surface_intersections)
+    contains, distance, fit_line, fit_plane, geodesic, mesh_intersections,
+    nearest, path_crossings, path_intersections, separation,
+    voxel_intersections, voxel_surface_intersections)
 
 #: The public modules, shallowest first. A name that appears in more than one
 #: of them belongs to the shallowest.
@@ -170,9 +170,9 @@ __all__ = (
     'is_geometry', 'is_simplex_geometry', 'is_topology', 'is_simplex_topology',
     'is_loc', 'is_property',
     # the operations, which remain in euclib.ops as well
-    'contains', 'distance', 'geodesic', 'mesh_intersections', 'nearest',
-    'path_crossings', 'path_intersections', 'separation',
-    'voxel_intersections', 'voxel_surface_intersections')
+    'contains', 'distance', 'fit_line', 'fit_plane', 'geodesic',
+    'mesh_intersections', 'nearest', 'path_crossings', 'path_intersections',
+    'separation', 'voxel_intersections', 'voxel_surface_intersections')
 
 
 # The resolver runs here rather than beside its definition, because it reads

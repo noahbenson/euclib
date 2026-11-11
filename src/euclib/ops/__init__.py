@@ -4,9 +4,10 @@
 '''Geometric operations over ``euclib`` objects.
 
 The functions in this subpackage take geometries and answer questions about
-them --- how far apart they are, where they meet --- without adding to the types
-themselves. They are exported as functions rather than as methods so that an
-operation can be extended to a new pair of types without changing either type.
+them --- how far apart they are, where they meet, what line or plane their
+points lie nearest --- without adding to the types themselves. They are
+exported as functions rather than as methods so that an operation can be
+extended to a new pair of types without changing either type.
 '''
 
 # Dependencies ###############################################################
@@ -19,13 +20,15 @@ from ._intersect import (
     path_intersections, ray_crossings, tolerance_of, voxel_intersections,
     voxel_segment_intersections, voxel_surface_intersections)
 from ._distance import distance, nearest, separation
+from ._fit import fit_line, fit_plane
 from ._geodesic import geodesic
 from ._smooth import smooth
 
 
 # Exports ####################################################################
 
-__all__ = ('distance', 'nearest', 'separation', 'geodesic', 'smooth',
+__all__ = ('distance', 'nearest', 'separation', 'fit_line', 'fit_plane',
+           'geodesic', 'smooth',
            'positions_of', 'sample', 'transfer',
            'path_crossings', 'path_intersections', 'contains',
            'tolerance_of', 'voxel_intersections',

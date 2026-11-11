@@ -32,7 +32,8 @@ class TestNamespace(TestCase):
 
     def test_the_operations_are_imported_here(self):
         for name in ('distance', 'separation', 'nearest', 'geodesic',
-                     'contains', 'path_crossings', 'path_intersections',
+                     'contains', 'fit_line', 'fit_plane',
+                     'path_crossings', 'path_intersections',
                      'mesh_intersections', 'voxel_intersections'):
             with self.subTest(name=name):
                 self.assertTrue(hasattr(euclib, name))

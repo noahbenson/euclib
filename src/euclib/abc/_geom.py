@@ -924,11 +924,6 @@ class Geometry(MetaObject, metaclass=plantypeABC):
 
     @calc('centroid')
     def proc_centroid(coords, topo):
-        if not hasattr(topo, 'indices') or len(getattr(coords, 'shape', ())) != 2:
-            raise NotImplementedError(
-                "this geometry has no simplices to measure, so its measure is"
-                " not centred anywhere; a grid's cells are boxes and its"
-                " centroid is a separate computation")
         '''The centre of the measure each simplex carries.
 
         A volume, an area or a length, summed over the elements and weighted by
@@ -939,6 +934,11 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         centroid : numpy.ndarray
             A length-``D`` vector.
         '''
+        if not hasattr(topo, 'indices') or len(getattr(coords, 'shape', ())) != 2:
+            raise NotImplementedError(
+                "this geometry has no simplices to measure, so its measure is"
+                " not centred anywhere; a grid's cells are boxes and its"
+                " centroid is a separate computation")
         from numpy import asarray, zeros
         from ..utils import simplex_measures
         coords = asarray(coords)
@@ -954,11 +954,6 @@ class Geometry(MetaObject, metaclass=plantypeABC):
 
     @calc('inertia')
     def proc_inertia(coords, topo):
-        if not hasattr(topo, 'indices') or len(getattr(coords, 'shape', ())) != 2:
-            raise NotImplementedError(
-                "this geometry has no simplices to measure, so its inertia is"
-                " not a sum over elements; a grid's cells are boxes and its"
-                " inertia is a separate computation")
         '''The inertia tensor about the centroid, for unit density.
 
         ``I = tr(M) 1 - M`` where ``M`` is the second moment of the elements
@@ -972,6 +967,11 @@ class Geometry(MetaObject, metaclass=plantypeABC):
         inertia : numpy.ndarray
             A ``(D, D)`` matrix.
         '''
+        if not hasattr(topo, 'indices') or len(getattr(coords, 'shape', ())) != 2:
+            raise NotImplementedError(
+                "this geometry has no simplices to measure, so its inertia is"
+                " not a sum over elements; a grid's cells are boxes and its"
+                " inertia is a separate computation")
         from numpy import asarray, eye, zeros
         from ..utils import simplex_measures
         coords = asarray(coords)
