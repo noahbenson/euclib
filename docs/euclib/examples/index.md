@@ -84,6 +84,7 @@ different construction.
 | [Distance, separation, and containment](queries/distance-and-separation.md) | trimesh `test_proximity.py::test_coplanar_signed_distance` | `el.distance`, `el.separation`, `el.contains` |
 | [Containment: on a surface, or within a volume](queries/containment.md) | trimesh `test_ray.py::test_contains` | `el.contains`, tolerance, surface vs volume |
 | [Fitting a line or a plane](queries/fitting.md) | pyvista `test_utilities.py::test_fit_plane_to_points`, `::test_fit_line_to_points` | `el.fit_line`, `el.fit_plane`, orthogonal distance |
+| [Principal axes and oriented bounding boxes](queries/principal-axes.md) | pyvista `test_utilities.py::test_principal_axes`, `test_dataset_filters.py::test_oriented_bounding_box` | `el.principal_axes`, `el.oriented_bounding_box`, right-handed frames |
 
 ## Planned pages
 

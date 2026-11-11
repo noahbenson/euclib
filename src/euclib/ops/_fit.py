@@ -66,13 +66,17 @@ def _points_of(points, /):
     return as_query(points)
 
 
-def _checked(points, /):
+def _checked(points, subject='a fit', /):
     '''Checks that a set of positions is a fit's to make.
 
     Parameters
     ----------
     points : array-like
         The candidate positions.
+    subject : str, optional
+        What is being fitted, as a phrase with its article --- ``'a fit'``,
+        ``'a set of principal axes'`` --- so that a refusal names the operation
+        the caller asked for.
 
     Returns
     -------
@@ -90,12 +94,14 @@ def _checked(points, /):
     shape = getattr(points, 'shape', None)
     if shape is None or len(tuple(shape)) != 2:
         raise ValueError(
-            f"a fit needs a (D, Q) matrix of positions --- D rows, one column"
-            f" per point; found shape {tuple(shape) if shape is not None else None}")
+            f"{subject} needs a (D, Q) matrix of positions --- D rows, one"
+            f" column per point; found shape"
+            f" {tuple(shape) if shape is not None else None}")
     (dim, count) = (int(shape[0]), int(shape[1]))
     if dim not in (2, 3):
         raise ValueError(
-            f"a fit needs positions in two or three dimensions; found {dim}")
+            f"{subject} needs positions in two or three dimensions; found"
+            f" {dim}")
     return (dim, count)
 
 
@@ -113,6 +119,9 @@ def _decomposed(bare, /):
 
     Returns
     -------
+    centred : array-like
+        The ``(D, Q)`` matrix of positions with their mean subtracted, which is
+        what was decomposed.
     u : array-like
         A ``(D, min(D, Q))`` matrix whose columns are the directions, ordered
         by how far the points spread along each.
@@ -122,7 +131,7 @@ def _decomposed(bare, /):
     '''
     centred = bare - bare.sum(axis=1, keepdims=True) / bare.shape[1]
     (u, s, _vh) = imath.svd(centred, full_matrices=False)
-    return (u, s)
+    return (centred, u, s)
 
 
 def _is_tensor(x, /):
@@ -159,8 +168,8 @@ def _absmax(x, /):
     return float(npabs(x).max())
 
 
-def _orient(vector, /):
-    '''Flips a direction so its largest-magnitude component is positive.
+def _sign_of(vector, /):
+    '''The sign that makes a direction's largest-magnitude component positive.
 
     A singular vector is defined up to a sign, and a fit that answered with one
     of the two at random would not be reproducible. The largest-magnitude
@@ -175,12 +184,29 @@ def _orient(vector, /):
 
     Returns
     -------
-    array-like
-        The same direction, or its negation, of the same backend.
+    float
+        ``1.0`` if the vector is already oriented, ``-1.0`` if it must be
+        negated.
     '''
     magnitudes = vector.abs() if _is_tensor(vector) else npabs(vector)
     index = int(magnitudes.argmax())
-    return vector if _scalar(vector[index]) >= 0.0 else -vector
+    return 1.0 if _scalar(vector[index]) >= 0.0 else -1.0
+
+
+def _orient(vector, /):
+    '''Flips a direction so its largest-magnitude component is positive.
+
+    Parameters
+    ----------
+    vector : array-like
+        A direction from a singular value decomposition.
+
+    Returns
+    -------
+    array-like
+        The same direction, or its negation, of the same backend.
+    '''
+    return vector if _sign_of(vector) > 0.0 else -vector
 
 
 # Operations #################################################################
@@ -233,7 +259,7 @@ def fit_line(points, /):
         raise ValueError(
             f"a line needs at least two points; found {count}")
     bare = imath.mag(points)
-    (u, s) = _decomposed(bare)
+    (_centred, u, s) = _decomposed(bare)
     # The first singular value is how far the points reach along the line. If
     # they do not reach at all --- every point is the same point --- then any
     # direction is as good as any other, so none is reported.
@@ -295,7 +321,7 @@ def fit_plane(points, /):
             f"a plane in {dim} dimensions needs at least {dim} points;"
             f" found {count}")
     bare = imath.mag(points)
-    (u, s) = _decomposed(bare)
+    (_centred, u, s) = _decomposed(bare)
     # The smallest spread is how far the points reach out of the plane. It is
     # unique only when the points span one dimension less than the space: a
     # plane through collinear points is a whole pencil of planes, all of them
