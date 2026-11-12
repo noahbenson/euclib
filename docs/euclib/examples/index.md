@@ -87,6 +87,8 @@ different construction.
 | [Principal axes and oriented bounding boxes](queries/principal-axes.md) | pyvista `test_utilities.py::test_principal_axes`, `test_dataset_filters.py::test_oriented_bounding_box` | `el.principal_axes`, `el.oriented_bounding_box`, right-handed frames |
 | [Convex hulls](queries/convex-hull.md) | trimesh `test_convex.py::test_convex`, `::test_primitives` | `el.convex_hull`, closed surfaces, outward winding |
 | [Union, intersection, and difference of solids](queries/boolean-operations.md) | pyvista `test_polydata.py::test_boolean_union_intersection`, `::test_boolean_difference`; trimesh `test_boolean.py::test_boolean`, `::test_multiple`, `::test_empty` | `el.boolean_union`, `el.boolean_intersection`, `el.boolean_difference`, volume identities |
+| [Clipping and sectioning a volume](queries/clipping-and-sectioning.md) | pyvista `test_dataset_filters.py::test_clip_closed_surface`; trimesh `test_section.py::test_section`, `::test_slice` | `el.clip`, `el.section`, volume conservation, closed caps |
+| [Minimum-volume oriented bounding boxes](queries/minimum-volume-boxes.md) | trimesh `test_bounds.py::test_obb_mesh` | `el.minimum_volume_bounding_box`, right-handed frames, containment |
 
 ## Planned pages
 

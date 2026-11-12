@@ -26,9 +26,7 @@ the [gallery](index.md) following the standard template.
 |---|---|
 | Delaunay triangulation and tetrahedralization | pyvista `test_polydata.py::test_delaunay_2d`, `test_dataset_filters.py::test_delaunay_3d_grid` |
 | Marching cubes / surface reconstruction | trimesh `tests/test_voxel.py::test_marching_points` |
-| Clipping and sectioning a volume | pyvista `test_dataset_filters.py::test_clip_closed_surface`; trimesh `tests/test_section.py::test_section`, `::test_slice` |
 | Rasterization of 2D paths | trimesh `tests/test_raster.py::test_rasterize` |
-| Minimum-volume oriented bounding boxes | trimesh `tests/test_bounds.py::test_obb_mesh`; the box in `euclib.oriented_bounding_box` follows the principal axes instead |
 | Mesh remeshing, subdivision, and simplification | trimesh `tests/test_remesh.py::test_subdivide`, `tests/test_simplify.py::test_merge_colinear` |
 | Vector-field integration (streamlines) | pyvista `test_dataset_filters.py::test_streamlines_evenly_spaced_2d` |
 | Primitive generators (boxes, spheres, and so on from a size) | pyvista `tests/core/test_geometric_objects.py::test_cube`, `::test_icosphere`; trimesh `tests/test_creation.py::test_box`, `::test_spheres` |
@@ -55,12 +53,19 @@ reader who remembers them being absent knows where they went:
 - **Principal axes and oriented bounding boxes** — `euclib.principal_axes` and
   `euclib.oriented_bounding_box`, see
   [Principal axes and oriented bounding boxes](queries/principal-axes.md). The
-  box is the one aligned with the axes, not the minimum-volume box.
+  box is the one aligned with the axes; for the smallest box of any
+  orientation, see the minimum-volume boxes below.
 - **Convex hulls** — `euclib.convex_hull`, see
   [Convex hulls](queries/convex-hull.md).
 - **Boolean union, intersection, and difference** — `euclib.boolean_union`,
   `euclib.boolean_intersection`, and `euclib.boolean_difference`, see
   [Union, intersection, and difference of solids](queries/boolean-operations.md).
+- **Clipping and sectioning a volume** — `euclib.clip` and `euclib.section`,
+  see
+  [Clipping and sectioning a volume](queries/clipping-and-sectioning.md).
+- **Minimum-volume oriented bounding boxes** —
+  `euclib.minimum_volume_bounding_box`, see
+  [Minimum-volume oriented bounding boxes](queries/minimum-volume-boxes.md).
 - **One-line constructors** — `euclib.trimesh` and friends, see
   [One-line constructors](construction/constructors.md).
 - **Metadata and transient editing** — see

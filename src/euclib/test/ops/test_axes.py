@@ -22,7 +22,8 @@ import unittest
 from unittest import TestCase
 
 from euclib.ops import (
-    fit_line, fit_plane, oriented_bounding_box, principal_axes)
+    fit_line, fit_plane, minimum_volume_bounding_box, oriented_bounding_box,
+    principal_axes)
 from euclib.types import Grid, GridTopology, TriMesh, TriTopology
 
 
@@ -250,6 +251,151 @@ class TestTheOrientedBoundingBox(TestCase):
         points = array([[0.0, 1.0, 2.0], [0.0, 1.0, 2.0], [0.0, 1.0, 2.0]])
         with self.assertRaises(ValueError):
             oriented_bounding_box(points)
+
+
+class TestTheMinimumVolumeBoundingBox(TestCase):
+    '''The smallest box of any orientation that holds every point.'''
+
+    def test_an_axis_aligned_box_is_recovered(self):
+        points = _box_corners([1.0, 2.0, 3.0], eye(3), [4.0, 2.0, 1.0])
+        (center, axes, extents) = minimum_volume_bounding_box(points)
+        self.assertTrue(allclose(center, [1.0, 2.0, 3.0]))
+        self.assertTrue(allclose(extents, [4.0, 2.0, 1.0]))
+        self.assertTrue(allclose(npabs(axes), eye(3)))
+        self.assertAlmostEqual(float(np.linalg.det(axes)), 1.0, places=12)
+
+    def test_a_turned_box_is_recovered(self):
+        frame = _orthonormal_frame(5)
+        points = _box_corners([1.0, 2.0, 3.0], frame, [4.0, 2.0, 1.0])
+        (center, axes, extents) = minimum_volume_bounding_box(points)
+        self.assertTrue(allclose(center, [1.0, 2.0, 3.0]))
+        self.assertTrue(allclose(extents, [4.0, 2.0, 1.0]))
+        self.assertTrue(allclose(npabs(axes.T @ frame), eye(3), atol=1e-10))
+        self.assertAlmostEqual(float(np.linalg.det(axes)), 1.0, places=12)
+
+    def test_every_point_is_inside_the_box(self):
+        points = _cloud(60)
+        (center, axes, extents) = minimum_volume_bounding_box(points)
+        offsets = axes.T @ (points - center[:, None])
+        self.assertTrue((npabs(offsets) <= extents[:, None] / 2.0 + 1e-12).all())
+
+    def test_the_extents_are_the_ranges_along_the_axes(self):
+        points = _cloud(60)
+        (center, axes, extents) = minimum_volume_bounding_box(points)
+        offsets = axes.T @ (points - center[:, None])
+        self.assertTrue(allclose(extents,
+                                 offsets.max(axis=1) - offsets.min(axis=1)))
+
+    def test_the_axes_are_orthonormal(self):
+        (_center, axes, _extents) = minimum_volume_bounding_box(_cloud(40))
+        self.assertTrue(allclose(axes.T @ axes, eye(3), atol=1e-12))
+
+    def test_it_is_no_larger_than_the_principal_box(self):
+        for seed in range(5):
+            with self.subTest(seed=seed):
+                points = _cloud(40, 3, seed)
+                (_center, _axes, extents) = minimum_volume_bounding_box(points)
+                (_c, _a, principal) = oriented_bounding_box(points)
+                self.assertLessEqual(float(np.prod(extents)),
+                                     float(np.prod(principal)) + 1e-12)
+
+    def test_a_prism_is_smaller_than_its_principal_box(self):
+        # A right triangular prism: its principal axes turn with the
+        # triangle's covariance, but its smallest box is the one on the
+        # triangle's legs.
+        triangle = array([[0.0, 4.0, 0.0], [0.0, 0.0, 1.0]])
+        points = np.concatenate(
+            [np.vstack([triangle, np.zeros((1, 3))]),
+             np.vstack([triangle, np.ones((1, 3))])], axis=1)
+        (_center, _axes, extents) = minimum_volume_bounding_box(points)
+        (_c, _a, principal) = oriented_bounding_box(points)
+        self.assertAlmostEqual(float(np.prod(extents)), 4.0, places=12)
+        self.assertGreater(float(np.prod(principal)), 4.0 + 1e-9)
+
+    def test_rotating_the_points_does_not_change_the_volume(self):
+        points = _cloud(40)
+        frame = _orthonormal_frame(7)
+        (_c, _a, extents) = minimum_volume_bounding_box(points)
+        (_rc, _ra, rotated) = minimum_volume_bounding_box(frame @ points)
+        self.assertTrue(allclose(rotated, extents, atol=1e-10))
+
+    def test_a_rectangle_in_two_dimensions(self):
+        points = array([[0.0, 2.0, 2.0, 0.0], [0.0, 0.0, 1.0, 1.0]])
+        (center, axes, extents) = minimum_volume_bounding_box(points)
+        self.assertTrue(allclose(center, [1.0, 0.5]))
+        self.assertTrue(allclose(extents, [2.0, 1.0]))
+        self.assertTrue(allclose(npabs(axes), eye(2)))
+        self.assertAlmostEqual(float(np.linalg.det(axes)), 1.0, places=12)
+
+    def test_a_triangle_in_two_dimensions(self):
+        # Every side of a triangle gives a rectangle of twice its area, so the
+        # extents depend on which side is chosen first; the first hull edge
+        # here is the horizontal leg.
+        points = array([[0.0, 2.0, 0.0], [0.0, 0.0, 1.0]])
+        (center, axes, extents) = minimum_volume_bounding_box(points)
+        self.assertTrue(allclose(center, [1.0, 0.5]))
+        self.assertTrue(allclose(extents, [2.0, 1.0]))
+        self.assertAlmostEqual(float(np.prod(extents)), 2.0, places=12)
+        self.assertAlmostEqual(float(np.linalg.det(axes)), 1.0, places=12)
+
+    def test_a_geometry_is_analyzed_at_its_data_positions(self):
+        coords = array([[0.0, 2.0, 2.0, 0.0], [0.0, 0.0, 1.0, 1.0]])
+        mesh = TriMesh(coords, TriTopology([[0, 1], [1, 2], [2, 3]]))
+        (center, _axes, extents) = minimum_volume_bounding_box(mesh)
+        self.assertTrue(allclose(center, [1.0, 0.5]))
+        self.assertTrue(allclose(extents, [2.0, 1.0]))
+
+    def test_a_quantity_keeps_its_units(self):
+        import pint
+        ureg = pint.UnitRegistry()
+        (center, axes, extents) = minimum_volume_bounding_box(
+            _cloud() * ureg.meter)
+        self.assertEqual(str(center.units), 'meter')
+        self.assertEqual(str(extents.units), 'meter')
+        self.assertFalse(hasattr(axes, 'units'))
+
+    def test_a_tensor_is_read_but_the_answer_is_an_array(self):
+        try:
+            import torch
+        except ImportError:                     # pragma: no cover
+            self.skipTest("torch is not installed")
+        points = asarray(_cloud(), dtype=np.float64)
+        (center, axes, extents) = minimum_volume_bounding_box(points)
+        (t_center, t_axes, t_extents) = minimum_volume_bounding_box(
+            torch.tensor(points))
+        self.assertIsInstance(t_center, np.ndarray)
+        self.assertIsInstance(t_axes, np.ndarray)
+        self.assertIsInstance(t_extents, np.ndarray)
+        self.assertTrue(allclose(t_center, center))
+        self.assertTrue(allclose(t_axes, axes))
+        self.assertTrue(allclose(t_extents, extents))
+
+    def test_collinear_points_in_two_dimensions_are_refused(self):
+        points = array([[0.0, 1.0, 2.0], [0.0, 1.0, 2.0]])
+        with self.assertRaises(ValueError):
+            minimum_volume_bounding_box(points)
+
+    def test_coplanar_points_in_three_dimensions_are_refused(self):
+        (u, v) = np.meshgrid(np.linspace(-1.0, 1.0, 4),
+                             np.linspace(-1.0, 1.0, 4))
+        points = array([[1.0], [2.0], [3.0]]) + array([[1.0], [0.0], [0.0]]) * \
+            u.reshape(1, -1) + array([[0.0], [1.0], [0.0]]) * v.reshape(1, -1)
+        with self.assertRaises(ValueError):
+            minimum_volume_bounding_box(points)
+
+    def test_too_few_points_are_refused(self):
+        with self.assertRaises(ValueError):
+            minimum_volume_bounding_box(array([[0.0, 1.0, 0.0],
+                                               [0.0, 0.0, 1.0],
+                                               [0.0, 0.0, 0.0]]))
+        with self.assertRaises(ValueError):
+            minimum_volume_bounding_box(array([[0.0, 1.0], [0.0, 1.0]]))
+
+    def test_a_matrix_that_is_not_positions_is_refused(self):
+        for shape in ((4,), (2, 3, 3), (4, 3), (0, 3)):
+            with self.subTest(shape=shape):
+                with self.assertRaises(ValueError):
+                    minimum_volume_bounding_box(np.zeros(shape))
 
 
 class TestTheTensorPath(TestCase):

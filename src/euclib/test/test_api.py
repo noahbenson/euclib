@@ -34,8 +34,9 @@ class TestNamespace(TestCase):
         for name in ('distance', 'separation', 'nearest', 'geodesic',
                      'contains', 'fit_line', 'fit_plane', 'convex_hull',
                      'boolean_union', 'boolean_intersection',
-                     'boolean_difference',
+                     'boolean_difference', 'clip', 'section',
                      'principal_axes', 'oriented_bounding_box',
+                     'minimum_volume_bounding_box',
                      'path_crossings', 'path_intersections',
                      'mesh_intersections', 'voxel_intersections'):
             with self.subTest(name=name):
