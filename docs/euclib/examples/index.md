@@ -75,6 +75,7 @@ different construction.
 | Page | Adapted from | Exercises |
 |---|---|---|
 | [Image grids from an array and an affine](grids/grids-from-arrays.md) | pyvista `test_grid.py::test_init_from_numpy_arrays`, `::test_create_image_data_from_specs` | `grid`, image properties, `el.ops.positions_of` |
+| [Grid cells as triangles and tetrahedra](grids/grid-cells-as-meshes.md) | pyvista `test_grid.py::test_to_quads`, `::test_to_hexahedra` | `Grid.to_trimesh`, `Grid.to_tetmesh`, cell corners |
 | [Integrating a vector field into streamlines](grids/streamlines.md) | pyvista `test_dataset_filters.py::test_streamlines_evenly_spaced_2d` | `el.streamlines`, Runge–Kutta steps, path components |
 
 ## Queries and measures
@@ -103,7 +104,6 @@ page will adapt and the `euclib` surface it will exercise. Rows marked
 |---|---|---|
 | Platonic solids | pyvista `test_geometric_objects.py::test_platonic_solids` | `TriMesh` symmetry |
 | Capsules, cylinders, and cones | trimesh `test_creation.py::test_capsule`, `::test_cylinder`, `::test_cone` | quadric `TriMesh` |
-| Grids to quads and hexes *(pending)* | pyvista `test_grid.py::test_to_quads`, `::test_to_hexahedra` | grid-to-mesh transfer |
 
 :::{seealso}
 - [The roadmap](roadmap.md) lists the operations `euclib` does not implement yet,

@@ -30,8 +30,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 import immlib.math as im
-from numpy import (arange, asarray, concatenate, eye, meshgrid, ones, stack,
-                   where, zeros)
+from numpy import (arange, asarray, concatenate, cross, eye, meshgrid, ones,
+                   stack, where, zeros)
 from immlib import math as imath, to_array, to_tensor
 from pcollections import holdlazy, ldict, lazy, llist
 
@@ -75,6 +75,39 @@ def _corner_coords(coords, indices, index, /):
         simplices.
     '''
     return coords[:, indices[:, asarray(index)]]
+
+
+def _corner_coordinates(grid, /):
+    '''The global positions of a grid's cell corners.
+
+    A grid indexes its cells by their centers, so corner ``(i, j, ...)`` sits
+    at index-space position ``(i - 1/2, j - 1/2, ...)``. The corners are
+    ordered as the cells are: the first axis varies slowest, as in C order.
+    '''
+    axes = [arange(size + 1) - 0.5 for size in grid.shape]
+    mesh = meshgrid(*axes, indexing='ij')
+    points = stack([part.reshape(-1) for part in mesh], axis=0)
+    if hasattr(grid.coords, 'units'):
+        # A quantity affine and a bare index matrix do not meet in pint's
+        # matrix product; the numbers are applied here and the units put back.
+        units = grid.coords.units
+        bare = asarray(imath.mag(grid.coords))
+        world = Affine(bare).apply(points)
+        return to_array(imath.mag(world), detach=True) * units
+    # A mesh is a combinatorial answer and its coordinates are NumPy even when
+    # the grid's affine is a tensor.
+    world = grid.affine.apply(points)
+    return to_array(imath.mag(world), detach=True)
+
+
+def _tet_volume(coords, tet, /):
+    '''The signed volume of one tetrahedron, as a bare number.'''
+    points = to_array(imath.mag(coords), detach=True)
+    a = points[:, tet[0]]
+    b = points[:, tet[1]]
+    c = points[:, tet[2]]
+    d = points[:, tet[3]]
+    return float((b - a) @ cross(c - a, d - a)) / 6.0
 
 
 def _to_like(like, values, /):
@@ -1372,6 +1405,120 @@ class Grid(Geometry):
         world = Affine(coords).apply(pts)
         return concatenate([imath.amin(world, axis=1)[:, None],
                             imath.amax(world, axis=1)[:, None]], axis=1)
+
+    def to_trimesh(self):
+        '''Returns the grid's cells as a triangle mesh.
+
+        A two-dimensional grid's cells are quadrilaterals, and a quadrilateral
+        is two triangles. The mesh's coordinates are the corners of the cells
+        rather than their centers, so adjacent cells share their corners: a
+        grid of ``(nx, ny)`` cells has ``(nx+1)(ny+1)`` corners, and each cell
+        is split along the diagonal from its low corner to its high one. The
+        diagonal is interior to the cell, so no conformity pass is needed.
+
+        Returns
+        -------
+        TriMesh
+            The cells as triangles, in the grid's coordinates and units. Its
+            coordinates are NumPy arrays.
+
+        Raises
+        ------
+        ValueError
+            If the grid is not two-dimensional.
+
+        Examples
+        --------
+        >>> import euclib
+        >>> mesh = euclib.grid((2, 3)).to_trimesh()
+        >>> mesh.coord_count
+        12
+        >>> mesh.topo.simplex_count[2]
+        12
+        '''
+        if self.dim != 2:
+            raise ValueError(
+                "a triangle mesh of a grid's cells needs a two-dimensional"
+                f" grid; found {self.dim} dimensions")
+        (nx, ny) = self.shape
+        coords = _corner_coordinates(self)
+        stride = ny + 1
+        faces = []
+        for i in range(nx):
+            for j in range(ny):
+                a = i * stride + j
+                b = (i + 1) * stride + j
+                c = (i + 1) * stride + j + 1
+                d = i * stride + j + 1
+                faces += [[a, b, c], [a, c, d]]
+        return TriMesh(coords, TriTopology(asarray(faces, dtype=int).T,
+                                           coord_count=coords.shape[1]))
+
+    def to_tetmesh(self):
+        '''Returns the grid's cells as a tetrahedral mesh.
+
+        A three-dimensional grid's cells are hexahedra, and a hexahedron is six
+        tetrahedra. The mesh's coordinates are the corners of the cells, and
+        each cell is split by the Kuhn triangulation: the six tetrahedra are
+        the six orderings in which a path can walk from the cell's low corner
+        to its high one, one axis step at a time. The face diagonals that split
+        one cell are the face diagonals its neighbours use, so the tetrahedra
+        meet without cracks.
+
+        Returns
+        -------
+        TetMesh
+            The cells as tetrahedra, in the grid's coordinates and units. Its
+            coordinates are NumPy arrays.
+
+        Raises
+        ------
+        ValueError
+            If the grid is not three-dimensional.
+
+        Examples
+        --------
+        >>> import euclib
+        >>> mesh = euclib.grid((2, 2, 2)).to_tetmesh()
+        >>> mesh.coord_count
+        27
+        >>> mesh.topo.simplex_count[3]
+        48
+        '''
+        if self.dim != 3:
+            raise ValueError(
+                "a tetrahedral mesh of a grid's cells needs a"
+                f" three-dimensional grid; found {self.dim} dimensions")
+        (nx, ny, nz) = self.shape
+        coords = _corner_coordinates(self)
+        sy = ny + 1
+        sz = nz + 1
+        steps = ((1, 0, 0), (0, 1, 0), (0, 0, 1))
+        tets = []
+        for i in range(nx):
+            for j in range(ny):
+                for k in range(nz):
+                    def at(a, b, c, /):
+                        return (a * sy + b) * sz + c
+                    for (first, second, third) in ((0, 1, 2), (0, 2, 1),
+                                                   (1, 0, 2), (1, 2, 0),
+                                                   (2, 0, 1), (2, 1, 0)):
+                        (p, q, r) = (steps[first], steps[second],
+                                     steps[third])
+                        tet = [
+                            at(i, j, k),
+                            at(i + p[0], j + p[1], k + p[2]),
+                            at(i + p[0] + q[0], j + p[1] + q[1],
+                               k + p[2] + q[2]),
+                            at(i + 1, j + 1, k + 1)]
+                        # A reflected affine can turn every cell inside out;
+                        # swapping two corners gives each tetrahedron a
+                        # positive volume in the ambient coordinates.
+                        if _tet_volume(coords, tet) < 0.0:
+                            tet[2], tet[3] = tet[3], tet[2]
+                        tets.append(tet)
+        return TetMesh(coords, TetTopology(asarray(tets, dtype=int).T,
+                                           coord_count=coords.shape[1]))
 
     def _transformed_coords(self, transform, /):
         '''Returns the grid's affine matrix with a transform composed onto it.

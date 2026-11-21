@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from unittest import TestCase
 
+import numpy as np
 from numpy import allclose, arange, array, eye, eye as _eye, zeros
 
 from euclib.abc import is_geometry, is_topology
 from euclib.types import (
     Grid, GridTopology, GridLoc1, GridLoc2, GridLoc3,
-    affine_translation, affine_scaling)
+    TetMesh, TriMesh, affine_translation, affine_scaling)
 
 
 # Fixtures ###################################################################
@@ -177,3 +178,71 @@ class TestGrid(TestCase):
     def test_a_grid_has_no_simplex_properties(self):
         with self.assertRaises(IndexError):
             _grid()[0, 'anything']
+
+
+class TestGridMeshes(TestCase):
+    '''A grid's cells as a simplex mesh.'''
+
+    def test_a_two_dimensional_grid_becomes_triangles(self):
+        mesh = Grid(eye(3), GridTopology((2, 3))).to_trimesh()
+        self.assertIsInstance(mesh, TriMesh)
+        self.assertEqual(mesh.dim, 2)
+        self.assertEqual(mesh.coord_count, 12)
+        self.assertEqual(mesh.topo.simplex_count[2], 12)
+        self.assertAlmostEqual(float(np.sum(mesh.measures)), 6.0, places=12)
+
+    def test_a_three_dimensional_grid_becomes_tetrahedra(self):
+        mesh = Grid(eye(4), GridTopology((2, 2, 2))).to_tetmesh()
+        self.assertIsInstance(mesh, TetMesh)
+        self.assertEqual(mesh.dim, 3)
+        self.assertEqual(mesh.coord_count, 27)
+        self.assertEqual(mesh.topo.simplex_count[3], 48)
+        self.assertAlmostEqual(float(np.sum(mesh.measures)), 8.0, places=12)
+        self.assertTrue((np.asarray(mesh.measures) > 0.0).all())
+
+    def test_the_corners_follow_the_affine(self):
+        affine = array([[2.0, 0.0, 1.0],
+                        [0.0, 3.0, -2.0],
+                        [0.0, 0.0, 1.0]])
+        mesh = Grid(affine, GridTopology((2, 2))).to_trimesh()
+        self.assertAlmostEqual(float(np.sum(mesh.measures)), 24.0, places=12)
+        self.assertTrue(allclose(np.asarray(mesh.coords).min(axis=1),
+                                 [1.0 - 1.0, -2.0 - 1.5]))
+        self.assertTrue(allclose(np.asarray(mesh.coords).max(axis=1),
+                                 [1.0 + 3.0, -2.0 + 4.5]))
+
+    def test_a_reflected_grid_still_has_positive_cells(self):
+        affine = eye(4)
+        affine[0, 0] = -1.0
+        mesh = Grid(affine, GridTopology((2, 2, 2))).to_tetmesh()
+        self.assertTrue((np.asarray(mesh.measures) > 0.0).all())
+        self.assertAlmostEqual(float(np.sum(mesh.measures)), 8.0, places=12)
+
+    def test_a_quantity_keeps_its_units(self):
+        import pint
+        ureg = pint.UnitRegistry()
+        mesh = Grid(eye(3) * ureg.meter, GridTopology((2, 2))).to_trimesh()
+        self.assertEqual(str(mesh.coords.units), 'meter')
+        self.assertAlmostEqual(float(np.sum(mesh.measures).magnitude), 4.0,
+                               places=12)
+
+    def test_a_tensor_affine_becomes_an_array(self):
+        try:
+            import torch
+        except ImportError:                     # pragma: no cover
+            self.skipTest("torch is not installed")
+        mesh = Grid(torch.eye(3), GridTopology((2, 2))).to_trimesh()
+        self.assertIsInstance(mesh.coords, np.ndarray)
+        self.assertAlmostEqual(float(np.sum(mesh.measures)), 4.0, places=12)
+
+    def test_a_wrong_dimension_is_refused(self):
+        with self.assertRaises(ValueError):
+            Grid(eye(4), GridTopology((2, 2, 2))).to_trimesh()
+        with self.assertRaises(ValueError):
+            Grid(eye(3), GridTopology((2, 2))).to_tetmesh()
+
+    def test_the_grid_is_not_changed(self):
+        grid = Grid(eye(3), GridTopology((2, 2)))
+        before = np.asarray(grid.coords).copy()
+        grid.to_trimesh()
+        self.assertTrue(np.array_equal(np.asarray(grid.coords), before))
