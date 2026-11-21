@@ -2456,3 +2456,98 @@ class TestThePropertyGradient(TestCase):
                         'q', at=array([[sx], [sy], [0.0]]))).reshape(3, 3)
                     self.assertTrue(allclose(got.diagonal(), [2.0, 0.0, 0.0],
                                              atol=1e-6))
+
+
+class TestAnEstimatedGradientWithoutAnSVD(TestCase):
+    '''The frame of an estimated gradient, built by Gram--Schmidt.
+
+    A stencil arranged symmetrically gives two equal singular values, and
+    `torch.linalg.svd`'s derivative is not finite when singular values repeat.
+    The estimate therefore builds its frame without one when the coordinates
+    require a gradient. These tests check the cases that used to come back NaN:
+    a flat sheet in three dimensions, and a path, whose third singular value
+    sits at zero.
+    '''
+
+    #: A square of eight points around a center, with the pairs of equal spans
+    #: that make the singular values tie.
+    _RING = array([[1.0, 1.0, 0.0, -1.0, -1.0, -1.0, 0.0, 1.0],
+                   [0.0, 1.0, 1.0, 1.0, 0.0, -1.0, -1.0, -1.0],
+                   [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+
+    def _sheet(self):
+        '''A flat fan of triangles around a center, in three dimensions.'''
+        coords = concatenate([zeros((3, 1)), self._RING], axis=1)
+        faces = array([[0, (i + 1), ((i + 1) % 8) + 1] for i in range(8)]).T
+        values = arange(9.0)
+        return (coords, faces, values)
+
+    def _torch(self):
+        try:
+            import torch
+        except ImportError:                                  # pragma: no cover
+            self.skipTest("torch is not installed")
+        return torch
+
+    def _value(self, coords, faces, values, at):
+        mesh = TriMesh(coords, TriTopology(faces))
+        mesh = mesh.withprop('f', values, interp=('polynomial', 2))
+        got = mesh.prop('f', at=at, interp=('polynomial', 2))
+        return float(asarray(got).reshape(-1)[0])
+
+    def test_a_symmetric_sheet_has_a_finite_tensor_gradient(self):
+        torch = self._torch()
+        (coords, faces, values) = self._sheet()
+        at = array([[0.2], [0.1], [0.0]])
+        plain = self._value(coords, faces, values, at)
+        tensor = torch.tensor(coords, requires_grad=True)
+        mesh = TriMesh(tensor, TriTopology(faces))
+        mesh = mesh.withprop('f', values, interp=('polynomial', 2))
+        got = mesh.prop('f', at=at, interp=('polynomial', 2))
+        self.assertAlmostEqual(float(got.detach()), plain, places=12)
+        got.sum().backward()
+        self.assertTrue(torch.isfinite(tensor.grad).all().item())
+
+    def test_the_tensor_gradient_agrees_with_a_numerical_one(self):
+        torch = self._torch()
+        (coords, faces, values) = self._sheet()
+        at = array([[0.2], [0.1], [0.0]])
+        tensor = torch.tensor(coords, requires_grad=True)
+        mesh = TriMesh(tensor, TriTopology(faces))
+        mesh = mesh.withprop('f', values, interp=('polynomial', 2))
+        mesh.prop('f', at=at, interp=('polynomial', 2)).sum().backward()
+        step = 1e-6
+        for (axis, corner) in ((0, 2), (1, 3), (0, 6), (1, 8), (2, 4)):
+            with self.subTest(axis=axis, corner=corner):
+                plus = coords.copy()
+                minus = coords.copy()
+                plus[axis, corner] += step
+                minus[axis, corner] -= step
+                numerical = ((self._value(plus, faces, values, at)
+                              - self._value(minus, faces, values, at))
+                             / (2.0 * step))
+                self.assertAlmostEqual(float(tensor.grad[axis, corner]),
+                                       numerical, places=5)
+
+    def test_a_collinear_path_has_a_finite_tensor_gradient(self):
+        torch = self._torch()
+        coords = array([[0.0, 1.0, 2.0], [0.0, 0.0, 0.0]])
+        tensor = torch.tensor(coords, requires_grad=True)
+        path = SegPath(tensor, SegTopology([[0, 1], [1, 2]]))
+        path = path.withprop('f', array([0.0, 1.0, 4.0]),
+                             interp=('polynomial', 2))
+        path.prop('f', at=array([[0.4], [0.0]]),
+                  interp=('polynomial', 2)).sum().backward()
+        self.assertTrue(torch.isfinite(tensor.grad).all().item())
+
+    def test_a_mixed_rank_stencil_still_interpolates(self):
+        # One coordinate lifted out of the sheet makes some stencils span three
+        # directions and others two; the frames of the two groups have different
+        # sizes, and an earlier version broadcast the full-dimensional frame to
+        # the wrong number of stencils.
+        (coords, faces, values) = self._sheet()
+        lifted = coords.copy()
+        lifted[2, 2] += 1e-5
+        found = self._value(lifted, faces, values,
+                            array([[-0.2], [0.1], [0.0]]))
+        self.assertTrue(isfinite(found))

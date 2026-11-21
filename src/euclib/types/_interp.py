@@ -2291,6 +2291,80 @@ def _gradient_from_operator(operator, values, dim, count, /):
         channels + (dim, count))
 
 
+def _stencil_frames(steps, /):
+    '''An orthonormal frame for each stencil, built without an SVD.
+
+    The frame's rows span the directions a stencil's displacements reach, and
+    the gradient fit is written in it. An SVD is the usual way to find such a
+    frame, but its derivative is undefined when two singular values are equal,
+    which is exactly what a stencil arranged symmetrically gives: a square
+    lattice's equal spans in two directions, or a flat sheet's third singular
+    value sitting at zero. `torch.linalg.svd` warns that its gradients are
+    finite only when the singular values do not repeat, and on such a mesh the
+    derivative of an estimated gradient came back NaN.
+
+    Gram--Schmidt has no such tie. It selects the stencil's first displacement
+    with a useful component, projects the rest onto what has already been
+    chosen, and normalizes; the result depends smoothly on the displacements
+    as long as the selected ones are independent, which the rank tolerance
+    ensures. Which displacement is selected is a decision, so it is made on
+    detached lengths, but the vectors themselves stay in the graph.
+
+    This is used only when the coordinates require a gradient. With plain
+    arrays there is no derivative to protect and the batched SVD is faster.
+
+    Parameters
+    ----------
+    steps : torch.Tensor
+        A ``(B, M, D)`` tensor of displacements, one stencil per block entry.
+
+    Returns
+    -------
+    frames : torch.Tensor
+        A ``(B, D, D)`` tensor whose first ``room`` rows of each stencil are
+        orthonormal and span its displacements.
+    rooms : numpy.ndarray
+        The number of directions each stencil spans, one per block entry.
+    '''
+    import torch
+
+    (batch, count, dim) = steps.shape
+    lengths = torch.linalg.vector_norm(steps.detach(), dim=-1)
+    threshold = _RANK_TOLERANCE * lengths.max(dim=1).values
+    remaining = torch.ones((batch, count), dtype=torch.bool,
+                           device=steps.device)
+    rows = torch.arange(batch, device=steps.device)
+    basis = []
+    rooms = torch.zeros(batch, dtype=torch.long, device=steps.device)
+    for k in range(dim):
+        residual = steps
+        for chosen in basis:
+            projection = (residual * chosen[:, None, :]).sum(dim=-1,
+                                                             keepdim=True)
+            residual = residual - projection * chosen[:, None, :]
+        live = torch.linalg.vector_norm(residual, dim=-1)
+        norms = live.detach()
+        valid = remaining & (norms > threshold[:, None])
+        has = valid.any(dim=1)
+        index = valid.to(torch.int8).argmax(dim=1)
+        picked = residual[rows, index]
+        # The live length, not the detached one: a unit vector's derivative
+        # includes the derivative of its length, and dividing by a constant
+        # would leave a radial error in every gradient built from the frame.
+        picked_norm = live[rows, index].clamp_min(1e-30)
+        vector = picked / picked_norm[:, None]
+        # A stencil that spans fewer than `dim` directions has no k-th vector;
+        # its remaining rows are never read, because the caller only takes the
+        # first `rooms` of them. A coordinate axis keeps the tensor's shape and
+        # avoids dividing by a length that is zero.
+        axis = torch.eye(dim, dtype=steps.dtype,
+                         device=steps.device)[k].expand(batch, dim)
+        basis.append(torch.where(has[:, None], vector, axis))
+        rooms = rooms + has.to(torch.long)
+        remaining[rows, index] = remaining[rows, index] & ~has
+    return (torch.stack(basis, dim=1), rooms.cpu().numpy())
+
+
 def _gradient_blocks(coords, edges, order, /):
     '''Yields the operator that turns a stencil's values into a gradient.
 
@@ -2343,21 +2417,33 @@ def _gradient_blocks(coords, edges, order, /):
                 steps = im.mag(im.subtract(
                     im.permute(coords[:, points], (1, 2, 0)),
                     im.permute(coords[:, block], (1, 0))[:, None, :]))
-                (_, lengths, frames) = im.svd(steps, full_matrices=False)
-                # How many directions the stencil spans. The rest of the frame
-                # counts for nothing, which is the same as treating the stencil
-                # as flat in those directions, and a stencil that spans nothing
-                # at all is still given one direction to be fit along.
-                #
-                # On the *magnitudes*: how many directions a stencil spans is a
-                # comparison, so it is a selection, and a selection has no
-                # derivative to keep.
-                # `to_array(..., detach=True)` and not `asarray`: a tensor that
-                # requires a gradient has no array to convert to, which is the
-                # whole reason this function is being translated.
-                widths = to_array(lengths, detach=True)
-                rooms = maximum(
-                    (widths > _RANK_TOLERANCE * widths[:, :1]).sum(axis=1), 1)
+                if getattr(steps, 'requires_grad', False):
+                    # A symmetric stencil gives the same singular values in two
+                    # directions, and `torch.linalg.svd`'s derivative is not
+                    # finite when singular values repeat --- so the frame is
+                    # built by Gram--Schmidt instead, whose derivative is
+                    # defined wherever the chosen directions are independent.
+                    # See `_stencil_frames`.
+                    (frames, room_counts) = _stencil_frames(steps)
+                    rooms = maximum(room_counts, 1)
+                else:
+                    (_, lengths, frames) = im.svd(steps, full_matrices=False)
+                    # How many directions the stencil spans. The rest of the
+                    # frame counts for nothing, which is the same as treating
+                    # the stencil as flat in those directions, and a stencil
+                    # that spans nothing at all is still given one direction to
+                    # be fit along.
+                    #
+                    # On the *magnitudes*: how many directions a stencil spans
+                    # is a comparison, so it is a selection, and a selection
+                    # has no derivative to keep.
+                    # `to_array(..., detach=True)` and not `asarray`: a tensor
+                    # that requires a gradient has no array to convert to,
+                    # which is the whole reason this function is translated.
+                    widths = to_array(lengths, detach=True)
+                    rooms = maximum(
+                        (widths > _RANK_TOLERANCE * widths[:, :1]).sum(axis=1),
+                        1)
                 for room in unique(rooms):
                     rows = flatnonzero(rooms == room)
                     # The basis the fit is written in. Where a stencil spans the
@@ -2377,7 +2463,8 @@ def _gradient_blocks(coords, edges, order, /):
                     # still needs a basis for the part it does span, and takes
                     # the decomposition's.
                     if int(room) == dim:
-                        here_frames = broadcast_to(eye(dim), frames.shape)
+                        here_frames = broadcast_to(
+                            eye(dim), (len(rows), dim, dim))
                     else:
                         here_frames = frames[rows]
                     (basis, linear, design) = _block_design(
@@ -2620,6 +2707,11 @@ def _stencil_frame(coords, stencil, node, /):
     '''
     step = im.mag(im.subtract(coords[:, stencil],
                               coords[:, node:node + 1])).T        # (M, D)
+    if getattr(step, 'requires_grad', False):
+        # As in `_gradient_blocks`: a symmetric stencil's singular values tie,
+        # and the SVD's derivative is undefined there.
+        (frames, rooms) = _stencil_frames(im.mag(step)[None, :, :])
+        return (step, im.mag(frames[0]), max(int(rooms[0]), 1))
     (_, sizes, frame) = im.svd(step, full_matrices=False)
     # How many directions it spans is a comparison --- a selection --- so it is
     # taken on the magnitudes and detached.

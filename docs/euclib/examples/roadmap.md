@@ -125,44 +125,34 @@ been replaced by one that asserts what each boundary treatment should do.
 
 ## Partly implemented
 
-A few operations exist but are incomplete, so their example pages will be
-written to state the limitation rather than hide it:
+None at present.
 
-- **The estimated gradient over tensor coordinates, on a symmetric mesh.**
-  Asking a geometry whose coordinates are a tensor for the derivative of an
-  interpolation whose *gradient* the library must estimate --- order 2 or higher
-  with no gradient supplied or carried --- comes back `nan` on a mesh whose
-  neighbourhoods are all *exactly* symmetric, rather than answering. Three
-  things are needed at once, and any one of them missing avoids it: tensor
-  coordinates, an estimated gradient, and a mesh with no asymmetry anywhere.
+:::{admonition} What was here, and why it went
+:class: note
+Asking a geometry whose coordinates are a tensor for the derivative of an
+interpolation whose *gradient* the library must estimate --- order 2 or higher
+with no gradient supplied or carried --- used to come back `nan` on a mesh
+whose neighbourhoods were all exactly symmetric. Three things had to be true at
+once, and any one of them missing avoided it: tensor coordinates, an estimated
+gradient, and a mesh with no asymmetry anywhere.
 
-  This is a deficiency rather than a defect, and the reason is documented by
-  PyTorch rather than by us. Estimating a gradient writes the fit in a basis
-  taken from a singular value decomposition, and `torch.linalg.svd` warns that
-  the gradients it computes "will only be finite when `A` does not have repeated
-  singular values", because they are computed through
-  $1 / \min_{i \neq j} (\sigma_i^2 - \sigma_j^2)$. A vertex whose neighbours are
-  arranged symmetrically has exactly equal singular values, so that denominator
-  is zero and the derivative is undefined --- not merely hard to compute.
+The reason was PyTorch's, not the fit's. Estimating a gradient wrote the fit in
+a basis taken from a singular value decomposition, and `torch.linalg.svd` warns
+that the gradients it computes "will only be finite when `A` does not have
+repeated singular values", because they are computed through
+$1 / \min_{i \neq j} (\sigma_i^2 - \sigma_j^2)$. A vertex whose neighbours are
+arranged symmetrically has exactly equal singular values: one vertex of a flat
+triangular lattice and its six neighbours give the displacements a
+$7 \times 3$ matrix whose singular values are $\sqrt{3}$, $\sqrt{3}$, and zero.
+The numerator of that derivative is zero too, but the arithmetic produces
+`nan` rather than a limit.
 
-  One vertex of a flat triangular lattice and its six neighbours make it plain.
-  Written as displacements from the vertex, that is a $7 \times 3$ matrix ---
-  seven points, three coordinates --- whose singular values are
-
-  ```
-  [ 1.7320508076  1.7320508076  0. ]
-  ```
-
-  $\sqrt{3}$ twice, because the hexagon spreads the same amount in both in-plane
-  directions, and zero because a flat sheet does not spread in `z`. Nothing about
-  the *data* enters; it is the shape of the neighbourhood alone.
-
-  **What is unaffected**, and it is most things: arrays throughout, asked for
-  anything at all; tensor coordinates with a gradient supplied or carried by the
-  property; and any mesh whose coordinates are not exactly symmetric, which is
-  every mesh whose coordinates come from real measurement. Nudging a regular
-  lattice by $10^{-6}$ is enough to remove it, since any asymmetry at all breaks
-  the tie.
+The estimate now builds its stencil frame by Gram--Schmidt when the coordinates
+require a gradient. Gram--Schmidt has no repeated-singular-value tie, it depends
+smoothly on the displacements as long as the chosen ones are independent, and
+the values it produces are the same to within rounding. The tests check the
+derivative against a numerical one on a symmetric sheet and a collinear path.
+:::
 
 :::{seealso}
 - [The example gallery](index.md) for the pages that *are* written.
