@@ -78,7 +78,7 @@ from .ops import (
     boolean_difference, boolean_intersection, boolean_union, clip, contains,
     convex_hull, distance, fit_line, fit_plane, geodesic, mesh_intersections,
     minimum_volume_bounding_box, nearest, oriented_bounding_box, path_crossings,
-    path_intersections, principal_axes, section, separation,
+    path_intersections, principal_axes, section, separation, streamlines,
     voxel_intersections, voxel_surface_intersections)
 
 #: The public modules, shallowest first. A name that appears in more than one
@@ -176,7 +176,7 @@ __all__ = (
     'contains', 'convex_hull', 'distance', 'fit_line', 'fit_plane', 'geodesic',
     'mesh_intersections', 'minimum_volume_bounding_box', 'nearest',
     'oriented_bounding_box', 'path_crossings', 'path_intersections',
-    'principal_axes', 'section', 'separation',
+    'principal_axes', 'section', 'separation', 'streamlines',
     'voxel_intersections', 'voxel_surface_intersections')
 
 

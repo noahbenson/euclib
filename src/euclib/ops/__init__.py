@@ -29,6 +29,7 @@ from ._distance import distance, nearest, separation
 from ._fit import fit_line, fit_plane
 from ._geodesic import geodesic
 from ._smooth import smooth
+from ._stream import streamlines
 
 
 # Exports ####################################################################
@@ -38,7 +39,7 @@ __all__ = ('distance', 'nearest', 'separation', 'fit_line', 'fit_plane',
            'minimum_volume_bounding_box', 'convex_hull',
            'boolean_union', 'boolean_intersection', 'boolean_difference',
            'clip', 'section',
-           'geodesic', 'smooth',
+           'geodesic', 'smooth', 'streamlines',
            'positions_of', 'sample', 'transfer',
            'path_crossings', 'path_intersections', 'contains',
            'tolerance_of', 'voxel_intersections',

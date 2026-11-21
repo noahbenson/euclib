@@ -74,6 +74,7 @@ different construction.
 | Page | Adapted from | Exercises |
 |---|---|---|
 | [Image grids from an array and an affine](grids/grids-from-arrays.md) | pyvista `test_grid.py::test_init_from_numpy_arrays`, `::test_create_image_data_from_specs` | `grid`, image properties, `el.ops.positions_of` |
+| [Integrating a vector field into streamlines](grids/streamlines.md) | pyvista `test_dataset_filters.py::test_streamlines_evenly_spaced_2d` | `el.streamlines`, Runge–Kutta steps, path components |
 
 ## Queries and measures
 
