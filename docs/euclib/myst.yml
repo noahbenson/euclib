@@ -45,6 +45,7 @@ project:
           children:
             - file: examples/surfaces/geodesic.md
             - file: examples/surfaces/smoothing.md
+            - file: examples/surfaces/subdivision.md
         - title: Intersections
           children:
             - file: examples/intersections/mesh-mesh.md

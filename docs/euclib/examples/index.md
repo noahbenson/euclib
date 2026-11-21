@@ -41,6 +41,7 @@ different construction.
 |---|---|---|
 | [Geodesic distance along a surface](surfaces/geodesic.md) | pyvista `test_polydata.py::test_geodesic_distance` | `geodesic`, sources as a mask, distance fields |
 | [Smoothing a field over a mesh or an image](surfaces/smoothing.md) | trimesh `smoothing.py::filter_laplacian`; pyvista `test_polydata.py::test_smooth` | `smooth`, `loglambda`, `fixboundary`, image kernels |
+| [Subdividing a mesh and simplifying a path](surfaces/subdivision.md) | trimesh `test_remesh.py::test_subdivide`; `test_simplify.py::test_merge_colinear` | `el.subdivide`, `el.merge_colinear`, area and volume invariants |
 
 ## Intersections
 

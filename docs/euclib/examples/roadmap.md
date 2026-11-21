@@ -27,7 +27,6 @@ the [gallery](index.md) following the standard template.
 | Delaunay triangulation and tetrahedralization | pyvista `test_polydata.py::test_delaunay_2d`, `test_dataset_filters.py::test_delaunay_3d_grid` |
 | Marching cubes / surface reconstruction | trimesh `tests/test_voxel.py::test_marching_points` |
 | Rasterization of 2D paths | trimesh `tests/test_raster.py::test_rasterize` |
-| Mesh remeshing, subdivision, and simplification | trimesh `tests/test_remesh.py::test_subdivide`, `tests/test_simplify.py::test_merge_colinear` |
 | Primitive generators (boxes, spheres, and so on from a size) | pyvista `tests/core/test_geometric_objects.py::test_cube`, `::test_icosphere`; trimesh `tests/test_creation.py::test_box`, `::test_spheres` |
 
 ## Recently implemented and documented
@@ -67,6 +66,9 @@ reader who remembers them being absent knows where they went:
   [Minimum-volume oriented bounding boxes](queries/minimum-volume-boxes.md).
 - **Vector-field integration** — `euclib.streamlines`, see
   [Integrating a vector field into streamlines](grids/streamlines.md).
+- **Mesh subdivision and path simplification** — `euclib.subdivide` and
+  `euclib.merge_colinear`, see
+  [Subdividing a mesh and simplifying a path](surfaces/subdivision.md).
 - **One-line constructors** — `euclib.trimesh` and friends, see
   [One-line constructors](construction/constructors.md).
 - **Metadata and transient editing** — see
