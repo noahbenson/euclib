@@ -34,6 +34,8 @@ different construction.
 | [Surfaces of revolution](primitives/revolution.md) | trimesh `test_creation.py::test_revolve`, `::test_torus`, `::test_annulus` | swept `TriMesh`, `measures` |
 | [Prism sweeps](primitives/prism-sweeps.md) | pyvista `test_geometric_objects.py::test_tube`; trimesh `test_sweep.py::test_simple_extrude` | `PrismMesh`, `.elevation()`, `.to_tetmesh()` |
 | [Tetrahedral meshes](primitives/tetrahedral-meshes.md) | pyvista `test_geometric_objects.py::test_solid_sphere` | `tetmesh`, volumes |
+| [The Platonic solids](primitives/platonic-solids.md) | pyvista `test_geometric_objects.py::test_platonic_solids` | `el.convex_hull`, symmetry, Euler characteristic |
+| [Capsules, cylinders, and cones](primitives/capsules-cylinders-cones.md) | trimesh `test_creation.py::test_capsule`, `::test_cylinder`, `::test_cone`; pyvista `test_geometric_objects.py::test_cylinder`, `::test_capsule` | quadric `TriMesh`, extents, convergence |
 
 ## Surfaces and paths
 
@@ -95,15 +97,14 @@ different construction.
 
 ## Planned pages
 
-The gallery is still being built out. The rows below name the upstream test a
-page will adapt and the `euclib` surface it will exercise. Rows marked
-*pending* document an operation that `euclib` does not implement yet; see
-[the roadmap](roadmap.md) for that list.
+Each page the gallery planned has been written. A new row will appear here
+when an upstream test suggests one that is not covered; rows marked *pending*
+will name an operation that `euclib` does not implement yet, as the
+[roadmap](roadmap.md) does.
 
 | Page | Adapted from | Exercises |
 |---|---|---|
-| Platonic solids | pyvista `test_geometric_objects.py::test_platonic_solids` | `TriMesh` symmetry |
-| Capsules, cylinders, and cones | trimesh `test_creation.py::test_capsule`, `::test_cylinder`, `::test_cone` | quadric `TriMesh` |
+| *None at present* | | |
 
 :::{seealso}
 - [The roadmap](roadmap.md) lists the operations `euclib` does not implement yet,

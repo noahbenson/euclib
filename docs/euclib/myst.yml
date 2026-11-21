@@ -41,6 +41,8 @@ project:
             - file: examples/primitives/revolution.md
             - file: examples/primitives/prism-sweeps.md
             - file: examples/primitives/tetrahedral-meshes.md
+            - file: examples/primitives/platonic-solids.md
+            - file: examples/primitives/capsules-cylinders-cones.md
         - title: Surfaces and Paths
           children:
             - file: examples/surfaces/geodesic.md
