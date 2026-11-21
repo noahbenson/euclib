@@ -69,6 +69,8 @@ reader who remembers them being absent knows where they went:
 - **Mesh subdivision and path simplification** — `euclib.subdivide` and
   `euclib.merge_colinear`, see
   [Subdividing a mesh and simplifying a path](surfaces/subdivision.md).
+- **Transform decomposition** — `euclib.types.Affine.decompose`, see
+  [Affine transforms](transforms/affine-transforms.md).
 - **One-line constructors** — `euclib.trimesh` and friends, see
   [One-line constructors](construction/constructors.md).
 - **Metadata and transient editing** — see
@@ -126,10 +128,6 @@ been replaced by one that asserts what each boundary treatment should do.
 A few operations exist but are incomplete, so their example pages will be
 written to state the limitation rather than hide it:
 
-- **Transform decomposition** — `euclib.types.Transform` supports composition,
-  inversion, and application; decomposing a matrix back into translation,
-  rotation, scale, and shear is not implemented (pyvista
-  `test_utilities.py::test_transform_decompose`).
 - **The estimated gradient over tensor coordinates, on a symmetric mesh.**
   Asking a geometry whose coordinates are a tensor for the derivative of an
   interpolation whose *gradient* the library must estimate --- order 2 or higher

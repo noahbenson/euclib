@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from unittest import TestCase
 
+import numpy as np
 from numpy import allclose, array, eye, zeros
 
 from euclib.types import (
@@ -110,6 +111,128 @@ class TestAffine(TestCase):
     def test_transform_is_abstract(self):
         with self.assertRaises(TypeError):
             Transform(eye(3))
+
+
+class TestDecompose(TestCase):
+    '''Splitting an affine transform into its parts.'''
+
+    def _recompose(self, matrix, /):
+        '''Builds a matrix back from its decomposition's parts.'''
+        (translation, rotation, scale, shear) = matrix.decompose()
+        dim = matrix.dim
+        linear = rotation @ (scale[:, None] * shear)
+        rebuilt = eye(dim + 1)
+        rebuilt[:dim, :dim] = linear
+        rebuilt[:dim, dim] = translation
+        return rebuilt
+
+    def test_the_identity_decomposes_to_identity(self):
+        (translation, rotation, scale, shear) = affine_identity(3).decompose()
+        self.assertTrue(allclose(translation, zeros(3)))
+        self.assertTrue(allclose(rotation, eye(3)))
+        self.assertTrue(allclose(scale, [1.0, 1.0, 1.0]))
+        self.assertTrue(allclose(shear, eye(3)))
+
+    def test_a_translation_alone(self):
+        (translation, rotation, scale, shear) = affine_translation(
+            [3.0, -2.0]).decompose()
+        self.assertTrue(allclose(translation, [3.0, -2.0]))
+        self.assertTrue(allclose(rotation, eye(2)))
+        self.assertTrue(allclose(scale, [1.0, 1.0]))
+        self.assertTrue(allclose(shear, eye(2)))
+
+    def test_a_scale_alone(self):
+        (translation, rotation, scale, shear) = affine_scaling(
+            [2.0, 3.0]).decompose()
+        self.assertTrue(allclose(translation, zeros(2)))
+        self.assertTrue(allclose(rotation, eye(2)))
+        self.assertTrue(allclose(scale, [2.0, 3.0]))
+        self.assertTrue(allclose(shear, eye(2)))
+
+    def test_a_rotation_is_reported_as_a_rotation(self):
+        turn = array([[0.0, -1.0, 0.0],
+                      [1.0, 0.0, 0.0],
+                      [0.0, 0.0, 1.0]])
+        matrix = eye(4)
+        matrix[:3, :3] = turn
+        transform = Affine(matrix)
+        (translation, rotation, scale, shear) = transform.decompose()
+        self.assertTrue(allclose(rotation, turn, atol=1e-12))
+        self.assertTrue(allclose(scale, [1.0, 1.0, 1.0]))
+        self.assertTrue(allclose(shear, eye(3), atol=1e-12))
+        self.assertAlmostEqual(float(np.linalg.det(rotation)), 1.0, places=12)
+
+    def test_a_reflection_appears_as_a_negative_determinant(self):
+        (translation, rotation, scale, shear) = affine_scaling(
+            [-2.0, 1.0, 1.0]).decompose()
+        self.assertTrue((scale > 0.0).all())
+        self.assertAlmostEqual(float(np.linalg.det(rotation)), -1.0,
+                               places=12)
+        self.assertTrue(allclose(rotation.T @ rotation, eye(3), atol=1e-12))
+
+    def test_a_shear_is_reported_as_a_shear(self):
+        linear = array([[1.0, 2.0], [0.0, 1.0]])
+        matrix = eye(3)
+        matrix[:2, :2] = linear
+        (translation, rotation, scale, reported) = Affine(matrix).decompose()
+        self.assertTrue(allclose(rotation, eye(2), atol=1e-12))
+        self.assertTrue(allclose(scale, [1.0, 1.0]))
+        self.assertTrue(allclose(reported, linear, atol=1e-12))
+        self.assertTrue(allclose(np.triu(reported), reported))
+
+    def test_the_parts_rebuild_the_matrix(self):
+        for dim in (1, 2, 3):
+            with self.subTest(dim=dim):
+                rng = np.random.default_rng(dim)
+                linear = rng.normal(size=(dim, dim))
+                if abs(np.linalg.det(linear)) < 0.1:
+                    linear += 2.0 * eye(dim)
+                matrix = eye(dim + 1)
+                matrix[:dim, :dim] = linear
+                matrix[:dim, dim] = rng.normal(size=dim)
+                transform = Affine(matrix)
+                self.assertTrue(allclose(self._recompose(transform), matrix,
+                                         atol=1e-10))
+
+    def test_the_scale_is_positive_and_the_shear_is_unit_upper(self):
+        rng = np.random.default_rng(5)
+        linear = rng.normal(size=(3, 3)) + 3.0 * eye(3)
+        matrix = eye(4)
+        matrix[:3, :3] = linear
+        (translation, rotation, scale, shear) = Affine(matrix).decompose()
+        self.assertTrue((scale > 0.0).all())
+        self.assertTrue(allclose(np.triu(shear), shear))
+        self.assertTrue(allclose(np.diag(shear), [1.0, 1.0, 1.0]))
+        self.assertTrue(allclose(rotation.T @ rotation, eye(3), atol=1e-12))
+
+    def test_the_parts_are_numpy(self):
+        (translation, rotation, scale, shear) = affine_identity(2).decompose()
+        for part in (translation, rotation, scale, shear):
+            self.assertIsInstance(part, np.ndarray)
+
+    def test_a_dtype_is_preserved(self):
+        for dtype in ('f4', 'f8'):
+            with self.subTest(dtype=dtype):
+                transform = Affine(eye(3, dtype=dtype))
+                parts = transform.decompose()
+                for part in parts:
+                    self.assertEqual(part.dtype.str, np.dtype(dtype).str)
+
+    def test_a_tensor_backend_is_preserved(self):
+        try:
+            import torch
+        except ImportError:                     # pragma: no cover
+            self.skipTest("torch is not installed")
+        transform = Affine(torch.eye(3))
+        for part in transform.decompose():
+            self.assertIsInstance(part, torch.Tensor)
+
+    def test_a_singular_transform_is_refused(self):
+        matrix = array([[1.0, 0.0, 0.0],
+                        [0.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0]])
+        with self.assertRaises(ValueError):
+            Affine(matrix).decompose()
 
 
 class TestTransformed(TestCase):

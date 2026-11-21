@@ -37,6 +37,8 @@ other.
 - Building a rotation as an explicit matrix and wrapping it in an `Affine`.
 - `Transform.compose` and its `@` operator shorthand.
 - `Transform.inverse`, and why `t @ t.inverse` is the identity transform.
+- `Affine.decompose`, which splits a matrix into translation, rotation, scale,
+  and shear, and the product that rebuilds the matrix from them.
 - `Geometry.transformed`: applying a transform to an immutable geometry.
 :::
 
@@ -125,12 +127,59 @@ print('topology shared  :', moved.topo is cloud.topo
       or np.array_equal(np.asarray(moved.topo.indices), np.asarray(cloud.topo.indices)))
 ```
 
+## Taking a transform apart
+
+A matrix is a compact way to carry a transform, but it does not say which
+rotation, which scale, and which shear produced it. `Affine.decompose` splits
+the linear part into an orthogonal rotation, a positive scale along each axis,
+and a unit upper-triangular shear, and reports the translation beside them. The
+parts rebuild the matrix exactly.
+
+```{code-cell}
+(t, r, s, k) = combined.decompose()
+print('translation:', t)
+print('rotation   :\n', np.round(r, 6))
+print('scale      :', s)
+print('shear      :\n', np.round(k, 6))
+
+def rebuild(transform):
+    "Rebuilds an affine matrix from its decomposition."
+    (t, r, s, k) = transform.decompose()
+    d = transform.dim
+    matrix = np.eye(d + 1)
+    matrix[:d, :d] = r @ (s[:, None] * k)
+    matrix[:d, d] = t
+    return matrix
+
+print('rebuilt exactly:', np.allclose(rebuild(combined), combined.matrix))
+```
+
+The rotation is orthogonal, and its determinant says whether the transform
+reflects space: a pure rotation has determinant 1, and a reflection comes back
+as a rotation with determinant -1 rather than as a fifth factor. A shear is
+reported by the matrix that produces it, and a scale is always positive.
+
+```{code-cell}
+shear = affine_matrix([[1.0, 2.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+(_, shear_rotation, shear_scale, shear_part) = shear.decompose()
+print('a shear keeps the axes :', np.allclose(shear_rotation, np.eye(3)))
+print('a shear has unit scale :', np.allclose(shear_scale, np.ones(3)))
+print('the reported shear     :\n', shear_part)
+
+mirror = el.types.affine_scaling([-1.0, 1.0, 1.0])
+(_, mirror_rotation, mirror_scale, _) = mirror.decompose()
+print('a reflection rotates with determinant',
+      round(float(np.linalg.det(mirror_rotation)), 6),
+      'and keeps positive scales', mirror_scale)
+```
+
 :::{admonition} Why an affine matrix and not a list of operations
 :class: tip
-Keeping the transform as one invertible matrix means it composes associatively
-and can be inverted exactly. `euclib` does not currently implement *decomposing*
-a matrix back into translation, rotation, scale, and shear — see the
-[roadmap](../roadmap.md) — but composing and inverting are exact.
+Keeping the transform as one invertible matrix means it composes associatively,
+can be inverted exactly, and can be taken apart when a caller needs the
+individual operations. The decomposition is the QR factorization of the linear
+part, with the signs moved from the triangular factor into the rotation so that
+the scale is positive; it is unique for a nonsingular transform.
 :::
 
 ## Figure
@@ -166,12 +215,15 @@ and `test_transform_decompose` composes a shear, scale, reflection, rotation,
 and translation and then decomposes the result back into its parts. No code is
 copied. `euclib` has no in-place fluent transform object, so the adaptation
 uses the immutable `Affine` plus `compose`/`@`/`inverse`, building each transform
-from its matrix instead of mutating one. The upstream decomposition assertions
-have no `euclib` counterpart and are replaced by the compose-then-invert
-round-trip, which exercises the same matrix algebra without needing
-decomposition; the roadmap records decomposition as unimplemented. The
-`Geometry.transformed` demonstration is not in the upstream tests, which
-operate on transform objects rather than on geometry.
+from its matrix instead of mutating one. The upstream decomposition test
+composes a shear, scale, reflection, rotation, and translation and checks that
+the five parts it gets back rebuild the matrix; the page does the same, but
+`euclib` reports four parts rather than five. pyvista returns the reflection as
+a separate scalar that multiplies the whole matrix; `euclib` folds it into the
+rotation, whose determinant is then -1, which is the same information in a form
+that also works in an even-dimensional space. The `Geometry.transformed`
+demonstration is not in the upstream tests, which operate on transform objects
+rather than on geometry.
 :::
 
 :::{seealso}

@@ -337,6 +337,80 @@ class Affine(Transform):
         '''
         return matrix[:-1, -1]
 
+    def decompose(self, /):
+        '''Splits the transform into translation, rotation, scale, and shear.
+
+        An affine transform of a ``D``-dimensional space can be written as
+
+        .. math:: x \\mapsto t + R \\, (s \\odot (K x)),
+
+        where ``t`` is the translation, ``R`` a rotation, ``s`` a vector of
+        positive scales, and ``K`` a shear matrix: upper triangular with ones
+        on its diagonal. The rotation may have determinant ``-1`` when the
+        transform reflects space, so a reflection is reported as the rotation
+        it is rather than as a separate factor.
+
+        The decomposition is the QR factorization of the linear part, with the
+        signs of the diagonal of ``R`` moved into the rotation so that the
+        scale is positive. It is unique for a nonsingular linear part.
+
+        Returns
+        -------
+        translation : array-like
+            The length-``D`` translation, in the transform's backend.
+        rotation : array-like
+            The ``(D, D)`` orthogonal rotation. Its determinant is ``1`` for a
+            rotation and ``-1`` for a reflection.
+        scale : array-like
+            The length-``D`` positive scale along each axis before the
+            rotation.
+        shear : array-like
+            The ``(D, D)`` shear matrix, upper triangular with ones on its
+            diagonal.
+
+        Raises
+        ------
+        ValueError
+            If the linear part is singular and has no scale to report.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from euclib.types import affine_scaling, affine_translation
+        >>> stretch = affine_translation(np.array([1., 2.])).compose(
+        ...     affine_scaling(np.array([2., 3.])))
+        >>> (translation, rotation, scale, shear) = stretch.decompose()
+        >>> translation
+        array([1., 2.])
+        >>> scale
+        array([2., 3.])
+        >>> rotation
+        array([[1., 0.],
+               [0., 1.]])
+        '''
+        matrix = to_numpy(self.matrix)
+        dim = self.dim
+        translation = matrix[:dim, dim]
+        linear = matrix[:dim, :dim]
+        if float(linalg.det(linear)) == 0.0:
+            raise ValueError(
+                "a singular affine transform has no scale to decompose into"
+                " a rotation, scale, and shear")
+        (rotation, upper) = linalg.qr(linear)
+        signs = asarray([-1.0 if upper[i, i] < 0.0 else 1.0
+                         for i in range(dim)], dtype=linear.dtype)
+        # Moving a row's sign into the rotation keeps the product the same and
+        # makes every scale positive: Q R = (Q S) (S R) for a diagonal S of
+        # signs.
+        rotation = rotation * signs[None, :]
+        upper = signs[:, None] * upper
+        scale = asarray([upper[i, i] for i in range(dim)], dtype=linear.dtype)
+        shear = upper / scale[:, None]
+        return (_match_backend(self.matrix, translation),
+                _match_backend(self.matrix, rotation),
+                _match_backend(self.matrix, scale),
+                _match_backend(self.matrix, shear))
+
     def apply(self, coords, /):
         '''Applies the affine transform to a matrix of positions.
 
