@@ -71,6 +71,9 @@ reader who remembers them being absent knows where they went:
   [Subdividing a mesh and simplifying a path](surfaces/subdivision.md).
 - **Transform decomposition** — `euclib.types.Affine.decompose`, see
   [Affine transforms](transforms/affine-transforms.md).
+- **Grid cells as simplex meshes** — `euclib.Grid.to_trimesh` and
+  `euclib.Grid.to_tetmesh`, see
+  [Grid cells as triangles and tetrahedra](grids/grid-cells-as-meshes.md).
 - **One-line constructors** — `euclib.trimesh` and friends, see
   [One-line constructors](construction/constructors.md).
 - **Metadata and transient editing** — see
