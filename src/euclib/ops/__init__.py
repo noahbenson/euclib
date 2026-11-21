@@ -25,6 +25,7 @@ from ._intersect import (
     contains, integrate, mesh_intersections, path_crossings,
     path_intersections, ray_crossings, tolerance_of, voxel_intersections,
     voxel_segment_intersections, voxel_surface_intersections)
+from ._raster import rasterize
 from ._remesh import merge_colinear, subdivide
 from ._distance import distance, nearest, separation
 from ._fit import fit_line, fit_plane
@@ -39,7 +40,7 @@ __all__ = ('distance', 'nearest', 'separation', 'fit_line', 'fit_plane',
            'principal_axes', 'oriented_bounding_box',
            'minimum_volume_bounding_box', 'convex_hull',
            'boolean_union', 'boolean_intersection', 'boolean_difference',
-           'clip', 'section', 'subdivide', 'merge_colinear',
+           'clip', 'section', 'subdivide', 'merge_colinear', 'rasterize',
            'geodesic', 'smooth', 'streamlines',
            'positions_of', 'sample', 'transfer',
            'path_crossings', 'path_intersections', 'contains',

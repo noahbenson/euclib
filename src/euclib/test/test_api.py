@@ -39,7 +39,8 @@ class TestNamespace(TestCase):
                      'minimum_volume_bounding_box',
                      'path_crossings', 'path_intersections',
                      'mesh_intersections', 'voxel_intersections',
-                     'streamlines', 'subdivide', 'merge_colinear'):
+                     'streamlines', 'subdivide', 'merge_colinear',
+                     'rasterize'):
             with self.subTest(name=name):
                 self.assertTrue(hasattr(euclib, name))
 

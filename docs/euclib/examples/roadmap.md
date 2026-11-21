@@ -26,7 +26,6 @@ the [gallery](index.md) following the standard template.
 |---|---|
 | Delaunay triangulation and tetrahedralization | pyvista `test_polydata.py::test_delaunay_2d`, `test_dataset_filters.py::test_delaunay_3d_grid` |
 | Marching cubes / surface reconstruction | trimesh `tests/test_voxel.py::test_marching_points` |
-| Rasterization of 2D paths | trimesh `tests/test_raster.py::test_rasterize` |
 | Primitive generators (boxes, spheres, and so on from a size) | pyvista `tests/core/test_geometric_objects.py::test_cube`, `::test_icosphere`; trimesh `tests/test_creation.py::test_box`, `::test_spheres` |
 
 ## Recently implemented and documented
@@ -74,6 +73,8 @@ reader who remembers them being absent knows where they went:
 - **Grid cells as simplex meshes** — `euclib.Grid.to_trimesh` and
   `euclib.Grid.to_tetmesh`, see
   [Grid cells as triangles and tetrahedra](grids/grid-cells-as-meshes.md).
+- **Rasterization of two-dimensional paths** — `euclib.rasterize`, see
+  [Rasterizing a two-dimensional path](grids/rasterizing-paths.md).
 - **One-line constructors** — `euclib.trimesh` and friends, see
   [One-line constructors](construction/constructors.md).
 - **Metadata and transient editing** — see

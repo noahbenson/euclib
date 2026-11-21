@@ -79,8 +79,8 @@ from .ops import (
     convex_hull, distance, fit_line, fit_plane, geodesic, mesh_intersections,
     merge_colinear, minimum_volume_bounding_box, nearest,
     oriented_bounding_box, path_crossings, path_intersections, principal_axes,
-    section, separation, streamlines, subdivide, voxel_intersections,
-    voxel_surface_intersections)
+    rasterize, section, separation, streamlines, subdivide,
+    voxel_intersections, voxel_surface_intersections)
 
 #: The public modules, shallowest first. A name that appears in more than one
 #: of them belongs to the shallowest.
@@ -177,8 +177,9 @@ __all__ = (
     'contains', 'convex_hull', 'distance', 'fit_line', 'fit_plane', 'geodesic',
     'mesh_intersections', 'minimum_volume_bounding_box', 'nearest',
     'oriented_bounding_box', 'path_crossings', 'path_intersections',
-    'principal_axes', 'section', 'separation', 'streamlines', 'subdivide',
-    'merge_colinear', 'voxel_intersections', 'voxel_surface_intersections')
+    'principal_axes', 'rasterize', 'section', 'separation', 'streamlines',
+    'subdivide', 'merge_colinear', 'voxel_intersections',
+    'voxel_surface_intersections')
 
 
 # The resolver runs here rather than beside its definition, because it reads

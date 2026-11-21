@@ -85,6 +85,7 @@ project:
           children:
             - file: examples/grids/grids-from-arrays.md
             - file: examples/grids/grid-cells-as-meshes.md
+            - file: examples/grids/rasterizing-paths.md
             - file: examples/grids/streamlines.md
         - title: Queries and Measures
           children:
